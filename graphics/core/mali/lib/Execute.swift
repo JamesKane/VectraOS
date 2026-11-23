@@ -31,6 +31,11 @@ struct DrawPass {
   var extra: [(image: ImageRecord, clear: [Float])] = []
   /// The depth and stencil target.
   var zs: ZSBinding?
+  /// Samples of every attachment (valhall 08 section 8.3).
+  var samples: Int = 1
+  /// Whether each colour target is stored (`StoreAction.store`), and the single-sample images it is resolved into as the pass ends.
+  var stores: [Bool] = []
+  var resolves: [(of: Int, image: ImageRecord)] = []
 }
 
 /// A pass's depth and stencil attachment as a pass plans it.
@@ -40,6 +45,9 @@ struct ZSBinding {
   var clearStencil: UInt32
   var storeDepth: Bool
   var storeStencil: Bool
+  /// The pass keeps the plane's contents: the second pre-frame shader loads it into each tile.
+  var loadDepth = false
+  var loadStencil = false
 }
 
 enum Step {
@@ -118,6 +126,9 @@ extension MaliDevice {
     var zs: ZSBinding?
     var dyn = DynamicValues()
     var extraTargets: [(image: ImageRecord, clear: [Float])] = []
+    var samples = 1
+    var stores: [Bool] = []
+    var resolves: [(of: Int, image: ImageRecord)] = []
     for command in list.commands {
       switch command {
       case .beginRendering(let info):
@@ -127,6 +138,17 @@ extension MaliDevice {
         target = record
         extraTargets = []
         planTargets = [record]
+        samples = Int(info.samples)
+        stores = []
+        resolves = []
+        for (i, c) in info.colors.enumerated() {
+          stores.append(c.store == .store || c.resolve == nil)
+          if let v = c.resolve {
+            guard let r = images[v.image.handle] else { throw .invalid("an image that isn't this device's") }
+            resolves.append((i, r))
+          }
+        }
+        if let ds = info.depthStencil, ds.resolve != nil { throw .unsupported("resolving a depth and stencil attachment") }
         for (i, c) in info.colors.enumerated() where i > 0 {
           guard let r = images[c.image.handle] else { throw .invalid("an image that isn't this device's") }
           for t in planTargets where t === r { throw .invalid("an image attached twice to a pass") }
@@ -155,11 +177,12 @@ extension MaliDevice {
         if let ds = info.depthStencil {
           guard let image = images[ds.view.image.handle] else { throw .invalid("an image that isn't this device's") }
           let f = image.descriptor.format
-          if (f.hasDepth && ds.depthLoad == .load) || (f.hasStencil && ds.stencilLoad == .load) {
-            throw .unsupported("keeping a depth or stencil attachment's contents: loading them takes a frame shader that writes depth")
-          }
           zs = ZSBinding(image: image, clearDepth: ds.clearDepth, clearStencil: ds.clearStencil,
-                         storeDepth: f.hasDepth && ds.depthStore == .store, storeStencil: f.hasStencil && ds.stencilStore == .store)
+                         storeDepth: f.hasDepth && ds.depthStore == .store, storeStencil: f.hasStencil && ds.stencilStore == .store,
+                         loadDepth: f.hasDepth && ds.depthLoad == .load, loadStencil: f.hasStencil && ds.stencilLoad == .load)
+          if zs!.loadDepth && zs!.loadStencil {
+            throw .unsupported("keeping both the depth and the stencil of one image: no such format is a depth target here")
+          }
         }
       case .endRendering:
         guard let record = target else { throw .invalid("a pass ends that didn't begin") }
@@ -167,16 +190,25 @@ extension MaliDevice {
         if draws.isEmpty {
           // A pass that keeps the contents and draws nothing changes nothing.
           if !loads { steps.append(.clear(record, clear)) }
+          // A pass that draws nothing resolves its clear (or what it kept) into each resolve image.
+          for v in resolves {
+            if v.of == 0 && loads {
+              steps.append(.transfer(.resolve(record, v.image, [ImageCopyRegion(extent: Extent3D(
+                width: UInt32(record.descriptor.width), height: UInt32(record.descriptor.height)))])))
+            } else {
+              steps.append(.clear(v.image, v.of == 0 ? clear : extraTargets[v.of - 1].clear))
+            }
+          }
           // No fragment work runs for the queries of a pass with no draw: the CPU zeroes them.
           for (q, index) in queryCells { q.region.buffer.store(UInt64(0), at: index * 8) }
           for e in extraTargets { steps.append(.clear(e.image, e.clear)) }
-          if let z = zs { steps.append(.clearDepthStencil(z)) }
+          if let z = zs, !z.loadDepth && !z.loadStencil { steps.append(.clearDepthStencil(z)) }
         } else {
           var storage = false
           for d in draws where d.fragmentShader.layout.imageBindings.contains(where: { $0.binding >= 2 && $0.binding <= 4 }) { storage = true }
           steps.append(.render(DrawPass(
             target: record, clear: clear, draws: draws, usesHeap: usesHeap, usesStorage: storage, load: loads,
-            queries: queryReports, extra: extraTargets, zs: zs)))
+            queries: queryReports, extra: extraTargets, zs: zs, samples: samples, stores: stores, resolves: resolves)))
         }
         target = nil
         zs = nil
@@ -293,9 +325,14 @@ extension MaliDevice {
       case .clearColorImage(let image, let color, let ranges):
         guard let i = images[image.handle] else { throw .invalid("an image that isn't this device's") }
         steps.append(.transfer(.clearColor(i, color, ranges)))
+      case .resolveImage(let src, let dst, let regions):
+        guard let a = images[src.handle], let b = images[dst.handle] else { throw .invalid("an image that isn't this device's") }
+        steps.append(.transfer(.resolve(a, b, regions)))
       case .clearDepthStencilImage(let image, let depth, let stencil, let ranges):
         guard let i = images[image.handle] else { throw .invalid("an image that isn't this device's") }
         steps.append(.transfer(.clearDepthStencil(i, depth, stencil, ranges)))
+      case .clearAttachments(let attachments, let rects):
+        try appendClears(attachments, rects, into: &draws, target: target, zs: zs)
       case .imageBarrier:
         break
       default:
@@ -436,8 +473,9 @@ extension MaliDevice {
     let format = image.descriptor.format
     guard (format.hasDepth && z.storeDepth) || (format.hasStencil && z.storeStencil) else { return }
     let pointer = unsafe image.region.buffer.pointer
-    for y in 0..<Int(image.descriptor.height) {
-      let row = unsafe pointer + y * image.rowStride
+    for y in 0..<Int(image.descriptor.height) * Int(image.descriptor.samples) {
+      let row = unsafe pointer + (y / Int(image.descriptor.height)) * image.layout.levels[0].surfaceStride
+        + (y % Int(image.descriptor.height)) * image.rowStride
       for x in 0..<Int(image.descriptor.width) {
         switch format {
         case .depth32f: unsafe row.storeBytes(of: z.clearDepth.bitPattern, toByteOffset: x * 4, as: UInt32.self)
@@ -459,8 +497,9 @@ extension MaliDevice {
     if image.descriptor.format == .bgra8 || image.descriptor.format == .bgra8srgb { pixel.swapAt(0, 2) }
     let bpp = image.descriptor.format.bytesPerPixel
     if image.descriptor.format == .r8 { pixel = [pixel[0]] }
-    for y in 0..<Int(image.descriptor.height) {
-      let row = unsafe image.region.buffer.pointer + y * image.rowStride
+    let height = Int(image.descriptor.height)
+    for y in 0..<height * Int(image.descriptor.samples) {
+      let row = unsafe image.region.buffer.pointer + (y / height) * image.layout.levels[0].surfaceStride + (y % height) * image.rowStride
       for x in 0..<Int(image.descriptor.width) {
         for c in 0..<bpp { unsafe row.storeBytes(of: pixel[c], toByteOffset: x * bpp + c, as: UInt8.self) }
       }
@@ -616,15 +655,9 @@ extension MaliDevice {
   /// The pre-frame shader that loads `target`: the shader (compiled once), and a heap of its own made for this pass: the
   /// nearest sampler (entry 0) and the target as a texture (entry 1), whose plane descriptor follows at 64 bytes.
   func preload(of target: ImageRecord, held: inout [Region]) throws(GPUError) -> FramePreload {
-    let shader: FragmentShader
-    if let s = preloadShader {
-      shader = s
-    } else {
-      let compiled = try compile(MaliShaders.preloadFrag)
-      guard let fs = compiled.fragment else { throw .invalid("the preload module has no fragment shader") }
-      preloadShader = fs
-      shader = fs
-    }
+    // A multisampled target is loaded a sample at a time (08 section 8.10.4: the sample index, per-sample shading).
+    let shader = try frameShader(target.descriptor.samples > 1 ? MaliShaders.preloadMSFrag : MaliShaders.preloadFrag,
+                                 key: target.descriptor.samples > 1 ? 1 : 0)
     guard let texel = target.descriptor.format.texelFormat else { throw .unsupported("loading an image of \(target.descriptor.format)") }
     let region = try makeRegion(4096)
     held.append(region)
@@ -646,6 +679,42 @@ extension MaliDevice {
       ], dummySampler: DescriptorHeap.handle(index: 0), isSRGB: target.descriptor.format == .bgra8srgb)
   }
 
+  /// A frame shader of MaliShaders, compiled at first use and kept under `key`.
+  func frameShader(_ code: [UInt8], key: Int) throws(GPUError) -> FragmentShader {
+    if let s = frameShaders[key] { return s }
+    guard let fs = try compile(code).fragment else { throw .invalid("a frame shader's module has no fragment shader") }
+    frameShaders[key] = fs
+    return fs
+  }
+
+  /// The second pre-frame shader that loads a depth or a stencil plane (08 section 8.2.1.1): the shader (compiled once) and a heap
+  /// of its own for this pass, as `preload`'s: the nearest sampler (entry 0) and the plane as a texture (entry 1).
+  func zsPreload(of image: ImageRecord, stencil: Bool, held: inout [Region]) throws(GPUError) -> FramePreload {
+    let ms = image.descriptor.samples > 1
+    let code = stencil ? (ms ? MaliShaders.preloadStencilMSFrag : MaliShaders.preloadStencilFrag)
+      : (ms ? MaliShaders.preloadDepthMSFrag : MaliShaders.preloadDepthFrag)
+    let shader = try frameShader(code, key: (stencil ? 4 : 2) + (ms ? 1 : 0))
+    guard let plane = image.planes.first(where: { $0.aspect == (stencil ? ImageAspects.stencil : .depth) }) ?? image.planes.first else {
+      throw .unsupported("loading an image with no plane")
+    }
+    let region = try makeRegion(4096)
+    held.append(region)
+    let planeAt = 64
+    do throws(DescriptorError) {
+      store(try plane.layout.planes(base: image.region.address + UInt64(plane.offset))[0].words(), in: region, at: planeAt)
+      let sampler = try SamplerWords(wrapS: .clampToEdge, wrapT: .clampToEdge, wrapR: .clampToEdge, minFilter: .nearest,
+                                     magFilter: .nearest).words()
+      store(sampler, in: region, at: 0)
+      store(try TextureDescriptor(image: plane.layout, surfaces: region.address + UInt64(planeAt)).words(), in: region, at: 32)
+    } catch { throw .unsupported("the texture unit can't describe the depth or stencil plane to load") }
+    return FramePreload(
+      shader: shader, heapAddress: region.address, heapBytes: 64,
+      images: [
+        BindingHandle(set: 0, binding: 0, handle: DescriptorHeap.handle(index: 1)),
+        BindingHandle(set: 0, binding: 1, handle: DescriptorHeap.handle(index: 0)),
+      ], dummySampler: DescriptorHeap.handle(index: 0))
+  }
+
   func runRender(_ pass: DrawPass, signal: UInt64?, held: inout [Region]) throws(GPUError) {
     let info = transport.info
     let target = pass.target
@@ -660,6 +729,43 @@ extension MaliDevice {
       heapChunkBytes: chunkBytes, geometryBuffer: tiler.geometry.address, layout: .splitQueues, initialiseQueues: !renderStarted)
     // The target's own rows: packed for a window's image, LinearLayout's for any other.
     request.rowStride = target.rowStride
+    var extraMSAA: [(msaa: UInt32, address: UInt64, rowStride: Int, surfaceStride: Int)] = []
+    // Multisampled (valhall 08 section 8.3): the tile holds every sample; a stored target writes each to its surface (Layered),
+    // a resolved one the mean to the resolve image (Average), and one both stored and resolved gets a second descriptor over the
+    // same tile for the mean.
+    request.samples = pass.samples
+    var resolveOf: [Int: ImageRecord] = [:]
+    for v in pass.resolves { resolveOf[v.of] = v.image }
+    if pass.samples > 1 {
+      for (i, stored) in pass.stores.enumerated() {
+        let image = i == 0 ? target : pass.extra[i - 1].image
+        var msaa: UInt32 = 3
+        var address = image.region.address
+        var rowStride = image.rowStride
+        var surfaceStride = image.layout.levels[0].surfaceStride
+        if let v = resolveOf[i] {
+          if stored {
+            var t = ExtraColourTarget(format: v.descriptor.format.colourFormat, address: v.region.address, clear: [0, 0, 0, 0],
+                                      rowStride: v.rowStride)
+            t.surfaceStride = v.layout.levels[0].surfaceStride
+            request.resolves.append((i, t))
+          } else {
+            msaa = 1
+            address = v.region.address
+            rowStride = v.rowStride
+            surfaceStride = v.layout.levels[0].surfaceStride
+          }
+        }
+        if i == 0 {
+          request.colourMSAA = msaa
+          request.colourAddress = address
+          request.rowStride = rowStride
+          request.colourSurfaceStride = surfaceStride
+        } else {
+          extraMSAA.append((msaa, address, rowStride, surfaceStride))
+        }
+      }
+    }
     request.queryReports = probeSkipQueryZero ? [] : pass.queries
     if probeQueryReadback && !pass.queries.isEmpty {
       let r = try makeRegion(4096)
@@ -692,13 +798,28 @@ extension MaliDevice {
       }
       target.clearDepth = z.clearDepth
       target.clearStencil = z.clearStencil
+      // Every sample of a multisampled plane to its surface (08 section 8.5.1: depth is never averaged).
+      if pass.samples > 1 {
+        target.depthMSAA = 3
+        target.stencilMSAA = 3
+      }
       request.zs = target
     }
-    for e in pass.extra {
-      request.extraTargets.append(ExtraColourTarget(format: e.image.descriptor.format.colourFormat, address: e.image.region.address, clear: e.clear,
-                                                    rowStride: e.image.rowStride))
+    for (i, e) in pass.extra.enumerated() {
+      var t = ExtraColourTarget(format: e.image.descriptor.format.colourFormat, address: e.image.region.address, clear: e.clear,
+                                rowStride: e.image.rowStride)
+      if i < extraMSAA.count {
+        t.msaa = extraMSAA[i].msaa
+        t.address = extraMSAA[i].address
+        t.rowStride = extraMSAA[i].rowStride
+        t.surfaceStride = extraMSAA[i].surfaceStride
+      }
+      request.extraTargets.append(t)
     }
     if pass.load { request.preload = try preload(of: target, held: &held) }
+    if let z = pass.zs, z.loadDepth || z.loadStencil {
+      request.zsPreload = try zsPreload(of: z.image, stencil: z.loadStencil, held: &held)
+    }
     if pass.usesStorage {
       let s = try snapshotStorage(held: &held)
       request.storageAddress = s.region.address

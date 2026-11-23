@@ -224,6 +224,8 @@ public struct FragmentShader: Equatable, Sendable {
   public var stackBytes: UInt32
   /// The shader writes FragDepth (ZS_EMIT, so a late depth test, 12c.6.2) or a sample mask.
   public var writesDepth = false
+  /// The shader writes FragStencilRefEXT (ZS_EMIT's stencil, 12c.6.2): the stencil test's reference, from the shader.
+  public var writesStencil = false
   public var writesSampleMask = false
   /// The shader writes a second colour output (Index 1 of location 0: dual-source blending), which a blend shader reads (09 section 9.9.2).
   public var writesSecondOutput = false

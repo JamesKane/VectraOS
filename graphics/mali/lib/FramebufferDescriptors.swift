@@ -175,6 +175,8 @@ public struct RenderTargetDescriptor: Equatable, Sendable {
   /// Write the tile back even if no primitive touched it: a pass that clears sets it (8.7.1, 8.9.1).
   public var cleanTileWrite: Bool
   public var dithering: Bool
+  /// How the tile's samples reach memory (8.3.2): 0 sample 0, 1 the average, 3 every sample to its surface (`surfaceStride` apart).
+  public var msaa: UInt32 = 0
 
   public init(format: ColourFormat, internalBufferOffset: Int = 0, address: UInt64, rowStride: Int, surfaceStride: Int,
               clearWord: UInt32, cleanTileWrite: Bool = true, dithering: Bool = true) {
@@ -203,7 +205,8 @@ public struct RenderTargetDescriptor: Equatable, Sendable {
     guard address & 63 == 0 else { throw .misaligned }
     var w = [UInt32](repeating: 0, count: 16)
     w[0] = UInt32(internalBufferOffset >> 4) << 4 | ColourFormat.internalFormat << 26
-    w[1] = 1 | ColourFormat.writebackFormat << 3 | 2 << 8 | (dithering ? 1 << 15 : 0) | format.swizzle << 16
+    guard msaa == 0 || msaa == 1 || msaa == 3 else { throw .outOfRange }
+    w[1] = 1 | ColourFormat.writebackFormat << 3 | 2 << 8 | msaa << 12 | (dithering ? 1 << 15 : 0) | format.swizzle << 16
       | (cleanTileWrite ? 1 << 31 : 0)
     w[8] = UInt32(truncatingIfNeeded: address)
     w[9] = UInt32(truncatingIfNeeded: address >> 32)
@@ -243,6 +246,8 @@ public struct FramebufferParameters: Equatable, Sendable {
   /// The mode of the first pre-frame shader (word 0 `[2:0]`: 0 never, 1 always, 2 intersect), and the address of the three
   /// frame shaders' draw descriptors (words 6 and 7), 64-byte aligned (08 section 8.10).
   public var preFrame0Mode: UInt32 = 0
+  /// The mode of the second pre-frame shader (word 0 `[5:3]`: 3 is Early ZS Always on arch 10 to 12, the depth/stencil load's).
+  public var preFrame1Mode: UInt32 = 0
   public var frameShaderDCDs: UInt64 = 0
   /// The depth and stencil target (word 12 and 13, and the 64-byte extension after this block); nil for a pass with none.
   public var zs: ZSTarget?
@@ -289,8 +294,9 @@ public struct FramebufferParameters: Equatable, Sendable {
     else { throw .outOfRange }
     guard sampleLocations & 3 == 0, tiler & 63 == 0, frameShaderDCDs & 63 == 0 else { throw .misaligned }
     guard preFrame0Mode <= 2, preFrame0Mode == 0 || frameShaderDCDs != 0 else { throw .outOfRange }
+    guard preFrame1Mode <= 4, preFrame1Mode == 0 || frameShaderDCDs != 0 else { throw .outOfRange }
     var w = [UInt32](repeating: 0, count: 32)
-    w[0] = preFrame0Mode
+    w[0] = preFrame0Mode | preFrame1Mode << 3
     w[6] = UInt32(truncatingIfNeeded: frameShaderDCDs)
     w[7] = UInt32(truncatingIfNeeded: frameShaderDCDs >> 32)
     w[4] = UInt32(truncatingIfNeeded: sampleLocations)

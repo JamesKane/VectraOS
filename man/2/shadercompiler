@@ -114,7 +114,7 @@ With `scalar: true` it also refuses any vector.
 ## Lowering
 
 `IRModule.lower` takes an entry point (by name, the first GLCompute one by default, else the first) and lowers it and the functions it calls.
-A vertex or fragment entry point has no LocalSize; a fragment one needs OriginUpperLeft (EarlyFragmentTests is kept in the module; OriginLowerLeft, DepthReplacing and the other modes are refused).
+A vertex or fragment entry point has no LocalSize; a fragment one needs OriginUpperLeft (EarlyFragmentTests is kept in the module; DepthReplacing, the depth hints and StencilRefReplacingEXT are accepted; OriginLowerLeft and the other modes are refused).
 Their Input and Output variables are Location variables of 32-bit scalar or vector type, and the builtins Position and PointSize (as a variable or as members of a gl_PerVertex block, whose ClipDistance and CullDistance members are accepted and refused if the shader names them), VertexIndex, InstanceIndex, FragCoord and FrontFacing.
 A Location variable that is an array, a struct or a matrix, an Output written in a called function, and Component, Index and Sample decorations are refused.
 Specialization constants take their default or the value given for their SpecId, and the module lists them in `specializations`.
@@ -209,7 +209,7 @@ OpIsHelperInvocationEXT is the `helper_invocation` builtin, true for a lane that
 OpDemoteToHelperInvocation becomes `demote`, which does not end the block.
 Capabilities ShaderNonUniform, RuntimeDescriptorArray, SampledImageArrayNonUniformIndexing and DemoteToHelperInvocation and the NonUniform decoration are accepted.
 Rectangle, buffer and subpass images, a multisampled image read other than by OpImageFetch, a fetch of a cube image, a gather of an image that is not 2D or cube, a texel type other than 32-bit float or integer, the MinLod operand, Grad on a cube image, a projective depth compare, derivatives outside a fragment shader or of other than f32, combined image samplers, and an image or sampler passed to a function or through a phi are refused by name.
-A fragment shader's built-ins SampleId, SamplePosition, SampleMask (in and out), HelperInvocation, PointCoord, PrimitiveId, Layer and FragDepth and a vertex shader's BaseVertex, BaseInstance, DrawIndex, Layer and ViewportIndex are lowered (the first group as `builtin` values, the outputs as stage outputs); capabilities Geometry, SampleRateShading, GroupNonUniform, ShaderLayer, ShaderViewportIndex and DrawParameters are accepted for them.
+A fragment shader's built-ins SampleId, SamplePosition, SampleMask (in and out), HelperInvocation, PointCoord, PrimitiveId, Layer, FragDepth and FragStencilRefEXT and a vertex shader's BaseVertex, BaseInstance, DrawIndex, Layer and ViewportIndex are lowered (the first group as `builtin` values, the outputs as stage outputs); capabilities Geometry, SampleRateShading, GroupNonUniform, ShaderLayer, ShaderViewportIndex and DrawParameters are accepted for them, and StencilExportEXT (with the StencilRefReplacingEXT mode) for FragStencilRefEXT.
 ClipDistance, CullDistance, barycentrics and a fragment shader's ViewportIndex are refused by name: the hardware has none (valhall 14.3.7).
 A struct or array loaded or stored whole is limited to 4096 leaves.
 Volatile and Coherent decorations on variables are ignored; only a memory operand's Volatile counts.

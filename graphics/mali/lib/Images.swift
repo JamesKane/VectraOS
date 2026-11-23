@@ -130,8 +130,10 @@ public struct LevelLayout: Equatable, Sendable {
   public var surfaceStride: Int
   /// Slices in the level: the image's depth, halved per level (1 for anything but a 3D image).
   public var depth: Int = 1
-  /// Bytes of the whole level of one layer: `surface stride * depth`.
-  public var levelSize: Int { surfaceStride * depth }
+  /// Sample planes of the level (05 section 5.5.3): a multisampled image's samples, `surface stride` apart.
+  public var samples: Int = 1
+  /// Bytes of the whole level of one layer: `surface stride * depth * samples`.
+  public var levelSize: Int { surfaceStride * depth * samples }
 }
 
 /// An image's memory: levels packed in order, all layers sharing one layout (05 section 5.5.3).
@@ -146,6 +148,8 @@ public struct ImageLayout: Equatable, Sendable {
   /// Slices of a 3D image's first level; 1 for any other.
   public var depth: Int
   public var layers: Int
+  /// Samples of each texel: a multisampled image has a sample plane each (05 section 5.5.3), never 3D and of one level.
+  public var samples: Int
   public private(set) var levels: [LevelLayout]
   /// Bytes from layer k to layer k + 1: `ALIGN(offset after the last level, 64)`.
   public private(set) var arrayStride: Int
@@ -155,8 +159,9 @@ public struct ImageLayout: Equatable, Sendable {
   /// `rowAlignment`: what a linear row's stride is a multiple of. 64 for a layout of the driver's choosing (05 section 5.5.4);
   /// the element's size for one whose rows are packed, as a window's image is (the hardware asks that of a linear row).
   public init(format: TexelFormat, kind: ImageLayoutKind, width: Int, height: Int, depth: Int = 1, levels count: Int = 1,
-              layers: Int = 1, rowAlignment: Int = ImageLayout.alignment) {
+              layers: Int = 1, rowAlignment: Int = ImageLayout.alignment, samples: Int = 1) {
     self.format = format
+    self.samples = samples
     self.kind = kind
     self.width = width
     self.height = height
@@ -188,8 +193,8 @@ public struct ImageLayout: Equatable, Sendable {
         surface = alignUp(row * ny, ImageLayout.alignment)
       }
       offset = alignUp(offset, ImageLayout.alignment)
-      levels.append(LevelLayout(width: w, height: h, offset: offset, rowStride: row, surfaceStride: surface, depth: d))
-      offset += surface * d
+      levels.append(LevelLayout(width: w, height: h, offset: offset, rowStride: row, surfaceStride: surface, depth: d, samples: samples))
+      offset += surface * d * samples
     }
     arrayStride = alignUp(offset, ImageLayout.alignment)
     size = alignUp(arrayStride * layers, 4096)
@@ -210,9 +215,9 @@ public struct ImageLayout: Equatable, Sendable {
   }
 
   /// The byte offset of texel `(x, y)` of a level of a layer from the image's base (05 sections 5.5.4 and 5.6.3).
-  public func texelOffset(x: Int, y: Int, level: Int = 0, layer: Int = 0, z: Int = 0) -> Int {
+  public func texelOffset(x: Int, y: Int, level: Int = 0, layer: Int = 0, z: Int = 0, sample: Int = 0) -> Int {
     let l = levels[level]
-    let base = layer * arrayStride + l.offset + z * l.surfaceStride
+    let base = layer * arrayStride + l.offset + (z + sample) * l.surfaceStride
     let s = format.bytesPerTexel
     switch kind {
     case .linear:
@@ -270,7 +275,7 @@ public struct ImageLayout: Equatable, Sendable {
         out.append(
           PlaneDescriptor(
             address: base + UInt64(layer * arrayStride + lv.offset), size: UInt64(lv.levelSize), rowStride: lv.rowStride,
-            sliceStride: depth > 1 ? UInt64(lv.surfaceStride) : 0, width: lv.width, height: lv.height, kind: kind, format: format))
+            sliceStride: depth > 1 || samples > 1 ? UInt64(lv.surfaceStride) : 0, width: lv.width, height: lv.height, kind: kind, format: format))
       }
     }
     return out
@@ -387,7 +392,7 @@ public struct TextureDescriptor: Equatable, Sendable {
   public init(image: ImageLayout, surfaces: UInt64, swizzle: UInt32 = TextureSwizzle.identity) {
     self.init(
       format: image.format, width: image.width, height: image.height, swizzle: swizzle, layout: image.kind,
-      levels: image.levels.count, layers: image.layers, surfaces: surfaces)
+      levels: image.levels.count, layers: image.layers, sampleCountLog2: UInt32(log2Floor(UInt64(image.samples))), surfaces: surfaces)
   }
 
   /// Eight words. Word 0: type 2, dimension `[6:4]`, format `[31:10]`. Word 1: width minus one `[15:0]`, height

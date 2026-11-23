@@ -23,16 +23,16 @@ private func unsupported(_ body: () throws -> Void) -> Bool {
     let f = gpu.limits.features
     #expect(f.sampledImages && f.multipleDrawsPerPass)
     #expect(f.depth && f.stencil && f.cullModes && f.rasterizerDiscard && f.generalBlend && f.dynamicState && f.extendedTopologies && f.primitiveRestart)
-    #expect(f.mipmaps && f.arrayImages && f.cubeImages && f.volumeImages && !f.multisample)
-    #expect(f.independentBlend && f.multipleColorAttachments && f.dualSourceBlend && f.logicOps && !f.fillModeNonSolid && !f.alphaToCoverage && !f.multiview)
+    #expect(f.mipmaps && f.arrayImages && f.cubeImages && f.volumeImages && f.multisample)
+    #expect(f.independentBlend && f.multipleColorAttachments && f.dualSourceBlend && f.logicOps && !f.fillModeNonSolid && f.alphaToCoverage && !f.multiview)
     #expect(!f.compressedASTC && !f.compressedETC2 && !f.compressedBC)
     // Views, component swizzles and 1D images are on (vulkan-test judges them on the board).
     #expect(f.imageViews && f.imageSwizzle && f.images1D)
-    #expect(f.copyImage && f.blitImage && f.imageRegionCopies && f.fillBuffer && f.updateBuffer && f.clearImage && !f.resolveImage && !f.clearAttachments)
+    #expect(f.copyImage && f.blitImage && f.imageRegionCopies && f.fillBuffer && f.updateBuffer && f.clearImage && f.resolveImage && f.clearAttachments)
     // The probe: separate filters are off until the board has judged them; import and direct present are on.
     #expect(!f.samplerMinMagFilters && f.samplerAnisotropy && f.samplerCompare && f.samplerBorder && f.customBorderColor && f.unnormalizedCoordinates)
     #expect(!f.drawIndirectCount && f.importHandle && f.presentDirect && !f.specializationConstants)
-    #expect(gpu.limits.maxSamples == 1)
+    #expect(gpu.limits.maxSamples == 16)
     // The texel-buffer capabilities are a format's own (texelbufferTests): the image capabilities are judged without them.
     for format in PixelFormat.all {
       var caps = gpu.limits.formats(format)
@@ -83,7 +83,8 @@ private func unsupported(_ body: () throws -> Void) -> Bool {
     #expect(!image(layers: 4))
     #expect(!image(layers: 6, dimension: .cube))
     #expect(!image(depth: 4, dimension: .d3))
-    #expect(image(samples: 4, usage: .renderTarget))
+    #expect(!image(samples: 4, usage: .renderTarget))
+    #expect(image(samples: 32, usage: .renderTarget))
     #expect(!image())
   }
 
@@ -133,7 +134,7 @@ private func unsupported(_ body: () throws -> Void) -> Bool {
     }
     #expect(pipeline(depth: .depth24stencil8))
     #expect(pipeline(raster: RasterizationState(polygonMode: .line)))
-    #expect(pipeline(multisample: MultisampleState(samples: 4)))
+    #expect(!pipeline(multisample: MultisampleState(samples: 4)))
     #expect(pipeline([.rgba16float]))
     // What the fixed-function stage does, it makes.
     for t: PrimitiveTopology in [.lineList, .lineStrip, .pointList, .triangleStrip, .triangleFan] {

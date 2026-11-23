@@ -1,6 +1,6 @@
 page loinnir-test 8
 summary draw through Loinnir and the core of the GPU offered, and judge the pixels read back against a CPU reference: a triangle, a texture, the timeline and the core's full feature set
-src graphics/loinnir/tests/native/Main.swift graphics/loinnir/tests/native/CoreCases.swift graphics/loinnir/tests/native/CoreFeatures.swift graphics/loinnir/tests/native/CoreTexelBuffers.swift graphics/loinnir/tests/shaders/texelfill.comp graphics/loinnir/tests/shaders/texelorder.comp graphics/loinnir/tests/shaders/imageatomics.comp graphics/loinnir/tests/native/loinnir-test.manifest graphics/loinnir/tests/native/loinnir-test-board.manifest graphics/loinnir/tests/native/generated/LoinnirShaders.swift graphics/loinnir/tests/shaders/mesh.vert graphics/loinnir/tests/shaders/mesh.frag graphics/loinnir/tests/shaders/quad.vert graphics/loinnir/tests/shaders/lod.frag graphics/loinnir/tests/shaders/volume.frag graphics/loinnir/tests/shaders/cube.frag graphics/loinnir/tests/native/ResourceCases.swift
+src graphics/loinnir/tests/native/Main.swift graphics/loinnir/tests/native/CoreCases.swift graphics/loinnir/tests/native/CoreFeatures.swift graphics/loinnir/tests/native/CoreTexelBuffers.swift graphics/loinnir/tests/shaders/texelfill.comp graphics/loinnir/tests/shaders/texelorder.comp graphics/loinnir/tests/shaders/imageatomics.comp graphics/loinnir/tests/native/loinnir-test.manifest graphics/loinnir/tests/native/loinnir-test-board.manifest graphics/loinnir/tests/native/generated/LoinnirShaders.swift graphics/loinnir/tests/shaders/mesh.vert graphics/loinnir/tests/shaders/mesh.frag graphics/loinnir/tests/shaders/sampleid.frag graphics/loinnir/tests/shaders/quad.vert graphics/loinnir/tests/shaders/lod.frag graphics/loinnir/tests/shaders/volume.frag graphics/loinnir/tests/shaders/cube.frag graphics/loinnir/tests/native/ResourceCases.swift
 keys loinnir test core gpu vulkan venus depth stencil msaa resolve mip lod blit copy clear blend cull cube volume 3d texture features skip reference tolerance
 
 # SYNOPSIS
@@ -25,7 +25,9 @@ Then it runs these cases, each of which prints `loinnir-test: ok: core: ...` and
 
 - depth: four rectangles at different depths, drawn out of order with the depth test, and one whose depth crosses another's; each pixel against the nearest rectangle there (a pixel where two depths are within 0.005 is not judged);
 - stencil: a mask built by replacing and incrementing the stencil value in two overlapping rectangles, then two draws that pass where it equals 2 and 1, the second with the reference set by the pass where the device has dynamic state; exact;
+- depth kept and stencil kept: the depth and stencil cases again, the first draws in a pass that stores the plane and the rest in a second that keeps the colour and the plane (`depthLoad`, `stencilLoad`), against the same reference; exact;
 - msaa: a rectangle whose edge is half way through a pixel, drawn with 4 samples and resolved once by the pass and once by `resolveImage`; the covered pixels and the clear are exact, and the edge pixel is the mean of both within 2;
+  then the same at every sample count the device offers (the edge pixel the mean of the samples left of the edge on Vulkan's standard locations, a sample on the edge either way), a target stored and resolved by one pass and its samples resolved again by `resolveImage`, a target kept by a second pass that draws beside it, the sample mask (samples 0 and 2 of 4: half and half), sample shading with a shader whose colour is its sample's own (`gl_SampleID`), alpha to one (alpha 0.25 stored as 1) and alpha to coverage (alpha 0 covers nothing and 1 everything, exactly; what 0.5 covers is printed, `loinnir-test: alpha to coverage:`, and must be some samples but not all), each within 2 of the mean;
 - cull: two rectangles wound opposite ways in four tiles, drawn with back, front and no culling and with the other front face; exact;
 - blend: alpha over, additive, multiply, subtract, reverse subtract, min, max, source colour factors, constant colour (static and dynamic), alpha saturate, a write mask and, where there are logic operations, xor, each in its own tile against the formula in floating point, within 1 (the hardware rounds its own way); xor is exact;
 - mips: a texture of four levels each a different colour, sampled at levels 0 to 3 by a sampler that takes the nearest level (exact), and at 1.5 by one that blends levels (the mean of levels 1 and 2, within 2);
@@ -36,6 +38,8 @@ Then it runs these cases, each of which prints `loinnir-test: ok: core: ...` and
 - custom border: a red texture sampled over three times its width by a sampler whose border is a colour of its own, which the outer thirds are (within 1), and the middle the texture's, exact; skipped where the device has no custom border colours (the Vulkan under Venus offers no device extensions of the renderer's);
 - texel buffers: a compute shader that fetches 16 texels from a uniform texel buffer, stores three times each, plus its index, to a storage texel buffer and gives each an atomic add of one, through the heap's texel-buffer arrays; read back from the buffer's own memory, exact;
 - copy region, blit and clears: an image region copied to another offset, a blit at twice the size and flipped, a clear of an image, of a rectangle inside a pass, a buffer filled and updated, and a buffer copied in and out of an image by regions with a row length; each exact.
+
+The lines of the multisampling, clear and kept cases, and every skip, are printed again after the resource cases, as the board's serial console drops lines.
 
 A case runs only if the device reports the features it uses, and is skipped, with the missing feature named, if it doesn't.
 
@@ -59,7 +63,7 @@ gpucore(2), loinnir(2), vulkan-test(8), board-test(8), vx-shaders(1)
 
 # BUGS
 
-The cases of the full feature set run on the Vulkan backend only; the Mali backend runs the checks above.
+The Mali backend runs the core cases and its resource cases; the cases of features it lacks are skipped.
 It judges the rasterizer's rules only where a case is built to be exact (rectangles aligned to pixels, whose shared diagonal is covered once); a pixel on a slanted edge is not judged.
 The MSAA edge assumes a sample pattern that is symmetric about the pixel's centre in x, as every standard pattern is.
 Storage images, geometry and tessellation, multiview, counted draws, queries, anisotropy, compressed formats and depth resolves are printed as features but not drawn here.

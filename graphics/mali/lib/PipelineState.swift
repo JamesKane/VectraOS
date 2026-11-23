@@ -41,6 +41,8 @@ public struct ZSDescriptorState: Equatable, Sendable {
   public var clampToViewport = false
   /// The fragment shader writes the depth: depth source 3, not the fixed function's 2 (6.8.3).
   public var depthFromShader = false
+  /// The fragment shader gives the stencil reference (word 0 `[30]`, 6.8), with the stencil test on.
+  public var stencilFromShader = false
 
   public init() {}
 
@@ -59,6 +61,7 @@ public struct ZSDescriptorState: Equatable, Sendable {
       w0 |= (front.function & 7) << 4 | (front.failOperation & 7) << 7 | (front.depthFailOperation & 7) << 10
         | (front.passOperation & 7) << 13 | (back.function & 7) << 16 | (back.failOperation & 7) << 19
         | (back.depthFailOperation & 7) << 22 | (back.passOperation & 7) << 25 | 1 << 31
+      if stencilFromShader { w0 |= 1 << 30 }
     }
     let w1: UInt32 = stencilTest
       ? (front.writeMask & 0xFF) | (back.writeMask & 0xFF) << 8 | (front.compareMask & 0xFF) << 16 | (back.compareMask & 0xFF) << 24 : 0
@@ -102,6 +105,9 @@ public struct ZSTarget: Equatable, Sendable {
   public var clearStencil: UInt32 = 0
   /// Whether the pass has a stencil aspect (a stencil-only target has no depth format).
   public var hasStencil = false
+  /// How each plane's samples reach memory (8.3.2, 8.5.1: never the average): 0 sample 0, 3 every sample to its surface.
+  public var depthMSAA: UInt32 = 0
+  public var stencilMSAA: UInt32 = 0
 
   public init(depthFormat: DepthFormat?, hasStencil: Bool) {
     self.depthFormat = depthFormat
@@ -127,7 +133,7 @@ public struct ZSTarget: Equatable, Sendable {
       guard depthRowStride > 0, depthRowStride < 1 << 27, depthSurfaceStride >= 0, UInt64(depthSurfaceStride) < 1 << 37 else {
         throw .outOfRange
       }
-      w[0] |= f.writeFormat | 2 << 4
+      w[0] |= f.writeFormat | 2 << 4 | (depthMSAA & 3) << 8
       w[8] = UInt32(truncatingIfNeeded: a)
       w[9] = UInt32(truncatingIfNeeded: a >> 32)
       w[10] = UInt32(depthRowStride) | UInt32(truncatingIfNeeded: UInt64(depthSurfaceStride) >> 32) << 27
@@ -137,7 +143,7 @@ public struct ZSTarget: Equatable, Sendable {
       guard a & 63 == 0 else { throw .misaligned }
       guard stencilRowStride > 0, stencilRowStride < 1 << 27, stencilSurfaceStride >= 0, UInt64(stencilSurfaceStride) < 1 << 37
       else { throw .outOfRange }
-      w[0] |= 1 << 16 | 2 << 20
+      w[0] |= 1 << 16 | 2 << 20 | (stencilMSAA & 3) << 24
       w[12] = UInt32(truncatingIfNeeded: a)
       w[13] = UInt32(truncatingIfNeeded: a >> 32)
       w[14] = UInt32(stencilRowStride) | UInt32(truncatingIfNeeded: UInt64(stencilSurfaceStride) >> 32) << 27
@@ -229,6 +235,10 @@ public struct DrawPipelineState: Equatable, Sendable {
   public var scissor: ScissorBox?
   /// The sample mask word of flags 1 (all ones: every sample).
   public var sampleMask: UInt32 = 0xFFFF
+  /// Shade each sample separately (flags 0 `[11]`, 6.9.4): sample shading, in a pass of more than one sample.
+  public var perSample = false
+  /// Alpha to coverage (flags 0 `[22]`, with "shader modifies coverage", 6.9.4): the hardware's mapping of colour 0's alpha.
+  public var alphaToCoverage = false
   public init() {}
 
   /// The smallest vertex count that makes one primitive of the mode.

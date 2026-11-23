@@ -21,6 +21,8 @@ enum Transfer {
   case update(Region, Int, [UInt8])
   case clearColor(ImageRecord, ClearColor, [ImageSubresourceRange])
   case clearDepthStencil(ImageRecord, Float, UInt32, [ImageSubresourceRange])
+  /// A multisampled colour image resolved into a single-sample one: each texel the mean of its samples.
+  case resolve(ImageRecord, ImageRecord, [ImageCopyRegion])
 }
 
 extension MaliDevice {
@@ -59,6 +61,38 @@ extension MaliDevice {
       for (i, b) in data.enumerated() { unsafe m.buffer.pointer.storeBytes(of: b, toByteOffset: offset + i, as: UInt8.self) }
     case .clearColor(let i, let color, let ranges): clearColorImage(i, color, ranges)
     case .clearDepthStencil(let i, let depth, let stencil, let ranges): clearDepthStencil(i, depth, stencil, ranges)
+    case .resolve(let a, let b, let regions): resolveImages(a, b, regions)
+    }
+  }
+
+  // MARK: Resolves
+
+  /// Each texel of the regions the mean of the source's samples, channel by channel, rounded to nearest: the formats a
+  /// multisampled image has here are 8-bit normalized, whose bytes are averaged as they are stored (an sRGB format's encoded
+  /// bytes, as the tile's writeback averages them, valhall 08 section 8.3.2).
+  func resolveImages(_ a: ImageRecord, _ b: ImageRecord, _ regions: [ImageCopyRegion]) {
+    b.region.touched = true
+    guard let sp = plane(a, .color), let dp = plane(b, .color) else { return }
+    let n = sp.layout.samples
+    let bytes = sp.texel.bytesPerTexel
+    for r in regions {
+      for l in 0..<Int(r.srcSubresource.layerCount) {
+        for y in 0..<Int(r.extent.height) {
+          for x in 0..<Int(r.extent.width) {
+            let to = unsafe spot(b, dp, mip: Int(r.dstSubresource.mip), layer: Int(r.dstSubresource.baseLayer) + l,
+                                 x: Int(r.dstOffset.x) + x, y: Int(r.dstOffset.y) + y, z: 0)
+            for c in 0..<bytes {
+              var sum = 0
+              for sample in 0..<n {
+                let from = unsafe spot(a, sp, mip: 0, layer: Int(r.srcSubresource.baseLayer) + l, x: Int(r.srcOffset.x) + x,
+                                       y: Int(r.srcOffset.y) + y, z: sample)
+                sum += Int(unsafe from.load(fromByteOffset: c, as: UInt8.self))
+              }
+              unsafe to.storeBytes(of: UInt8((sum + n / 2) / n), toByteOffset: c, as: UInt8.self)
+            }
+          }
+        }
+      }
     }
   }
 
@@ -254,7 +288,8 @@ extension MaliDevice {
         let down = (level.height + p.texel.blockHeight - 1) / p.texel.blockHeight
         let bytes = p.texel.bytesPerTexel
         for layer in Int(range.baseLayer)..<Int(range.baseLayer + range.layerCount) {
-          for z in 0..<level.depth {
+          // Every slice, and every sample plane of a multisampled image (they follow the slice, a surface apart).
+          for z in 0..<level.depth * level.samples {
             for y in 0..<down {
               let row = unsafe spot(i, p, mip: mip, layer: layer, x: 0, y: y * p.texel.blockHeight, z: z)
               for x in 0..<across {
@@ -276,7 +311,7 @@ extension MaliDevice {
         for mip in Int(range.baseMip)..<Int(range.baseMip + range.mipCount) {
           let level = p.layout.levels[mip]
           for layer in Int(range.baseLayer)..<Int(range.baseLayer + range.layerCount) {
-            for z in 0..<level.depth {
+            for z in 0..<level.depth * level.samples {
               for y in 0..<level.height {
                 for x in 0..<level.width {
                   unsafe Self.storeDepth(f, aspect, aspect == .stencil ? Float(stencil & 0xFF) : depth,

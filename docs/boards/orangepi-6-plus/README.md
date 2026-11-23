@@ -938,7 +938,14 @@ layout above where they differ.
     the CPU's lines over the fresh pages cleaned first or after the run, so no CPU line was involved. The kernel's missing clean
     of pages committed into a write-combining VMO (K1.3 item 3) was found reading the chain and fixed, though it hadn't shown.
     A client's memory and storage images are now GPU-cacheable, and the 32-bit atomics are claimed (D174).
-  - **Off:** `resolveImage` (no multisampled images), the MSAA and attachment halves of depth (the pipeline's), `clearAttachments`.
+  - **Multisampling, clears in a pass, kept depth and stencil** (2026-11-23, D174): 2, 4, 8 and 16 samples resolved by the pass
+    exactly as the standard locations predict at an edge half way through a pixel (Average writeback), a target stored and resolved
+    by two descriptors over one tile, kept multisampled targets loaded a sample at a time, the sample mask, sample shading, alpha to
+    one (a blend shader) and alpha to coverage, whose mapping is measured: alpha 0.5 covers two of four samples (`0x800080c0` over a
+    blue clear). `clearAttachments` is a draw with the rectangle as scissor. Depth and stencil are kept by the second pre-frame shader
+    (Early ZS Always), the stencil as the shader's reference (`ZS_EMIT.stencil`); the first try was refused by the compiler, which did
+    not yet accept the StencilRefReplacingEXT mode glslang emits.
+  - **Off:** depth and stencil resolves, polygon modes (no hardware path, valhall 06 section 6.4.6), layers and multiview.
 - **Zero counts** (2026-11-21): an indirect draw whose vertex, index or instance count is zero, and an indirect dispatch with a zero
   dimension, are branched over in the stream. loinnir-test's GPU-written zero arguments (no vertices, no instances, each of three axes)
   drew and ran nothing, and the draw or dispatch after each ran exactly.

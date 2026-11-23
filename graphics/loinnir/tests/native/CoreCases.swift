@@ -42,11 +42,20 @@ final class CoreCases {
   func ok(_ what: String) {
     passed += 1
     print("loinnir-test: ok: core: \(what)")
+    if reprinted(what) { notes.append("loinnir-test: ok: core: \(what)") }
   }
 
   func skip(_ what: String, _ why: String) {
     skipped += 1
     print("loinnir-test: skip: core: \(what): \(why)")
+    notes.append("loinnir-test: skip: core: \(what): \(why)")
+  }
+
+  /// The cases whose lines are printed again at the end (the board's serial console drops lines): multisampling, the clears and
+  /// the kept depth and stencil.
+  func reprinted(_ what: String) -> Bool {
+    for prefix in ["msaa", "clears", "depth kept", "stencil kept"] where what.utf8.starts(with: prefix.utf8) { return true }
+    return false
   }
 
   func caught(_ name: String, _ e: GPUError) {
@@ -282,9 +291,12 @@ final class CoreCases {
 
   /// Four rectangles drawn out of order with depth testing: the nearest wins wherever they overlap, whichever was drawn first, and
   /// one has a depth that crosses another's, so the test is per pixel.
-  func depth() throws(GPUError) {
+  /// With `kept`, the first two rectangles are drawn in one pass that stores the depth, and the others in a second that keeps the
+  /// colour and the depth (the depth loaded into the tile again), with the same reference.
+  func depth(kept: Bool = false) throws(GPUError) {
     guard f.depth, rgbaTarget else { return skip("depth", "no depth attachments") }
     guard let format = depthFormat() else { return skip("depth", "no depth-only format that is a depth target") }
+    guard !kept || f.loadAttachments else { return skip("depth kept", "no kept attachments") }
     let w = 32, h = 32
     let clear: [Float] = [0.2, 0.2, 0.2, 1]
     let rects = [
@@ -300,8 +312,19 @@ final class CoreCases {
     var list = GPUCommandList()
     let info = RenderingInfo(colors: [Attachment(image: target, load: .clear(clear[0], clear[1], clear[2], clear[3]))],
                              depthStencil: DepthStencilAttachment(image: depthImage, clearDepth: 1))
-    list.render(info) { r in
-      for i in 0..<rects.count { r.draw(pso, root: mesh.address, vertices: 6, firstVertex: UInt32(6 * i)) }
+    if kept {
+      list.render(info) { r in
+        for i in 0..<2 { r.draw(pso, root: mesh.address, vertices: 6, firstVertex: UInt32(6 * i)) }
+      }
+      let again = RenderingInfo(colors: [Attachment(image: target, load: .load)],
+                                depthStencil: DepthStencilAttachment(image: depthImage, depthLoad: .load, stencilLoad: .load))
+      list.render(again) { r in
+        for i in 2..<rects.count { r.draw(pso, root: mesh.address, vertices: 6, firstVertex: UInt32(6 * i)) }
+      }
+    } else {
+      list.render(info) { r in
+        for i in 0..<rects.count { r.draw(pso, root: mesh.address, vertices: 6, firstVertex: UInt32(6 * i)) }
+      }
     }
     let px = try readBack(list, target)
     // The reference: each rectangle in order, kept where its depth at the pixel's centre is less than what is there. A pixel
@@ -323,7 +346,7 @@ final class CoreCases {
       }
     }
     let judged = judge("depth", px, w, h) { x, y in unjudged[y * w + x] ? nil : color[y * w + x] }
-    ok("depth: four overlapping rectangles out of order on \(name(format)), \(judged) of \(w * h) pixels exact")
+    ok("depth\(kept ? " kept" : ""): four overlapping rectangles out of order on \(name(format))\(kept ? ", two in a pass that stores the depth and two in one that loads it" : ""), \(judged) of \(w * h) pixels exact")
   }
 
   // MARK: Stencil
@@ -338,9 +361,12 @@ final class CoreCases {
 
   /// A mask built in the stencil buffer (one rectangle replaces, a second increments), then two draws that pass where the
   /// stencil equals a reference: one pipeline with a static reference and one that takes it from the pass.
-  func stencil() throws(GPUError) {
+  /// With `kept`, the mask is built in one pass that stores the stencil, and tested in a second that keeps the colour and the
+  /// stencil (loaded into the tile again).
+  func stencil(kept: Bool = false) throws(GPUError) {
     guard f.stencil, rgbaTarget else { return skip("stencil", "no stencil attachments") }
     guard let format = stencilFormat() else { return skip("stencil", "no stencil format that is a depth target") }
+    guard !kept || f.loadAttachments else { return skip("stencil kept", "no kept attachments") }
     let w = 32, h = 32
     let a = Rect(x0: 4, y0: 4, x1: 20, y1: 20, color: [1, 1, 1, 1])
     let b = Rect(x0: 12, y0: 12, x1: 28, y1: 28, color: [1, 1, 1, 1])
@@ -365,12 +391,26 @@ final class CoreCases {
     var list = GPUCommandList()
     let info = RenderingInfo(colors: [Attachment(image: target, load: .clear(0, 0, 1, 1))],
                              depthStencil: DepthStencilAttachment(image: stencilImage, clearDepth: 1, clearStencil: 0))
-    list.render(info) { r in
-      r.draw(replace, root: mesh.address, vertices: 6, firstVertex: 0)
-      r.draw(increment, root: mesh.address, vertices: 6, firstVertex: 6)
-      r.draw(equalsTwo, root: mesh.address, vertices: 6, firstVertex: 12)
-      if useDynamic { r.setStencilReference(.both, 1) }
-      r.draw(equalsOne, root: mesh.address, vertices: 6, firstVertex: 18)
+    if kept {
+      list.render(info) { r in
+        r.draw(replace, root: mesh.address, vertices: 6, firstVertex: 0)
+        r.draw(increment, root: mesh.address, vertices: 6, firstVertex: 6)
+      }
+      let again = RenderingInfo(colors: [Attachment(image: target, load: .load)],
+                                depthStencil: DepthStencilAttachment(image: stencilImage, depthLoad: .load, stencilLoad: .load))
+      list.render(again) { r in
+        r.draw(equalsTwo, root: mesh.address, vertices: 6, firstVertex: 12)
+        if useDynamic { r.setStencilReference(.both, 1) }
+        r.draw(equalsOne, root: mesh.address, vertices: 6, firstVertex: 18)
+      }
+    } else {
+      list.render(info) { r in
+        r.draw(replace, root: mesh.address, vertices: 6, firstVertex: 0)
+        r.draw(increment, root: mesh.address, vertices: 6, firstVertex: 6)
+        r.draw(equalsTwo, root: mesh.address, vertices: 6, firstVertex: 12)
+        if useDynamic { r.setStencilReference(.both, 1) }
+        r.draw(equalsOne, root: mesh.address, vertices: 6, firstVertex: 18)
+      }
     }
     let px = try readBack(list, target)
     let judged = judge("stencil", px, w, h) { x, y in
@@ -379,7 +419,7 @@ final class CoreCases {
       if inA || inB { return [255, 0, 0, 255] }
       return [0, 0, 255, 255]
     }
-    ok("stencil: mask by replace and increment, tested equal to 2 and to 1\(useDynamic ? " (dynamic reference)" : "") on \(name(format)), \(judged) pixels exact")
+    ok("stencil\(kept ? " kept" : ""): mask by replace and increment, tested equal to 2 and to 1\(useDynamic ? " (dynamic reference)" : "") on \(name(format))\(kept ? ", the test in a second pass that loads the stencil" : ""), \(judged) pixels exact")
   }
 
   // MARK: Multisampling
@@ -424,6 +464,154 @@ final class CoreCases {
       judgeResolved("4x resolved by resolveImage", try readBack(list, resolved))
     } else {
       skip("msaa: resolveImage", "no image resolves")
+    }
+    if f.resolveAttachments { try msaaMore() }
+  }
+
+  /// The covered samples of a pixel whose centre is half a pixel left of an edge, on Vulkan's standard sample locations (x in
+  /// 1/16 pixel from the centre): the samples left of it, and one more where a sample lies on the edge (the rasterizer's tie).
+  func samplesLeftOfCentre(_ n: Int) -> (covered: Int, tied: Int) {
+    let xs: [Int]
+    switch n {
+    case 2: xs = [4, -4]
+    case 4: xs = [-2, 6, -6, 2]
+    case 8: xs = [1, -1, 5, -3, -5, -7, 3, 7]
+    default: xs = [1, -1, -3, 4, -5, 2, 5, 3, -2, 0, -4, -6, -8, 7, 6, -7]
+    }
+    var covered = 0, tied = 0
+    for x in xs {
+      if x < 0 { covered += 1 }
+      if x == 0 { tied += 1 }
+    }
+    return (covered, tied)
+  }
+
+  /// Every sample count the device offers resolved by the pass; a target stored and resolved at once; a kept multisampled target;
+  /// the sample mask, sample shading, alpha to one and alpha to coverage, each resolved by the pass and judged.
+  func msaaMore() throws(GPUError) {
+    let w = 16, h = 16
+    let edge = try meshBuffer([Rect(x0: 0, y0: 0, x1: 8.5, y1: 16, color: [1, 0, 0, 1])], width: Float(w), height: Float(h))
+    let caps = d.limits.formats(.rgba8)
+    func resolvedPass(_ n: UInt32, _ body: (inout GPUCommandList) -> Void, load: LoadAction = .clear(0, 0, 1, 1),
+                      ms: GPUImage? = nil) throws(GPUError) -> [UInt8] {
+      let target: GPUImage
+      if let given = ms { target = given } else { target = try colorTarget(Int32(w), Int32(h), samples: n) }
+      let resolved = try colorTarget(Int32(w), Int32(h))
+      var list = GPUCommandList()
+      list.render(RenderingInfo(colors: [Attachment(view: ImageView(target), load: load, store: .discard, resolve: ImageView(resolved))])) { r in
+        body(&r)
+      }
+      return try readBack(list, resolved)
+    }
+    func judgeEdge(_ name: String, _ n: Int, _ px: [UInt8]) -> Int {
+      let k = samplesLeftOfCentre(n)
+      return judge(name, px, w, h, tolerance: 2) { x, y in
+        if x < 8 { return [255, 0, 0, 255] }
+        if x > 8 { return [0, 0, 255, 255] }
+        // The edge pixel: the mean of the covered samples' red and the others' blue; a tied sample may go either way.
+        let lo = [UInt8((255 * k.covered + n / 2) / n), 0, UInt8((255 * (n - k.covered) + n / 2) / n), 255]
+        let hi = [UInt8((255 * (k.covered + k.tied) + n / 2) / n), 0, UInt8((255 * (n - k.covered - k.tied) + n / 2) / n), 255]
+        let p = pixel(px, w, x, y)
+        return near(p, lo, 2) ? lo : hi
+      }
+    }
+    // Each sample count.
+    for n in [2, 4, 8, 16] where caps.renderSamples.contains(UInt32(n)) && UInt32(n) <= d.limits.maxSamples {
+      let pso = try meshPipeline(multisample: MultisampleState(samples: UInt32(n)))
+      let px = try resolvedPass(UInt32(n)) { r in r.draw(pso, root: edge.address, vertices: 6) }
+      let judged = judgeEdge("msaa \(n)x", n, px)
+      ok("msaa: \(n) samples resolved by the pass, \(judged) pixels, the edge pixel the mean of its covered samples within 2")
+    }
+    let pso4 = try meshPipeline(multisample: MultisampleState(samples: 4))
+    // Stored and resolved by one pass: the resolve judged, and the stored samples resolved again by resolveImage.
+    do {
+      let ms = try colorTarget(Int32(w), Int32(h), samples: 4)
+      let resolved = try colorTarget(Int32(w), Int32(h))
+      var list = GPUCommandList()
+      list.render(RenderingInfo(colors: [Attachment(view: ImageView(ms), load: .clear(0, 0, 1, 1), store: .store, resolve: ImageView(resolved))])) { r in
+        r.draw(pso4, root: edge.address, vertices: 6)
+      }
+      let a = judgeEdge("msaa stored and resolved", 4, try readBack(list, resolved))
+      if f.resolveImage {
+        let again = try colorTarget(Int32(w), Int32(h))
+        var l2 = GPUCommandList()
+        l2.resolveImage(ms, to: again, regions: [ImageCopyRegion(extent: Extent3D(width: UInt32(w), height: UInt32(h)))])
+        let b = judgeEdge("msaa stored, then resolveImage", 4, try readBack(l2, again))
+        ok("msaa: 4 samples stored and resolved by one pass, \(a) pixels, and the stored samples resolved again, \(b) pixels")
+      } else {
+        ok("msaa: 4 samples stored and resolved by one pass, \(a) pixels")
+      }
+    }
+    // Kept: the samples a first pass stored are loaded by a second, which draws beside them and resolves.
+    if f.loadAttachments {
+      let ms = try colorTarget(Int32(w), Int32(h), samples: 4)
+      var list = GPUCommandList()
+      list.render(RenderingInfo(colors: [Attachment(image: ms, load: .clear(0, 0, 1, 1), store: .store)])) { r in
+        r.draw(pso4, root: edge.address, vertices: 6)
+      }
+      try run(list)
+      let green = try meshBuffer([Rect(x0: 12, y0: 0, x1: 16, y1: 16, color: [0, 1, 0, 1])], width: Float(w), height: Float(h))
+      let px = try resolvedPass(4, { r in r.draw(pso4, root: green.address, vertices: 6) }, load: .load, ms: ms)
+      let k = samplesLeftOfCentre(4)
+      let judged = judge("msaa kept", px, w, h, tolerance: 2) { x, y in
+        if x < 8 { return [255, 0, 0, 255] }
+        if x == 8 { return [UInt8((255 * k.covered + 2) / 4), 0, UInt8((255 * (4 - k.covered) + 2) / 4), 255] }
+        if x < 12 { return [0, 0, 255, 255] }
+        return [0, 255, 0, 255]
+      }
+      ok("msaa: 4 samples kept by a second pass (each loaded a sample at a time), drawn beside and resolved, \(judged) pixels")
+    } else {
+      skip("msaa: kept", "no kept attachments")
+    }
+    let whole = try meshBuffer([Rect(x0: 0, y0: 0, x1: 16, y1: 16, color: [1, 0, 0, 1])], width: Float(w), height: Float(h))
+    // The sample mask: samples 0 and 2 of 4.
+    do {
+      let pso = try meshPipeline(multisample: MultisampleState(samples: 4, sampleMask: 0b0101))
+      let px = try resolvedPass(4) { r in r.draw(pso, root: whole.address, vertices: 6) }
+      let judged = judge("sample mask", px, w, h, tolerance: 2) { _, _ in [128, 0, 127, 255] }
+      ok("msaa: a sample mask of samples 0 and 2 of 4, \(judged) pixels half the colour and half the clear within 2")
+    }
+    // Sample shading: a shader whose colour is its sample's own (red on the odd samples).
+    if f.sampleShading && f.shaderSampleRateShading {
+      let pso = try meshPipeline(multisample: MultisampleState(samples: 4, sampleShading: true, minSampleShading: 1),
+                                 fragment: LoinnirShaders.sampleidFrag)
+      let px = try resolvedPass(4) { r in r.draw(pso, root: whole.address, vertices: 6) }
+      let judged = judge("sample shading", px, w, h, tolerance: 2) { _, _ in [128, 0, 0, 255] }
+      ok("msaa: sample shading, a colour of each sample's own (gl_SampleID), \(judged) pixels the mean within 2")
+    } else {
+      skip("msaa: sample shading", "no sample shading")
+    }
+    // Alpha to one: a colour of alpha 0.25 written with alpha 1.
+    if f.alphaToOne {
+      let quarter = try meshBuffer([Rect(x0: 0, y0: 0, x1: 16, y1: 16, color: [1, 0, 0, 0.25])], width: Float(w), height: Float(h))
+      let pso = try meshPipeline(multisample: MultisampleState(samples: 4, alphaToOne: true))
+      let px = try resolvedPass(4) { r in r.draw(pso, root: quarter.address, vertices: 6) }
+      let judged = judge("alpha to one", px, w, h, tolerance: 1) { _, _ in [255, 0, 0, 255] }
+      ok("msaa: alpha to one, a colour of alpha 0.25 stored with alpha 1, \(judged) pixels")
+    } else {
+      skip("msaa: alpha to one", "no alpha to one")
+    }
+    // Alpha to coverage: alpha 0 covers no sample, alpha 1 every one, and alpha 0.5 some (the hardware's mapping, printed).
+    if f.alphaToCoverage {
+      let rects = [Rect(x0: 0, y0: 0, x1: 5, y1: 16, color: [1, 0, 0, 0]), Rect(x0: 5, y0: 0, x1: 10, y1: 16, color: [1, 0, 0, 1]),
+                   Rect(x0: 10, y0: 0, x1: 16, y1: 16, color: [1, 0, 0, 0.5])]
+      let mesh = try meshBuffer(rects, width: Float(w), height: Float(h))
+      let pso = try meshPipeline(multisample: MultisampleState(samples: 4, alphaToCoverage: true))
+      let px = try resolvedPass(4) { r in r.draw(pso, root: mesh.address, vertices: 18) }
+      let half = pixel(px, w, 12, 8)
+      let line = "loinnir-test: alpha to coverage: alpha 0.5 of 4 samples resolves to \(hex(half)) (red over a blue clear)"
+      print(line)
+      notes.append(line)
+      let judged = judge("alpha to coverage", px, w, h, tolerance: 2) { x, _ in
+        if x < 5 { return [0, 0, 255, 255] }
+        if x < 10 { return [255, 0, 0, 255] }
+        return half
+      }
+      // Some samples but not all: the red is the covered share, strictly between the clear and the colour.
+      guard half[0] > 2 && half[0] < 253 else { fail("alpha to coverage: alpha 0.5 covered \(hex(half)), not some of the samples") }
+      ok("msaa: alpha to coverage, alpha 0 covers no sample and 1 every one, \(judged) pixels, and 0.5 some (\(hex(half)))")
+    } else {
+      skip("msaa: alpha to coverage", "no alpha to coverage")
     }
   }
 
@@ -1000,6 +1188,10 @@ final class CoreCases {
     t = Clock.monotonic()
     do throws(GPUError) { try stencil() } catch { caught("stencil", error) }
     lap("stencil", t)
+    t = Clock.monotonic()
+    do throws(GPUError) { try depth(kept: true) } catch { caught("depth kept", error) }
+    do throws(GPUError) { try stencil(kept: true) } catch { caught("stencil kept", error) }
+    lap("depth and stencil kept", t)
     t = Clock.monotonic()
     do throws(GPUError) { try msaa() } catch { caught("msaa", error) }
     lap("msaa", t)

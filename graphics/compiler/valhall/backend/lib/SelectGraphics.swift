@@ -390,11 +390,13 @@ extension Selector {
     }
     // 12c.6.4 step 1: a sample mask the shader wrote is ANDed into the coverage in r60 before ATEST.
     var depthReg = -1
+    var stencilReg = -1
     for (n, o) in m.outputs.enumerated() where o.builtin >= 0 && outputReg[n] >= 0 {
       if o.builtin == Int(BuiltInId.sampleMask), let (amt, lane) = shiftAmount(0) {
         alu("LSHIFT_AND", "i32", dst: .reg(v60, 0), .reg(v60, 0), amt, .reg(outputReg[n], 0), set: [("wd1", lane)])
       }
       if o.builtin == Int(BuiltInId.fragDepth) { depthReg = outputReg[n] }
+      if o.builtin == Int(BuiltInId.fragStencilRef) { stencilReg = outputReg[n] }
     }
     // 12c.6.4: wait0126, ATEST (slot 0), then `wait` before each BLEND.
     waitFlow(.wait0126)
@@ -407,14 +409,15 @@ extension Selector {
     atest.stageWrite = .reg(v60, 0)
     atest.fixedSlot = 0
     add(atest)
-    if depthReg >= 0 {
-      // ZS_EMIT after the ATEST's wait (12c.6.2): the depth the shader wrote, no stencil, the coverage in r60.
+    if depthReg >= 0 || stencilReg >= 0 {
+      // ZS_EMIT after the ATEST's wait (12c.6.2): the depth and the stencil the shader wrote, the coverage in r60.
       waitFlow(.wait0126)
       var zi = op("ZS_EMIT")
-      zi.put("z", 1)
+      if depthReg >= 0 { zi.put("z", 1) }
+      if stencilReg >= 0 { zi.put("stencil", 1) }
       var zs = MInst(zi, .message)
-      zs.src[0] = .reg(depthReg, 0)
-      zs.src[1] = .const(0)
+      zs.src[0] = depthReg >= 0 ? .reg(depthReg, 0) : .const(0)
+      zs.src[1] = stencilReg >= 0 ? .reg(stencilReg, 0) : .const(0)
       zs.src[2] = .reg(v60, 0)
       zs.stageWrite = .reg(v60, 0)
       zs.fixedSlot = 0

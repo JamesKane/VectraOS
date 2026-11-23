@@ -102,6 +102,9 @@ public struct ExtraColourTarget: Sendable {
   public var clear: [Float]
   /// Its row stride in bytes, where it isn't `LinearLayout`'s.
   public var rowStride: Int?
+  /// A multisampled target's writeback (08 section 8.3.2: 3, every sample to its surface, `surfaceStride` apart; 1, the average).
+  public var msaa: UInt32 = 0
+  public var surfaceStride: Int?
   public init(format: ColourFormat, address: UInt64, clear: [Float], rowStride: Int? = nil) {
     self.format = format
     self.address = address
@@ -154,6 +157,9 @@ public struct FramePreload: Sendable {
 public struct DrawPassRequest: Sendable {
   /// The target's contents are loaded into the tile first (nil: the clear colour fills it).
   public var preload: FramePreload?
+  /// The depth and stencil target's contents are loaded into the tile first by the second pre-frame shader (08 sections 8.2.1.1
+  /// and 8.10), whose shader writes the depth (FragDepth) or the stencil (the stencil reference); nil: the clear values fill it.
+  public var zsPreload: FramePreload?
   public var width: Int
   public var height: Int
   public var format: ColourFormat
@@ -191,12 +197,22 @@ public struct DrawPassRequest: Sendable {
   public var extraTargets: [ExtraColourTarget] = []
   /// The colour target's row stride in bytes, where it isn't `LinearLayout`'s (a window's image, whose rows are packed).
   public var rowStride: Int?
+  /// Samples of every attachment's pixel (08 section 8.3): 1, 2, 4, 8 or 16.
+  public var samples: Int = 1
+  /// The first colour target's writeback (08 section 8.3.2) and the distance between its sample surfaces.
+  public var colourMSAA: UInt32 = 0
+  public var colourSurfaceStride: Int?
+  /// Single-sample images the pass resolves colour targets into as it ends: a render-target descriptor each after the targets,
+  /// in writeback mode Average (8.3.2), at the internal buffer offset of the target `of` (the tile's samples are written twice:
+  /// to the target, and averaged to the resolve). The blend descriptors stay the shader's targets'.
+  public var resolves: [(of: Int, target: ExtraColourTarget)] = []
 
   /// The most stack any shader of the pass needs.
   public var stackBytes: UInt32 {
     var most: UInt32 = 0
     for d in draws { most = max(most, d.vertexShader.stackBytes, d.fragmentShader.stackBytes) }
     if let p = preload { most = max(most, p.shader.stackBytes) }
+    if let p = zsPreload { most = max(most, p.shader.stackBytes) }
     return most
   }
 
@@ -255,6 +271,7 @@ extension RenderPass {
     }
     let targetCount = 1 + r.extraTargets.count
     guard targetCount <= 8, r.preload == nil || targetCount == 1 else { throw .badRequest }
+    guard r.zsPreload == nil || r.zs != nil else { throw .badRequest }
     for d in r.draws { guard d.extraBlends.count == targetCount - 1 else { throw .badRequest } }
     // A target in mode Shader has its shader (and a draw with a shader has the constants' words in its FAU).
     for d in r.draws {
@@ -263,7 +280,11 @@ extension RenderPass {
       }
     }
     for t in r.extraTargets { guard t.clear.count == 4, t.address & 63 == 0 else { throw .badRequest } }
-    guard let plan = TilePlan.make(r.tileBuffer, bytesPerSample: [Int](repeating: ColourFormat.bytesPerPixel, count: targetCount), samples: 1) else {
+    guard let pattern = SamplePatterns.pattern(samples: r.samples) else { throw .badRequest }
+    for v in r.resolves { guard v.of >= 0 && v.of < targetCount && v.target.address & 63 == 0 else { throw .badRequest } }
+    let descriptorCount = targetCount + r.resolves.count
+    guard descriptorCount <= 8 else { throw .badRequest }
+    guard let plan = TilePlan.make(r.tileBuffer, bytesPerSample: [Int](repeating: ColourFormat.bytesPerPixel, count: targetCount), samples: r.samples) else {
       throw .badRequest
     }
     guard let mask = HierarchyMask.select(width: r.width, height: r.height, tilePixels: plan.tilePixels, maxLevels: 4,
@@ -292,7 +313,7 @@ extension RenderPass {
     let tilerAt = place(TilerContext.size, TilerContext.alignment)
     let heapAt = place(TilerHeapDescriptor.size, TilerHeapDescriptor.alignment)
     let zsExtension = r.zs != nil
-    let fbdAt = place(groupBytes + (zsExtension ? ZSTarget.size : 0) + 64 * (targetCount - 1), 64)
+    let fbdAt = place(groupBytes + (zsExtension ? ZSTarget.size : 0) + 64 * (descriptorCount - 1), 64)
     // A draw whose state has a depth/stencil test has a descriptor of its own.
     var drawZSDAt: [Int] = []
     func zsState(_ d: PassDraw) -> ZSDescriptorState? {
@@ -302,6 +323,8 @@ extension RenderPass {
         z = z ?? ZSDescriptorState()
         z!.depthFromShader = true
       }
+      // A shader that writes the stencil reference gives it to the stencil test, where the test is on (6.8, word 0 `[30]`).
+      if d.fragmentShader.writesStencil && z?.stencilTest == true { z!.stencilFromShader = true }
       return z
     }
     for d in r.draws { drawZSDAt.append(zsState(d) != nil ? place(DepthStencilDescriptor.size, DepthStencilDescriptor.alignment) : -1) }
@@ -348,13 +371,22 @@ extension RenderPass {
     // The first pre-frame shader (08 section 8.10): the three frame shaders' draw descriptors (the other two never run),
     // its blend descriptor, push words, resource table (its own heap), program descriptor and code.
     var dcdAt = 0, preBlendAt = 0, preFAUAt = 0, preTableAt = 0, preSPDAt = 0, preCodeAt = 0
+    if r.preload != nil || r.zsPreload != nil { dcdAt = place(3 * 128, 64) }
     if let p = r.preload {
-      dcdAt = place(3 * 128, 64)
       preBlendAt = place(BlendDescriptor.size, 64)
       preFAUAt = place(8 * max(p.shader.layout.slots, 1), 8)
       preTableAt = place(DescriptorHeap.tableEntries * ResourceTable.entrySize, ResourceTable.alignment)
       preSPDAt = place(ShaderProgramDescriptor.size, ShaderProgramDescriptor.alignment)
       preCodeAt = place(p.shader.code.count * 8, 128)
+    }
+    // The second pre-frame shader (08 section 8.10.3): its depth/stencil descriptor, push words, resource table, program and code.
+    var zsPreZSDAt = 0, zsPreFAUAt = 0, zsPreTableAt = 0, zsPreSPDAt = 0, zsPreCodeAt = 0
+    if let p = r.zsPreload {
+      zsPreZSDAt = place(DepthStencilDescriptor.size, DepthStencilDescriptor.alignment)
+      zsPreFAUAt = place(8 * max(p.shader.layout.slots, 1), 8)
+      zsPreTableAt = place(DescriptorHeap.tableEntries * ResourceTable.entrySize, ResourceTable.alignment)
+      zsPreSPDAt = place(ShaderProgramDescriptor.size, ShaderProgramDescriptor.alignment)
+      zsPreCodeAt = place(p.shader.code.count * 8, 128)
     }
     let syncAt = r.layout == .splitQueues ? place(16, 64) : 0
     let stream0At = place(0, 64)
@@ -362,29 +394,41 @@ extension RenderPass {
     func va(_ at: Int) -> UInt64 { base + UInt64(at) }
 
     let tiler = TilerContext(
-      hierarchyMask: mask, samplePattern: SamplePatterns.single, firstProvokingVertex: true,
+      hierarchyMask: mask, samplePattern: pattern, firstProvokingVertex: true,
       effectiveTileLog2: plan.tileLog2, width: r.width, height: r.height, heap: va(heapAt),
       geometryBuffer: r.geometryBuffer)
     let heap = TilerHeapDescriptor(chunkBytes: r.heapChunkBytes, firstChunk: r.heapChunk)
     let layout = LinearLayout(width: r.width, height: r.height, bytesPerPixel: ColourFormat.bytesPerPixel)
     // A target's strides: LinearLayout's, or its own row stride (a multiple of the pixel's bytes, 05 section 5.5.4).
     let height = r.height
-    let renderTarget = RenderTargetDescriptor(
+    var renderTarget = RenderTargetDescriptor(
       format: r.format, internalBufferOffset: plan.offsets[0], address: r.colourAddress, rowStride: r.rowStride ?? layout.rowStride,
-      surfaceStride: r.rowStride.map { alignUp($0 * height, 64) } ?? layout.surfaceStride,
+      surfaceStride: r.colourSurfaceStride ?? r.rowStride.map { alignUp($0 * height, 64) } ?? layout.surfaceStride,
       clearWord: ColourFormat.packedClear(
         red: r.clear[0], green: r.clear[1], blue: r.clear[2], alpha: r.clear[3], srgb: r.format.isSRGB))
+    renderTarget.msaa = r.colourMSAA
     let rtAt = fbdAt + FramebufferParameters.size + (zsExtension ? ZSTarget.size : 0)
     var framebuffer = FramebufferParameters(
-      width: r.width, height: r.height, samplePattern: SamplePatterns.single,
-      sampleLocations: va(samplesAt) + UInt64(SamplePatterns.blockBytes) * UInt64(SamplePatterns.single),
+      width: r.width, height: r.height, sampleCountLog2: UInt32(log2Floor(UInt64(r.samples))), samplePattern: pattern,
+      sampleLocations: va(samplesAt) + UInt64(SamplePatterns.blockBytes) * UInt64(pattern),
       effectiveTileLog2: plan.tileLog2, colourAllocationKiB: plan.allocationField, tiler: va(tilerAt))
     framebuffer.zs = r.zs
-    framebuffer.renderTargetCount = targetCount
+    framebuffer.renderTargetCount = descriptorCount
     if r.preload != nil {
       framebuffer.preFrame0Mode = 1
       framebuffer.frameShaderDCDs = va(dcdAt)
     }
+    if r.zsPreload != nil {
+      // 8.10.1: depth and stencil loads use Early ZS Always on arch 10 to 12.
+      framebuffer.preFrame1Mode = 3
+      framebuffer.frameShaderDCDs = va(dcdAt)
+    }
+    /// The second frame shader's draw descriptor, its depth/stencil state and its blocks (8.10.3, 8.10.3.2).
+    var zsPreDCD = [UInt32](repeating: 0, count: 32)
+    var zsPreFAUWords: [UInt64] = []
+    var zsPreTableBytes: [UInt8] = []
+    var zsPreSPDWords: [UInt32] = []
+    var zsPreState = ZSDescriptorState()
     /// The first frame shader's draw descriptor (06 section 6.13; 08 section 8.10.3), when there is one.
     var preDCD = [UInt32](repeating: 0, count: 32)
     var preFAUWords: [UInt64] = []
@@ -396,7 +440,7 @@ extension RenderPass {
     var fbdPointer: UInt64 = 0
     var resourcePointer: UInt64 = 0
     do throws(DescriptorError) {
-      fbdPointer = FramebufferParameters.taggedPointer(address: va(fbdAt), extensionPresent: zsExtension, renderTargetCount: targetCount)
+      fbdPointer = FramebufferParameters.taggedPointer(address: va(fbdAt), extensionPresent: zsExtension, renderTargetCount: descriptorCount)
       if tableAt >= 0 { resourcePointer = try ResourceTable.pointer(address: va(tableAt), entryCount: DescriptorHeap.tableEntries) }
       if let p = r.preload {
         // Colour only, forced early, forward pixel kill allowed both ways, and the shader's output counts as writing the
@@ -404,7 +448,9 @@ extension RenderPass {
         var f0 = DrawFlags0.colourOnly
         f0.pixelKill = .forceEarly
         f0.zsUpdate = .forceEarly
-        preDCD[0] = f0.word | 1 << 9
+        f0.multisample = r.samples > 1
+        // 8.10.3: evaluate per sample when the shader uses the sample index.
+        preDCD[0] = f0.word | 1 << 9 | (r.samples > 1 && p.shader.perSampleShading ? 1 << 11 : 0)
         preDCD[1] = DrawFlags1.word(renderTargetMask: 1)
         preDCD[5] = DrawFlags2.word(writeMask: 1)
         let zsd = va(zsdAt)
@@ -432,6 +478,60 @@ extension RenderPass {
         preTableBytes = try DescriptorHeap.resourceTable(heapAddress: p.heapAddress, heapBytes: p.heapBytes)
         preSPDWords = ShaderProgramDescriptor(
           stage: .fragment, registerClass: p.shader.registerClass, preloadMask: p.shader.preloadMask, binary: va(preCodeAt),
+          coverageBitmaskType: 1).words
+      }
+      if let p = r.zsPreload {
+        // 8.10.3: kill and update Force Late (the shader writes depth or stencil), no forward pixel kill of others, its own
+        // fragments may be killed, a clean fragment write, no colour (no blend descriptors), every sample.
+        var f0 = DrawFlags0.colourOnly
+        f0.allowForwardPixelToKill = false
+        f0.pixelKill = .forceLate
+        f0.zsUpdate = .forceLate
+        f0.multisample = r.samples > 1
+        zsPreDCD[0] = f0.word | 1 << 9 | (r.samples > 1 && p.shader.perSampleShading ? 1 << 11 : 0)
+        zsPreDCD[1] = DrawFlags1.word(renderTargetMask: 0)
+        zsPreDCD[5] = DrawFlags2.word(writeMask: 0)
+        // 8.10.3.2: depth Always, written from the shader when it writes depth; the stencil test Always, Replace, from the shader,
+        // when it writes stencil; every mask 0xFF; depth cull off.
+        zsPreState.depthFunction = 7
+        zsPreState.depthClip = false
+        if p.shader.writesDepth {
+          zsPreState.depthWrite = true
+          zsPreState.depthFromShader = true
+        }
+        if p.shader.writesStencil {
+          var face = StencilFaceWords()
+          face.function = 7
+          face.failOperation = 1
+          face.depthFailOperation = 1
+          face.passOperation = 1
+          zsPreState.stencilTest = true
+          zsPreState.stencilFromShader = true
+          zsPreState.front = face
+          zsPreState.back = face
+        }
+        let zsd = va(zsPreZSDAt)
+        zsPreDCD[10] = UInt32(truncatingIfNeeded: zsd)
+        zsPreDCD[11] = UInt32(truncatingIfNeeded: zsd >> 32)
+        let table = try ResourceTable.pointer(address: va(zsPreTableAt), entryCount: DescriptorHeap.tableEntries)
+        zsPreDCD[24] = UInt32(truncatingIfNeeded: table)
+        zsPreDCD[25] = UInt32(truncatingIfNeeded: table >> 32)
+        let spd = va(zsPreSPDAt)
+        zsPreDCD[26] = UInt32(truncatingIfNeeded: spd)
+        zsPreDCD[27] = UInt32(truncatingIfNeeded: spd >> 32)
+        let tsdPointer = va(tsdAt)
+        zsPreDCD[28] = UInt32(truncatingIfNeeded: tsdPointer)
+        zsPreDCD[29] = UInt32(truncatingIfNeeded: tsdPointer >> 32)
+        if p.shader.layout.slots > 0 {
+          let fau = try FAUPointer.value(address: va(zsPreFAUAt), words: p.shader.layout.slots)
+          zsPreDCD[30] = UInt32(truncatingIfNeeded: fau)
+          zsPreDCD[31] = UInt32(truncatingIfNeeded: fau >> 32)
+        }
+        let handles = p.images.map { (set: $0.set, binding: $0.binding, handle: $0.handle) }
+        zsPreFAUWords = p.shader.layout.block(push: p.push, images: handles, dummySampler: p.dummySampler)
+        zsPreTableBytes = try DescriptorHeap.resourceTable(heapAddress: p.heapAddress, heapBytes: p.heapBytes)
+        zsPreSPDWords = ShaderProgramDescriptor(
+          stage: .fragment, registerClass: p.shader.registerClass, preloadMask: p.shader.preloadMask, binary: va(zsPreCodeAt),
           coverageBitmaskType: 1).words
       }
       for (n, d) in r.draws.enumerated() {
@@ -475,8 +575,11 @@ extension RenderPass {
         var readsDestination = d.blend.blend.loadDestination
         for b in d.extraBlends where b.blend.loadDestination { readsDestination = true }
         flags.allowForwardPixelToKill = !readsDestination && !d.fragmentShader.discards
-        // 6.9.1 `[20]`: the shader writes the sample mask or may discard.
-        flags.shaderModifiesCoverage = d.fragmentShader.discards || d.fragmentShader.writesSampleMask
+        // 6.9.1 `[20]`: the shader writes the sample mask or may discard, or alpha to coverage (6.9.4).
+        flags.shaderModifiesCoverage = d.fragmentShader.discards || d.fragmentShader.writesSampleMask || d.state.alphaToCoverage
+        if d.state.alphaToCoverage { flags.allowForwardPixelToKill = false }
+        // 6.9.1 `[19]`: rasterise at the samples of a multisampled pass.
+        flags.multisample = r.samples > 1
         let triangles = d.state.mode == .triangles || d.state.mode == .triangleStrip || d.state.mode == .triangleFan
         flags.frontFaceCCW = d.state.frontFaceCCW
         flags.cullFront = triangles && d.state.cullFront
@@ -487,12 +590,12 @@ extension RenderPass {
           var storage = false
           for b in d.fragmentShader.layout.imageBindings where b.binding == 2 { storage = true }
           let ops = PixelOperations.derive(
-            sw: d.fragmentShader.writesDepth, wzo: (zsd?.writes ?? false) || d.occlusionQuery != 0, ac: false,
-            lc: d.fragmentShader.discards || d.fragmentShader.writesSampleMask, se: storage,
+            sw: d.fragmentShader.writesDepth || d.fragmentShader.writesStencil, wzo: (zsd?.writes ?? false) || d.occlusionQuery != 0,
+            ac: d.state.alphaToCoverage, lc: d.fragmentShader.discards || d.fragmentShader.writesSampleMask || d.state.alphaToCoverage, se: storage,
             eft: d.fragmentShader.earlyFragmentTests, pass: zsd == nil || (zsd!.depthAlwaysPasses && zsd!.stencilAlwaysPasses))
           flags.pixelKill = ops.kill
           flags.zsUpdate = ops.update
-          if d.fragmentShader.writesDepth { flags.allowForwardPixelToKill = false }
+          if d.fragmentShader.writesDepth || d.fragmentShader.writesStencil { flags.allowForwardPixelToKill = false }
         }
         if d.occlusionQuery != 0 {
           // 6.10.2: an active query is a write (WZO), so a shader that can alter coverage updates late. A fragment that
@@ -500,7 +603,11 @@ extension RenderPass {
           if d.fragmentShader.discards { flags.zsUpdate = .forceLate }
           flags.allowForwardPixelToKill = false
         }
-        s.flags0 = (flags.word | (d.occlusionQuery != 0 ? 3 << 14 : 0) | d.flags0Or) & ~d.flags0Clear
+        // 6.9.1 `[11]`: per sample where the state or the shader asks, or a blend shader runs, in a pass of more than one sample;
+        // `[22]`: alpha to coverage.
+        let perSample = r.samples > 1 && (d.state.perSample || d.fragmentShader.perSampleShading || !d.blendShaders.isEmpty)
+        let extra: UInt32 = (perSample ? 1 << 11 : 0) | (d.state.alphaToCoverage ? 1 << 22 : 0)
+        s.flags0 = (flags.word | extra | (d.occlusionQuery != 0 ? 3 << 14 : 0) | d.flags0Or) & ~d.flags0Clear
         // The render targets the fragment shader writes (06 section 6.9.2): one target, the colour output; several, the outputs' locations.
         var written: UInt32 = 1
         if targetCount > 1 {
@@ -661,11 +768,23 @@ extension RenderPass {
       if let z = r.zs { m.store(words: try z.words(), at: fbdAt + FramebufferParameters.size) }
       m.store(words: try renderTarget.words(), at: rtAt)
       for (i, t) in r.extraTargets.enumerated() {
-        let extra = RenderTargetDescriptor(
+        var extra = RenderTargetDescriptor(
           format: t.format, internalBufferOffset: plan.offsets[i + 1], address: t.address, rowStride: t.rowStride ?? layout.rowStride,
-          surfaceStride: t.rowStride.map { alignUp($0 * height, 64) } ?? layout.surfaceStride,
+          surfaceStride: t.surfaceStride ?? t.rowStride.map { alignUp($0 * height, 64) } ?? layout.surfaceStride,
           clearWord: ColourFormat.packedClear(red: t.clear[0], green: t.clear[1], blue: t.clear[2], alpha: t.clear[3], srgb: t.format.isSRGB))
+        extra.msaa = t.msaa
         m.store(words: try extra.words(), at: rtAt + 64 * (i + 1))
+      }
+      // The resolves: the tile of target `of`, averaged into a single-sample image (8.3.2).
+      for (k, v) in r.resolves.enumerated() {
+        let t = v.target
+        let clear = v.of == 0 ? r.clear : r.extraTargets[v.of - 1].clear
+        var resolve = RenderTargetDescriptor(
+          format: t.format, internalBufferOffset: plan.offsets[v.of], address: t.address, rowStride: t.rowStride ?? layout.rowStride,
+          surfaceStride: t.surfaceStride ?? t.rowStride.map { alignUp($0 * height, 64) } ?? layout.surfaceStride,
+          clearWord: ColourFormat.packedClear(red: clear[0], green: clear[1], blue: clear[2], alpha: clear[3], srgb: t.format.isSRGB))
+        resolve.msaa = 1
+        m.store(words: try resolve.words(), at: rtAt + 64 * (targetCount + k))
       }
       for (n, d) in r.draws.enumerated() { if let z = zsState(d) { m.store(words: z.words, at: drawZSDAt[n]) } }
       if tableAt >= 0 {
@@ -683,6 +802,14 @@ extension RenderPass {
       m.store(bytes: preTableBytes, at: preTableAt)
       m.store(words: preSPDWords, at: preSPDAt)
       m.store(words: p.shader.code, at: preCodeAt)
+    }
+    if let p = r.zsPreload {
+      m.store(words: zsPreDCD, at: dcdAt + 128)
+      m.store(words: zsPreState.words, at: zsPreZSDAt)
+      for (i, w) in zsPreFAUWords.enumerated() { m.store(w, at: zsPreFAUAt + 8 * i) }
+      m.store(bytes: zsPreTableBytes, at: zsPreTableAt)
+      m.store(words: zsPreSPDWords, at: zsPreSPDAt)
+      m.store(words: p.shader.code, at: zsPreCodeAt)
     }
     for s in shaders { m.store(words: s.code, at: s.at) }
     for b in blendCodes { m.store(words: b.code, at: b.at) }

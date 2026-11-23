@@ -227,3 +227,18 @@ private func at(_ inp: FragmentInput, _ lane: Int, _ loc: Int = 0) -> [Float] {
     #expect(seen == total)
   }
 }
+
+@Suite struct StencilExportTests {
+  @Test func theStencilReferenceAndTheDepthAreEmittedTogether() throws {
+    var inp = FragmentInput()
+    inp.origin = (8, 8)
+    let r = try runFragment("stencilexport", inp, bindings: [])
+    let fs = try #require(r.shader.fragment)
+    #expect(fs.writesStencil && fs.writesDepth)
+    for lane in 0..<16 {
+      let p = inp.pixel(lane)
+      #expect(r.result.stencil[lane] == UInt32(p.x + 3), "FragStencilRefEXT, lane \(lane)")
+      #expect(r.result.depth[lane] == Float(0.25).bitPattern, "FragDepth, lane \(lane)")
+    }
+  }
+}

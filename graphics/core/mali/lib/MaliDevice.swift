@@ -18,8 +18,8 @@
 //  - pipeline state (PipelineMapping.swift): depth and stencil targets, culling,
 //    the topologies, line width, blend factors, masks and constants (fixed
 //    function only), dynamic state, viewports and scissors, and up to eight
-//    colour targets; gpucore(2) says what is refused (blend shaders, polygon
-//    modes, multisampling, layers) and what is not yet (textures in compute
+//    colour targets; gpucore(2) says what is refused (polygon
+//    modes, layers) and what is not yet (textures in compute
 //    shaders and the vertex stage, queries, loading depth).
 //
 // This v0 runs one submission at a time: a submission starts when the one
@@ -215,8 +215,10 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   var computeSlotsReady = false
   var computeResourceRequested = false
   var queries = Slots<QueryRecord>()
-  /// The compiled shader that loads an attachment's contents into the tile (MaliShaders.preloadFrag), made at first use.
-  var preloadShader: FragmentShader?
+  /// The shaders of `clearAttachments` (ClearAttachments.swift), made at first use.
+  /// The frame shaders that load a target (Execute.swift's `frameShader`): colour, depth and stencil, single and multisampled.
+  var frameShaders: [Int: FragmentShader] = [:]
+  var clearPrograms: (vertex: VertexShader, fragments: [FragmentShader])?
   /// Bits of every draw's flags 0 to set and to clear, for probes of the hardware (gpu-test's, loinnir-test's).
   public var probeFlags0: (or: UInt32, clear: UInt32) = (0, 0)
   /// A probe of the hardware: after a pass with occlusion queries the fragment queue loads the first report through the GPU
@@ -267,6 +269,8 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     // write-combining memory stays 0); with it the counter mode counts the samples (768 for 768 pixels).
     l.features.occlusionQueries = true
     l.features.loadAttachments = true
+    // A clear inside a pass is a draw of it (ClearAttachments.swift).
+    l.features.clearAttachments = true
     l.features.storageImages = true
     // A window's frames are scanout images whose own pages the window maps (Import.swift's `exportWindowHandle`): this
     // backend's copies run on the CPU, so a frame is never staged.
@@ -322,6 +326,30 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     baseLimits = l
     installResourceCapabilities(&baseLimits)
     enableTexelBuffers()
+    enableMultisampling()
+  }
+
+  /// Multisampling (valhall 08 section 8.3, 07 section 7.9): 2, 4, 8 and 16 samples, the patterns Vulkan's standard locations
+  /// are; the render targets and the depth and stencil targets, sampled too (a fetch of a sample); resolves by the pass (the
+  /// writeback's average) and by `resolveImage`; the sample mask, sample shading (binary, 06 section 6.9.4), alpha to coverage
+  /// (the hardware's mapping) and alpha to one (a blend shader, 09 section 9.2.2).
+  func enableMultisampling() {
+    let all = SampleCounts(rawValue: 31)
+    for f in [PixelFormat.rgba8, .bgra8, .bgra8srgb, .depth16, .depth32f, .stencil8] {
+      var c = baseLimits.formats(f)
+      if c.renderTarget { c.renderSamples = all }
+      if c.depthTarget { c.depthSamples = all }
+      if c.sampled { c.sampledSamples = all }
+      baseLimits.setFormat(f, c)
+    }
+    baseLimits.maxSamples = 16
+    baseLimits.features.multisample = true
+    baseLimits.features.resolveAttachments = true
+    baseLimits.features.resolveImage = true
+    baseLimits.features.sampleShading = true
+    baseLimits.features.shaderSampleRateShading = true
+    baseLimits.features.alphaToCoverage = true
+    baseLimits.features.alphaToOne = true
   }
 
   deinit {
@@ -512,7 +540,7 @@ public final class MaliDevice: GPUDevice, GPUQueue {
       topology: d.topology, restart: d.primitiveRestart, raster: d.rasterization, depthStencil: d.depthStencil,
       depthStencilFormat: d.depthStencilFormat, blend: d.effectiveBlends[0], formats: d.colorFormats, blends: d.effectiveBlends,
       constants: d.blendConstants, dynamic: d.dynamic, srgb: srgb, logicOp: d.logicOp.map { PipelineMapping.logic($0) },
-      fragmentCalls: false)
+      fragmentCalls: false, multisample: d.multisample)
     state.fragmentCalls = PipelineMapping.mayNeedBlendShader(state)
     let blend = PipelineMapping.blendTargets(state, constants: d.blendConstants)[0].descriptor
     let fragment = try compile(d.fragment, blendShaders: state.fragmentCalls)

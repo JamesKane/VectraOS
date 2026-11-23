@@ -158,6 +158,7 @@ extension ValhallBackend {
         nonPerspectiveMask: np, discards: sel.usesKill, earlyFragmentTests: m.earlyFragmentTests, stackBytes: stack)
       result.fragment?.writesSecondOutput = m.outputs.contains { $0.location >= 0 && $0.index == 1 }
       result.fragment?.writesDepth = m.outputs.contains { $0.builtin == Int(BuiltInId.fragDepth) }
+      result.fragment?.writesStencil = m.outputs.contains { $0.builtin == Int(BuiltInId.fragStencilRef) }
       result.fragment?.writesSampleMask = m.outputs.contains { $0.builtin == Int(BuiltInId.sampleMask) }
       result.fragment?.perSampleShading = sel.perSampleShading
       result.fragment?.readsSamplePositions = sel.usesSamplePositions
