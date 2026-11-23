@@ -1,0 +1,80 @@
+// SPDX-License-Identifier: BSD-3-Clause
+// The Mali backend's copies, fills and clears (Transfers.swift): a compute job that moves rows of units through memory
+// accesses, as valhall 05 section 5.11.10.1 (R1.4) has the reference copy buffer data into images, and as its raw views do
+// (05 section 5.3.2, 03 section 3.8.5): every byte moves unchanged. Each job of the parameters is rows of `rowUnits` units of
+// `unit` bytes (1, 2, 4, 8 or 16), in slices and layers; workgroup z names a slice of one job (the table). A source unit
+// stride of 0 repeats one unit (a fill, a clear's texel). With `samples` above 1, each destination byte is the mean of that
+// many source bytes `sampleStride` apart, rounded to nearest (a colour resolve).
+#version 460
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
+#extension GL_EXT_shader_8bit_storage : require
+#extension GL_EXT_shader_16bit_storage : require
+layout(local_size_x = 64) in;
+layout(buffer_reference, std430, buffer_reference_align = 1) buffer U8 { uint8_t v[]; };
+layout(buffer_reference, std430, buffer_reference_align = 2) buffer U16 { uint16_t v[]; };
+layout(buffer_reference, std430, buffer_reference_align = 4) buffer U32 { uint v[]; };
+layout(buffer_reference, std430, buffer_reference_align = 8) buffer U64 { uvec2 v[]; };
+layout(buffer_reference, std430, buffer_reference_align = 16) buffer U128 { uvec4 v[]; };
+struct Job {
+  U8 src;
+  U8 dst;
+  uint unit;
+  uint srcUnitStride;
+  uint rowUnits;
+  uint rows;
+  uint srcRowStride;
+  uint dstRowStride;
+  uint srcSliceStride;
+  uint dstSliceStride;
+  uint slices;
+  uint srcLayerStride;
+  uint dstLayerStride;
+  uint firstZ;
+  uint samples;
+  uint sampleStride;
+  uint pad0;
+  uint pad1;
+};
+layout(buffer_reference, std430, buffer_reference_align = 8) readonly buffer Params { U32 table; uint count; uint pad; Job jobs[]; };
+layout(push_constant) uniform Root { Params params; } root;
+
+void main() {
+  uint z = gl_WorkGroupID.z;
+  uint j = root.params.table.v[z];
+  uint x = gl_GlobalInvocationID.x;
+  uint y = gl_WorkGroupID.y;
+  uint rowUnits = root.params.jobs[j].rowUnits;
+  if (x >= rowUnits || y >= root.params.jobs[j].rows) return;
+  uint local = z - root.params.jobs[j].firstZ;
+  uint slices = root.params.jobs[j].slices;
+  uint layer = local / slices;
+  uint slice = local - layer * slices;
+  uint unit = root.params.jobs[j].unit;
+  uint s = layer * root.params.jobs[j].srcLayerStride + slice * root.params.jobs[j].srcSliceStride + y * root.params.jobs[j].srcRowStride
+    + x * root.params.jobs[j].srcUnitStride;
+  uint d = layer * root.params.jobs[j].dstLayerStride + slice * root.params.jobs[j].dstSliceStride + y * root.params.jobs[j].dstRowStride
+    + x * unit;
+  U8 src = root.params.jobs[j].src;
+  U8 dst = root.params.jobs[j].dst;
+  uint samples = root.params.jobs[j].samples;
+  if (samples > 1u) {
+    uint stride = root.params.jobs[j].sampleStride;
+    uint sum = 0u;
+    for (uint i = 0u; i < samples; i++) sum += uint(src.v[s + i * stride]);
+    dst.v[d] = uint8_t((sum + samples / 2u) / samples);
+    return;
+  }
+  if (unit == 16u) {
+    U128(dst).v[d >> 4] = U128(src).v[s >> 4];
+  } else if (unit == 8u) {
+    U64(dst).v[d >> 3] = U64(src).v[s >> 3];
+  } else if (unit == 4u) {
+    U32(dst).v[d >> 2] = U32(src).v[s >> 2];
+  } else if (unit == 2u) {
+    U16(dst).v[d >> 1] = U16(src).v[s >> 1];
+  } else {
+    dst.v[d] = src.v[s];
+  }
+}

@@ -1,0 +1,245 @@
+// SPDX-License-Identifier: BSD-3-Clause
+// The Mali backend's blits that filter or convert (Transfers.swift): a compute job whose texture unit reads the source (its
+// filter, its decoding of the format and of sRGB, valhall 05 section 5.3 and 12b) and whose stores write each destination
+// texel in the destination's format through memory accesses. The jobs are blitRaw.comp's; `kind` says how the source is read:
+// 0 a float 2D array sampled at the scaled centre, 1 a float 3D image sampled likewise, 2 and 3 an unsigned or signed integer
+// image fetched at the nearest texel (its slices or layers as an array). `format` says how the destination stores a texel:
+// bits 3:0 the type (0 unorm, 1 snorm, 2 uint, 3 sint, 4 float, 5 sRGB, 8 rgb10a2, 9 rg11b10 float, 10 rgb9e5), 6:4 the
+// channels, 13:8 the bits of each, 16 red and blue exchanged. The samplers are the job's own (0 nearest, 1 linear; clamped to
+// the edge, the clamp-integer bits clear as 03 section 3.7 has them for copy and blit shaders).
+#version 460
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_nonuniform_qualifier : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
+#extension GL_EXT_shader_8bit_storage : require
+#extension GL_EXT_shader_16bit_storage : require
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(set = 0, binding = 0) uniform texture2DArray floats[];
+layout(set = 0, binding = 1) uniform sampler samplers[];
+layout(set = 0, binding = 5) uniform texture3D volumes[];
+layout(set = 0, binding = 6) uniform utexture2DArray uints[];
+layout(set = 0, binding = 7) uniform itexture2DArray sints[];
+layout(buffer_reference, std430, buffer_reference_align = 1) buffer U8 { uint8_t v[]; };
+layout(buffer_reference, std430, buffer_reference_align = 2) buffer U16 { uint16_t v[]; };
+layout(buffer_reference, std430, buffer_reference_align = 4) buffer U32 { uint v[]; };
+layout(buffer_reference, std430, buffer_reference_align = 8) buffer U64 { uvec2 v[]; };
+layout(buffer_reference, std430, buffer_reference_align = 16) buffer U128 { uvec4 v[]; };
+struct Blit {
+  U8 src;
+  U8 dst;
+  uint bytes;
+  uint srcRowStride;
+  uint srcSliceStride;
+  uint srcLayerStride;
+  uint dstRowStride;
+  uint dstSliceStride;
+  uint dstLayerStride;
+  uint dx;
+  uint dy;
+  uint dz;
+  uint w;
+  uint h;
+  uint d;
+  float sx;
+  float sy;
+  float sz;
+  float sw;
+  float sh;
+  float sd;
+  uint flips;
+  uint srcWidth;
+  uint srcHeight;
+  uint srcDepth;
+  uint firstZ;
+  uint textureIndex;
+  uint samplerIndex;
+  uint format;
+  uint kind;
+  uint pad0;
+  uint pad1;
+};
+layout(buffer_reference, std430, buffer_reference_align = 8) readonly buffer Params { U32 table; uint count; uint pad; Blit jobs[]; };
+layout(push_constant) uniform Root { Params params; } root;
+
+/// Round to nearest even, to a binary16's bits (the float's own rule, as the CPU's codec does it).
+uint toHalf(float f) {
+  uint bits = floatBitsToUint(f);
+  uint sign = (bits >> 16) & 0x8000u;
+  int e = int((bits >> 23) & 0xFFu);
+  uint m = bits & 0x7FFFFFu;
+  if (e == 255) return sign | 0x7C00u | (m != 0u ? 0x200u : 0u);
+  int exp = e - 127 + 15;
+  if (exp >= 31) return sign | 0x7C00u;
+  if (exp <= 0) {
+    if (exp < -10) return sign;
+    uint full = m | 0x800000u;
+    uint shift = uint(14 - exp);
+    uint hv = full >> shift;
+    uint rem = full & ((1u << shift) - 1u);
+    uint mid = 1u << (shift - 1u);
+    if (rem > mid || (rem == mid && (hv & 1u) == 1u)) hv += 1u;
+    return sign | hv;
+  }
+  uint hv = (uint(exp) << 10) | (m >> 13);
+  uint rem = m & 0x1FFFu;
+  if (rem > 0x1000u || (rem == 0x1000u && (hv & 1u) == 1u)) hv += 1u;
+  return sign | hv;
+}
+
+/// An unsigned float of a 5-bit exponent and `mBits` mantissa bits (the 11 and 10-bit floats), to nearest even.
+uint toSmallFloat(float f, uint mBits) {
+  if (!(f > 0.0)) return 0u;
+  uint top = (0x1Eu << mBits) | ((1u << mBits) - 1u);
+  uint bits = floatBitsToUint(f);
+  int e = int((bits >> 23) & 0xFFu) - 127 + 15;
+  if (e >= 31) return top;
+  if (e <= 0) {
+    float scaled = f / 6.103515625e-05 * float(1u << mBits);
+    return uint(min(scaled + 0.5, float((1u << mBits) - 1u)));
+  }
+  uint m = (bits & 0x7FFFFFu) >> (23u - mBits);
+  uint rem = bits & ((1u << (23u - mBits)) - 1u);
+  uint hv = 1u << (22u - mBits);
+  uint exp = uint(e);
+  if (rem > hv || (rem == hv && (m & 1u) == 1u)) m += 1u;
+  if ((m >> mBits) != 0u) {
+    m = 0u;
+    exp += 1u;
+  }
+  if (exp >= 31u) return top;
+  return (exp << mBits) | m;
+}
+
+float srgbEncode(float c) { return c <= 0.0031308 ? c * 12.92 : 1.055 * pow(c, 1.0 / 2.4) - 0.055; }
+
+float roundAway(float v) { return v < 0.0 ? -floor(-v + 0.5) : floor(v + 0.5); }
+
+/// One channel of `bits` bits of the type (the unpacked types), from the float or the integer the source gave.
+uint channel(uint type, uint bits, float f, uint u, bool colour) {
+  uint maxv = bits >= 32u ? 0xFFFFFFFFu : (1u << bits) - 1u;
+  if (type == 0u || type == 5u) {
+    float c = clamp(f, 0.0, 1.0);
+    if (type == 5u && colour) c = clamp(srgbEncode(c), 0.0, 1.0);
+    return uint(c * float(maxv) + 0.5);
+  }
+  if (type == 1u) {
+    float m = float((1u << (bits - 1u)) - 1u);
+    return uint(int(roundAway(clamp(f, -1.0, 1.0) * m))) & maxv;
+  }
+  if (type == 2u) return min(u, maxv);
+  if (type == 3u) {
+    int s = int(u);
+    if (bits < 32u) {
+      int hi = int((1u << (bits - 1u)) - 1u);
+      s = clamp(s, -hi - 1, hi);
+    }
+    return uint(s) & maxv;
+  }
+  if (bits == 16u) return toHalf(f);
+  return floatBitsToUint(f);
+}
+
+/// The texel's bytes as words, little-endian.
+uvec4 encode(uint format, vec4 f, uvec4 u) {
+  uint type = format & 15u;
+  uvec4 out_ = uvec4(0u);
+  if (type == 8u) {
+    uvec4 q = uvec4(clamp(f, 0.0, 1.0) * vec4(1023.0, 1023.0, 1023.0, 3.0) + 0.5);
+    out_.x = q.x | (q.y << 10) | (q.z << 20) | (q.w << 30);
+    return out_;
+  }
+  if (type == 9u) {
+    out_.x = toSmallFloat(f.x, 6u) | (toSmallFloat(f.y, 6u) << 11) | (toSmallFloat(f.z, 5u) << 22);
+    return out_;
+  }
+  if (type == 10u) {
+    vec3 c = clamp(f.xyz, 0.0, 65408.0);
+    float big = max(c.x, max(c.y, c.z));
+    int expo = big > 0.0 ? int((floatBitsToUint(big) >> 23) & 0xFFu) - 127 : -16;
+    expo = max(expo, -16) + 16;
+    float scale = uintBitsToFloat(uint(expo - 15 - 9 + 127) << 23);
+    if (roundAway(big / scale) >= 512.0) {
+      expo += 1;
+      scale *= 2.0;
+    }
+    uvec3 m = uvec3(min(vec3(roundAway(c.x / scale), roundAway(c.y / scale), roundAway(c.z / scale)), vec3(511.0)));
+    out_.x = m.x | (m.y << 9) | (m.z << 18) | (uint(expo) << 27);
+    return out_;
+  }
+  uint count = (format >> 4) & 7u;
+  uint bits = (format >> 8) & 63u;
+  if (((format >> 16) & 1u) != 0u) {
+    f = f.bgra;
+    u = u.bgra;
+  }
+  for (uint c = 0u; c < count; c++) {
+    uint v = channel(type, bits, f[c], u[c], c < 3u);
+    uint at = c * bits;
+    out_[at >> 5] |= v << (at & 31u);
+  }
+  return out_;
+}
+
+void main() {
+  uint z = gl_WorkGroupID.z;
+  uint j = root.params.table.v[z];
+  uint x = gl_GlobalInvocationID.x;
+  uint y = gl_GlobalInvocationID.y;
+  uint w = root.params.jobs[j].w;
+  uint h = root.params.jobs[j].h;
+  if (x >= w || y >= h) return;
+  uint d = root.params.jobs[j].d;
+  uint local = z - root.params.jobs[j].firstZ;
+  uint layer = local / d;
+  uint slice = local - layer * d;
+  uint flips = root.params.jobs[j].flips;
+  float u = (float(x) + 0.5) / float(w);
+  float v = (float(y) + 0.5) / float(h);
+  float t = (float(slice) + 0.5) / float(d);
+  if ((flips & 1u) != 0u) u = 1.0 - u;
+  if ((flips & 2u) != 0u) v = 1.0 - v;
+  if ((flips & 4u) != 0u) t = 1.0 - t;
+  // The position in the source level's texels.
+  float px = root.params.jobs[j].sx + u * root.params.jobs[j].sw;
+  float py = root.params.jobs[j].sy + v * root.params.jobs[j].sh;
+  float pz = root.params.jobs[j].sz + t * root.params.jobs[j].sd;
+  vec2 size = vec2(float(root.params.jobs[j].srcWidth), float(root.params.jobs[j].srcHeight));
+  float depth = float(root.params.jobs[j].srcDepth);
+  uint kind = root.params.jobs[j].kind;
+  uint ti = root.params.jobs[j].textureIndex;
+  uint si = root.params.jobs[j].samplerIndex;
+  vec4 f = vec4(0.0);
+  uvec4 q = uvec4(0u);
+  if (kind == 0u) {
+    f = textureLod(sampler2DArray(floats[ti], samplers[si]), vec3(vec2(px, py) / size, float(layer)), 0.0);
+  } else if (kind == 1u) {
+    f = textureLod(sampler3D(volumes[ti], samplers[si]), vec3(vec2(px, py) / size, pz / depth), 0.0);
+  } else {
+    // Integer formats are never filtered: the nearest texel, its slice of a volume or its layer of an array.
+    ivec2 n = clamp(ivec2(floor(vec2(px, py))), ivec2(0), ivec2(size) - 1);
+    int nz = clamp(int(floor(pz)), 0, int(depth) - 1);
+    ivec3 at = ivec3(n, int(layer) + nz);
+    if (kind == 2u) {
+      q = texelFetch(usampler2DArray(uints[ti], samplers[0]), at, 0);
+    } else {
+      q = uvec4(texelFetch(isampler2DArray(sints[ti], samplers[0]), at, 0));
+    }
+  }
+  uvec4 texel = encode(root.params.jobs[j].format, f, q);
+  uint bytes = root.params.jobs[j].bytes;
+  uint o = layer * root.params.jobs[j].dstLayerStride + (root.params.jobs[j].dz + slice) * root.params.jobs[j].dstSliceStride
+    + (root.params.jobs[j].dy + y) * root.params.jobs[j].dstRowStride + (root.params.jobs[j].dx + x) * bytes;
+  U8 dst = root.params.jobs[j].dst;
+  if (bytes == 16u) {
+    U128(dst).v[o >> 4] = texel;
+  } else if (bytes == 8u) {
+    U64(dst).v[o >> 3] = texel.xy;
+  } else if (bytes == 4u) {
+    U32(dst).v[o >> 2] = texel.x;
+  } else if (bytes == 2u) {
+    U16(dst).v[o >> 1] = uint16_t(texel.x);
+  } else {
+    dst.v[o] = uint8_t(texel.x);
+  }
+}

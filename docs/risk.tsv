@@ -125,10 +125,10 @@ graphics/loinnir/	all	LoinnirTests,GPUCoreTests	boot-venus,boot-board	man
 graphics/core/	all	GPUCoreTests,GPUCoreMaliTests,LoinnirTests	boot-venus,boot-board	man
 graphics/core/mali/	all	GPUCoreMaliTests,GPUCoreTests	boot-board	man
 graphics/venus/	all	VenusTests,VenusDriverTests,LoinnirTests	boot-venus	man
-graphics/compiler/	all	ShaderCompilerTests,ValhallBackendTests,ValhallAluTests,VulkanLoweringTests	boot-venus	man
+graphics/compiler/	all	ShaderCompilerTests,ValhallBackendTests,ValhallAluTests,VulkanLoweringTests,GPUCoreMaliTests	boot-venus	man
 graphics/compiler/testkit/	-	ShaderCompilerTests,ValhallBackendTests,ValhallAluTests,VulkanLoweringTests	-	-
 graphics/compiler/valhall/backend/	all	ValhallBackendTests,ValhallAluTests,GPUCoreMaliTests,VulkanLoweringTests	boot-venus	man
-graphics/compiler/valhall/interp/	-	ValhallInterpTests,ValhallBackendTests,ValhallAluTests	-	-
+graphics/compiler/valhall/interp/	-	ValhallInterpTests,ValhallBackendTests,ValhallAluTests,GPUCoreMaliTests	-	-
 graphics/compiler/valhall/	all	ValhallISATests	boot-venus	man
 graphics/compiler/valhall/alu/	-	ValhallAluTests	-	man
 graphics/vulkan/drivers/core/lowering/	all	VulkanLoweringTests	boot-venus	man

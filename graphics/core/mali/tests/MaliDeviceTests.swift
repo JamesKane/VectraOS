@@ -18,9 +18,12 @@ func bytes(_ words: [UInt32]) -> [UInt8] {
   return out
 }
 
+/// A device over the fake transport whose transfer kernels run on the interpreter (KernelRunner.swift).
 func device() throws -> (MaliDevice, FakeTransport) {
   let t = FakeTransport()
-  return (try MaliDevice(transport: t), t)
+  let gpu = try MaliDevice(transport: t)
+  _ = KernelRunner(gpu, t)
+  return (gpu, t)
 }
 
 func trianglePipeline(_ gpu: MaliDevice, _ format: PixelFormat = .rgba8) throws -> GPUPipeline {
@@ -244,9 +247,11 @@ func trianglePipeline(_ gpu: MaliDevice, _ format: PixelFormat = .rgba8) throws 
     #expect(gpu.completed == 2)
     t.groupFault = 0
     try gpu.graphicsQueue.submit(list(), wait: 2, signal: 3)
-    #expect(t.groups.count == 1 && gpu.completed == 3)
-    // The new group's first stream initialises the queues again (its first instruction is not a MOVE of the heap).
-    #expect(t.submits.count == 3 && t.submits[2].group != t.submits[0].group)
+    // A render group and the compute group of the copies.
+    #expect(t.groups.count == 2 && gpu.completed == 3)
+    // The new render group's first stream initialises the queues again (its first instruction is not a MOVE of the heap).
+    let passes = t.submits.filter { $0.jobs.count == 2 }
+    #expect(passes.count == 3 && passes[2].group != passes[0].group)
   }
 
   @Test func readbackMemoryAndATargetOnlyTheCPUReadsAreCachedAndMaintained() throws {
@@ -266,8 +271,10 @@ func trianglePipeline(_ gpu: MaliDevice, _ format: PixelFormat = .rgba8) throws 
     }
     list.copy(target, to: back)
     try gpu.graphicsQueue.submit(list, wait: 0, signal: 1)
-    // After the GPU's pass and before the CPU's copy out of it, the target's lines were dropped; once all is done the
-    // readback memory the CPU wrote was cleaned for the CPU to read.
+    // The copy out is the GPU's: nothing is maintained between the pass and it. Once the CPU has waited for the work, the
+    // lines of what the GPU wrote are dropped for the CPU to read.
+    #expect(cleans(gpu.images[target.handle]!.region) == 0 && cleans(gpu.memories[back.handle]!) == 0)
+    try gpu.wait(1)
     #expect(cleans(gpu.images[target.handle]!.region) >= 1)
     #expect(cleans(gpu.memories[back.handle]!) >= 1)
     #expect(cleans(gpu.memories[up.handle]!) == 0 && cleans(gpu.images[both.handle]!.region) == 0)

@@ -100,6 +100,10 @@ func refusal(_ text: String, lower: Bool = false) -> String {
       %l = OpTypeInt 64 0
       """)
     #expect(m.contains("OpTypeInt %1: 64-bit integers need capability Int64"), "\(m)")
+    // An 8 or 16-bit integer: with Int8 or Int16, or for storage alone with a storage capability (as glslang declares them).
+    #expect(refusal("OpCapability Shader\nOpMemoryModel Logical GLSL450\n%b = OpTypeInt 8 0").contains("need capability Int8"))
+    #expect(refusal("OpCapability Shader\nOpCapability StorageBuffer8BitAccess\nOpMemoryModel Logical GLSL450\n%b = OpTypeInt 8 0") == "")
+    #expect(refusal("OpCapability Shader\nOpCapability StorageBuffer16BitAccess\nOpMemoryModel Logical GLSL450\n%s = OpTypeInt 16 0") == "")
     let h = refusal(
       """
       OpCapability Shader

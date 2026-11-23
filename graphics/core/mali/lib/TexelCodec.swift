@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
-// Texels as floats and as bytes, on the CPU: what the copies, blits and clears of MaliDevice do to an image's memory (the images
-// are linear and CPU-visible, so a step of the CPU does them in order with the GPU's passes; gpucore(2)). One codec for every
-// uncompressed colour format the core names.
+// Texels as floats and as bytes, on the CPU: the one texel a clear writes, made from its value before the GPU's clear kernel
+// repeats it (Transfers.swift; gpucore(2)). One codec for every uncompressed colour format the core names.
 
 import GPUCore
 

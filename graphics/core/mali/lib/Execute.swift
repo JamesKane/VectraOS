@@ -2,10 +2,10 @@
 
 // Running a list on a Mali GPU: `submit` validates it (the core's rules),
 // turns it into steps (a compute dispatch, a render pass of its draws, or a
-// CPU copy or clear), and runs the steps in order. The streams are MaliCore's
-// recipes (ComputeDispatch, RenderPass) laid out in memory of this process's
-// VM, a block a step; the last GPU step signals the timeline itself, and
-// each step before it is waited for, so what follows sees what it wrote.
+// transfer's kernel, Transfers.swift), and runs the steps in order. The streams
+// are MaliCore's recipes (ComputeDispatch, RenderPass) laid out in memory of
+// this process's VM, a block a step; the last step signals the timeline itself,
+// and each step before it is waited for, so what follows sees what it wrote.
 // See MaliDevice.swift for what this v0 refuses.
 
 import GPUCore
@@ -60,26 +60,13 @@ struct ZSBinding {
 }
 
 enum Step {
-  /// With `indirect`, the grid is the three words at that address when the dispatch runs.
-  case dispatch(ComputeShader, FauLayout, root: UInt64, grid: Dim3, indirect: UInt64?)
+  /// With `indirect`, the grid is the three words at that address when the dispatch runs. A transfer's kernel names itself
+  /// (`kernel`), and the blit kernel its own heap of samplers and textures (`heap`: the table's address and bytes).
+  case dispatch(ComputeShader, FauLayout, root: UInt64, grid: Dim3, indirect: UInt64?, heap: (address: UInt64, bytes: Int)? = nil,
+                kernel: TransferKernel? = nil)
   case render(DrawPass)
   /// The system timestamp, stored at this address once everything before has finished.
   case timestamp(UInt64)
-  case clear(ImageRecord, [Float])
-  /// A pass with a depth and stencil target and no draw: the target is filled with the clear values by the CPU.
-  case clearDepthStencil(ZSBinding)
-  case copyBuffer(Region, Int, Region, Int, Int)
-  case copyBufferToImage(Region, Int, ImageRecord)
-  case copyImageToBuffer(ImageRecord, Region, Int)
-  /// The copies, blits, clears and fills of Transfers.swift.
-  case transfer(Transfer)
-
-  var onGPU: Bool {
-    switch self {
-    case .dispatch, .render, .timestamp: true
-    default: false
-    }
-  }
 }
 
 extension MaliDevice {
@@ -90,26 +77,13 @@ extension MaliDevice {
     if let e = rule.accept(wait: wait, signal: signal) { throw e }
     var held: [Region] = []
     do {
-      let steps = try plan(list)
-      var gpuRan = false
+      let steps = try plan(list, held: &held)
+      // Every step is the GPU's, each ordered after the one before it (`launch`); the last signals the timeline itself.
       for (i, step) in steps.enumerated() {
-        let last = i == steps.count - 1
-        // A step of the CPU's reads what the GPU wrote before it: the CPU's cache is brought up to date first.
-        if !step.onGPU && gpuRan {
-          syncCached()
-          gpuRan = false
-        }
-        if step.onGPU {
-          gpuMayHaveWritten(step)
-          gpuRan = true
-        }
-        try run(step, signal: last && step.onGPU ? signal : nil, held: &held)
+        gpuMayHaveWritten(step)
+        try run(step, signal: i == steps.count - 1 ? signal : nil, held: &held)
       }
-      if steps.isEmpty || !(steps.last!.onGPU) {
-        // Done, and the CPU's caches too, before the value says so.
-        syncCached()
-        transport.raiseSync(timeline, to: signal)
-      }
+      if steps.isEmpty { transport.raiseSync(timeline, to: signal) }
     } catch {
       // Whoever waits for the value is not left waiting for ever.
       transport.raiseSync(timeline, to: signal)
@@ -121,8 +95,10 @@ extension MaliDevice {
 
   // MARK: The plan
 
-  func plan(_ list: GPUCommandList) throws(GPUError) -> [Step] {
+  /// The steps of a list; a transfer's parameters are laid out in memory now, held until the submission is done.
+  func plan(_ list: GPUCommandList, held: inout [Region]) throws(GPUError) -> [Step] {
     var steps: [Step] = []
+    func transfer(_ t: Transfer) throws(GPUError) { steps += try transferSteps(t, held: &held) }
     var target: ImageRecord?
     var clear: [Float] = []
     var draws: [PassDraw] = []
@@ -211,7 +187,7 @@ extension MaliDevice {
         guard activeQuery == 0 else { throw .invalid("a pass ends inside an occlusion query") }
         if draws.isEmpty {
           // A pass that keeps the contents and draws nothing changes nothing.
-          // The CPU clears what the views cover: their level and the pass's layers.
+          // The clear kernel clears what the views cover: their level and the pass's layers.
           func range(_ v: ImageView, _ aspects: ImageAspects = .color) -> [ImageSubresourceRange] {
             if viewMask == 0 {
               return [ImageSubresourceRange(aspects: aspects, baseMip: v.baseMip, mipCount: 1, baseLayer: v.baseLayer, layerCount: UInt32(layers))]
@@ -222,39 +198,38 @@ extension MaliDevice {
             }
             return out
           }
-          func clearStep(_ image: ImageRecord, _ view: ImageView, _ c: [Float]) -> Step {
-            let whole = view.baseMip == 0 && view.baseLayer == 0 && image.descriptor.mipLevels == 1 && image.descriptor.layers == 1
-            return whole ? .clear(image, c) : .transfer(.clearColor(image, .float(c[0], c[1], c[2], c[3]), range(view)))
+          func clearStep(_ image: ImageRecord, _ view: ImageView, _ c: [Float]) throws(GPUError) {
+            try transfer(.clearColor(image, .float(c[0], c[1], c[2], c[3]), range(view)))
           }
-          if !loads { steps.append(clearStep(record, views[0], clear)) }
+          if !loads { try clearStep(record, views[0], clear) }
           // A pass that draws nothing resolves its clear (or what it kept) into each resolve image.
           for v in resolves {
             if v.of == 0 && loads {
-              steps.append(.transfer(.resolve(record, v.image, [ImageCopyRegion(
+              try transfer(.resolve(record, v.image, [ImageCopyRegion(
                 srcSubresource: ImageSubresourceLayers(mip: views[0].baseMip, baseLayer: views[0].baseLayer, layerCount: UInt32(layers)),
                 dstSubresource: ImageSubresourceLayers(mip: v.view.baseMip, baseLayer: v.view.baseLayer, layerCount: UInt32(layers)),
-                extent: Extent3D(width: UInt32(views[0].width), height: UInt32(views[0].height)))])))
+                extent: Extent3D(width: UInt32(views[0].width), height: UInt32(views[0].height)))]))
             } else {
-              steps.append(clearStep(v.image, v.view, v.of == 0 ? clear : extraTargets[v.of - 1].clear))
+              try clearStep(v.image, v.view, v.of == 0 ? clear : extraTargets[v.of - 1].clear)
             }
           }
-          // No fragment work runs for the queries of a pass with no draw: the CPU zeroes them.
-          for (q, index) in queryCells { q.region.buffer.store(UInt64(0), at: index * 8) }
-          for (i, e) in extraTargets.enumerated() { steps.append(clearStep(e.image, views[i + 1], e.clear)) }
+          // No fragment work runs for the queries of a pass with no draw: a fill zeroes them, in order with the rest.
+          for (q, index) in queryCells { try transfer(.fill(q.region, index * 8, 8, 0)) }
+          for (i, e) in extraTargets.enumerated() { try clearStep(e.image, views[i + 1], e.clear) }
           if let z = zs, let v = zsView, !z.loadDepth && !z.loadStencil {
             let f = z.image.descriptor.format
             var aspects = ImageAspects(rawValue: 0)
             if f.hasDepth && z.storeDepth { aspects = aspects | .depth }
             if f.hasStencil && z.storeStencil { aspects = aspects | .stencil }
             if !aspects.isEmpty {
-              steps.append(.transfer(.clearDepthStencil(z.image, z.clearDepth, z.clearStencil, range(v, aspects))))
+              try transfer(.clearDepthStencil(z.image, z.clearDepth, z.clearStencil, range(v, aspects)))
             }
             if let r = z.resolve {
-              steps.append(.transfer(.clearDepthStencil(r.image, z.clearDepth, z.clearStencil, range(r.view, f.aspects))))
+              try transfer(.clearDepthStencil(r.image, z.clearDepth, z.clearStencil, range(r.view, f.aspects)))
             }
           } else if let z = zs, let v = zsView, let r = z.resolve {
             // Kept and drawn nothing: sample 0 of what is there.
-            steps.append(.transfer(.copyImage(z.image, r.image, [zsResolveRegion(z, v, r.view, layers: layers)])))
+            try transfer(.copyImage(z.image, r.image, [zsResolveRegion(z, v, r.view, layers: layers)]))
           }
         } else {
           var storage = false
@@ -265,7 +240,7 @@ extension MaliDevice {
             zsView: zsView, layers: layers, viewMask: viewMask)))
           // A plane both stored and resolved: the pass writes every sample, and sample 0 is copied to the resolve image after it.
           if let z = zs, let v = zsView, let r = z.resolve, z.storeDepth || z.storeStencil {
-            steps.append(.transfer(.copyImage(z.image, r.image, [zsResolveRegion(z, v, r.view, layers: layers)])))
+            try transfer(.copyImage(z.image, r.image, [zsResolveRegion(z, v, r.view, layers: layers)]))
           }
         }
         target = nil
@@ -355,40 +330,40 @@ extension MaliDevice {
         break  // one submission at a time: every step is already ordered after the last
       case .copyBuffer(let from, let fromOffset, let to, let toOffset, let bytes):
         guard let a = memories[from.handle], let b = memories[to.handle] else { throw .invalid("memory that isn't this device's") }
-        steps.append(.copyBuffer(a, fromOffset, b, toOffset, bytes))
+        try transfer(.copyBuffer(a, fromOffset, b, toOffset, bytes))
       case .copyBufferToImage(let m, let offset, let image):
         guard let a = memories[m.handle], let i = images[image.handle] else { throw .invalid("a resource that isn't this device's") }
-        steps.append(.transfer(.bufferToImage(a, i, [wholeLevel(i, offset)])))
+        try transfer(.bufferToImage(a, i, [wholeLevel(i, offset)]))
       case .copyImageToBuffer(let image, let m, let offset):
         guard let a = memories[m.handle], let i = images[image.handle] else { throw .invalid("a resource that isn't this device's") }
-        steps.append(.transfer(.imageToBuffer(i, a, [wholeLevel(i, offset)])))
+        try transfer(.imageToBuffer(i, a, [wholeLevel(i, offset)]))
       case .copyImage(let src, let dst, let regions):
         guard let a = images[src.handle], let b = images[dst.handle] else { throw .invalid("an image that isn't this device's") }
-        steps.append(.transfer(.copyImage(a, b, regions)))
+        try transfer(.copyImage(a, b, regions))
       case .blitImage(let src, let dst, let regions, let filter):
         guard let a = images[src.handle], let b = images[dst.handle] else { throw .invalid("an image that isn't this device's") }
-        steps.append(.transfer(.blit(a, b, regions, filter)))
+        try transfer(.blit(a, b, regions, filter))
       case .copyBufferToImageRegions(let m, let image, let regions):
         guard let a = memories[m.handle], let i = images[image.handle] else { throw .invalid("a resource that isn't this device's") }
-        steps.append(.transfer(.bufferToImage(a, i, regions)))
+        try transfer(.bufferToImage(a, i, regions))
       case .copyImageToBufferRegions(let image, let m, let regions):
         guard let a = memories[m.handle], let i = images[image.handle] else { throw .invalid("a resource that isn't this device's") }
-        steps.append(.transfer(.imageToBuffer(i, a, regions)))
+        try transfer(.imageToBuffer(i, a, regions))
       case .fillBuffer(let m, let offset, let bytes, let value):
         guard let a = memories[m.handle] else { throw .invalid("memory that isn't this device's") }
-        steps.append(.transfer(.fill(a, offset, bytes, value)))
+        try transfer(.fill(a, offset, bytes, value))
       case .updateBuffer(let m, let offset, let data):
         guard let a = memories[m.handle] else { throw .invalid("memory that isn't this device's") }
-        steps.append(.transfer(.update(a, offset, data)))
+        try transfer(.update(a, offset, data))
       case .clearColorImage(let image, let color, let ranges):
         guard let i = images[image.handle] else { throw .invalid("an image that isn't this device's") }
-        steps.append(.transfer(.clearColor(i, color, ranges)))
+        try transfer(.clearColor(i, color, ranges))
       case .resolveImage(let src, let dst, let regions):
         guard let a = images[src.handle], let b = images[dst.handle] else { throw .invalid("an image that isn't this device's") }
-        steps.append(.transfer(.resolve(a, b, regions)))
+        try transfer(.resolve(a, b, regions))
       case .clearDepthStencilImage(let image, let depth, let stencil, let ranges):
         guard let i = images[image.handle] else { throw .invalid("an image that isn't this device's") }
-        steps.append(.transfer(.clearDepthStencil(i, depth, stencil, ranges)))
+        try transfer(.clearDepthStencil(i, depth, stencil, ranges))
       case .clearAttachments(let attachments, let rects):
         try appendClears(attachments, rects, into: &draws, target: target, zs: zs, view: views.first, layers: viewMask != 0 ? 1 : layers,
                          viewMask: viewMask)
@@ -502,77 +477,13 @@ extension MaliDevice {
 
   func run(_ step: Step, signal: UInt64?, held: inout [Region]) throws(GPUError) {
     switch step {
-    case .dispatch(let shader, let layout, let root, let grid, let indirect):
-      try runDispatch(shader, layout, root: root, grid: grid, indirect: indirect, signal: signal, held: &held)
+    case .dispatch(let shader, let layout, let root, let grid, let indirect, let heap, let kernel):
+      if let k = kernel { transferKernelRan?(k, root, grid, heap) }
+      try runDispatch(shader, layout, root: root, grid: grid, indirect: indirect, heap: heap, signal: signal, held: &held)
     case .timestamp(let address):
       try runTimestamps([address], signal: signal, held: &held)
     case .render(let pass):
       try runRender(pass, signal: signal, held: &held)
-    case .transfer(let t):
-      runTransfer(t)
-    case .clear(let image, let color):
-      image.region.touched = true
-      clearImage(image, color)
-      // A pass that keeps the contents reads them from memory: the CPU's lines go there first.
-      if image.region.cached { image.region.buffer.cleanInvalidate() }
-    case .clearDepthStencil(let z):
-      clearDepthStencil(z)
-    case .copyBuffer(let a, let ao, let b, let bo, let bytes):
-      b.touched = true
-      unsafe (b.buffer.pointer + bo).copyMemory(from: UnsafeRawPointer(a.buffer.pointer + ao), byteCount: bytes)
-    case .copyBufferToImage(let m, let offset, let image):
-      image.region.touched = true
-      let row = Int(image.descriptor.width) * image.descriptor.format.bytesPerPixel
-      for y in 0..<Int(image.descriptor.height) {
-        unsafe (image.region.buffer.pointer + y * image.rowStride)
-          .copyMemory(from: UnsafeRawPointer(m.buffer.pointer + offset + y * row), byteCount: row)
-      }
-    case .copyImageToBuffer(let image, let m, let offset):
-      m.touched = true
-      let row = Int(image.descriptor.width) * image.descriptor.format.bytesPerPixel
-      for y in 0..<Int(image.descriptor.height) {
-        unsafe (m.buffer.pointer + offset + y * row)
-          .copyMemory(from: UnsafeRawPointer(image.region.buffer.pointer + y * image.rowStride), byteCount: row)
-      }
-    }
-  }
-
-  /// A depth and stencil attachment cleared by a pass that drew nothing: the planes it stores are filled with the clear values.
-  func clearDepthStencil(_ z: ZSBinding) {
-    let image = z.image
-    let format = image.descriptor.format
-    guard (format.hasDepth && z.storeDepth) || (format.hasStencil && z.storeStencil) else { return }
-    let pointer = unsafe image.region.buffer.pointer
-    for y in 0..<Int(image.descriptor.height) * Int(image.descriptor.samples) {
-      let row = unsafe pointer + (y / Int(image.descriptor.height)) * image.layout.levels[0].surfaceStride
-        + (y % Int(image.descriptor.height)) * image.rowStride
-      for x in 0..<Int(image.descriptor.width) {
-        switch format {
-        case .depth32f: unsafe row.storeBytes(of: z.clearDepth.bitPattern, toByteOffset: x * 4, as: UInt32.self)
-        case .depth16: unsafe row.storeBytes(of: UInt16(min(max(z.clearDepth, 0), 1) * 65535 + 0.5), toByteOffset: x * 2, as: UInt16.self)
-        default: unsafe row.storeBytes(of: UInt8(truncatingIfNeeded: z.clearStencil), toByteOffset: x, as: UInt8.self)
-        }
-      }
-    }
-  }
-
-  /// Fills the image with `color` (red, green, blue, alpha), in the image's channel order.
-  func clearImage(_ image: ImageRecord, _ color: [Float]) {
-    func channel(_ v: Float) -> UInt8 { UInt8(min(max(v, 0), 1) * 255 + 0.5) }
-    var pixel = [channel(color[0]), channel(color[1]), channel(color[2]), channel(color[3])]
-    if image.descriptor.format == .bgra8srgb {
-      // The colour channels are stored encoded; the alpha never is.
-      for c in 0..<3 { pixel[c] = UInt8(min(max(ColourFormat.srgbEncode(min(max(color[c], 0), 1)), 0), 1) * 255 + 0.5) }
-    }
-    if image.descriptor.format == .bgra8 || image.descriptor.format == .bgra8srgb { pixel.swapAt(0, 2) }
-    let bpp = image.descriptor.format.bytesPerPixel
-    if image.descriptor.format == .r8 { pixel = [pixel[0]] }
-    let height = Int(image.descriptor.height)
-    for y in 0..<height * Int(image.descriptor.samples) {
-      let row = unsafe image.region.buffer.pointer + (y / height) * image.layout.levels[0].surfaceStride + (y % height) * image.rowStride
-      for x in 0..<Int(image.descriptor.width) {
-        for c in 0..<bpp { unsafe row.storeBytes(of: pixel[c], toByteOffset: x * bpp + c, as: UInt8.self) }
-      }
     }
   }
 
@@ -645,8 +556,10 @@ extension MaliDevice {
     computeSlotsReady = true
   }
 
+  /// A dispatch; with `heap`, a transfer kernel's own heap (Transfers.swift): its samplers from entry 0 (binding 1), its textures
+  /// from entry 2 (every other binding), in place of the device's heap.
   func runDispatch(_ shader: ComputeShader, _ layout: FauLayout, root: UInt64, grid: Dim3, indirect: UInt64? = nil,
-                   signal: UInt64?, held: inout [Region]) throws(GPUError) {
+                   heap own: (address: UInt64, bytes: Int)? = nil, signal: UInt64?, held: inout [Region]) throws(GPUError) {
     let info = transport.info
     var threadStorage: UInt64 = 0
     var workgroupMemory: UInt64 = 0
@@ -665,25 +578,29 @@ extension MaliDevice {
     }
     // The storage images' element 0 is table 2's, the textures' and the samplers' the heap's (binding 0 and 1 of set 0, as the
     // fragment stage names them).
+    let ownHeap = own != nil
     let fau = layout.block(address: { _, _ in 0 }, size: { _, _ in 0 },
                            push: [UInt32(truncatingIfNeeded: root), UInt32(truncatingIfNeeded: root >> 32)],
                            workgroups: (grid.x, grid.y, grid.z),
                            imageHandle: { _, binding in
+                             if ownHeap { return DescriptorHeap.handle(index: binding == 1 ? 0 : 2) }
                              if binding == 0 { return DescriptorHeap.handle(index: Heap.textureBase) }
                              if binding == 1 { return DescriptorHeap.handle(index: Heap.samplerBase) }
                              let base = binding == 3 ? Heap.texelBufferBase : binding == 4 ? Heap.storageTexelBufferBase : Heap.storageBase
                              return ResourceTable.handle(table: DescriptorHeap.storageTableNumber, index: base)
                            },
-                           dummySampler: DescriptorHeap.handle(index: Heap.samplerBase))
+                           dummySampler: DescriptorHeap.handle(index: ownHeap ? 0 : Heap.samplerBase))
     var request = ComputeDispatchRequest(
       shader: shader, grid: grid, fau: fau, threadStorage: threadStorage, workgroupMemory: workgroupMemory,
       limits: computeLimits, requestComputeResource: !computeResourceRequested, initialiseQueue: !computeSlotsReady)
-    if layout.imageBindings.contains(where: { $0.binding >= 2 }) {
+    if let own {
+      request.heapTable = (own.address, own.bytes)
+    } else if layout.imageBindings.contains(where: { $0.binding >= 2 }) {
       // The storage images' descriptors as they stand now: table 2 of the dispatch's resource table.
       let s = try snapshotStorage(held: &held)
       request.storageTable = (s.region.address, s.bytes)
     }
-    if layout.imageBindings.contains(where: { $0.binding < 2 }) || layout.dummySamplerWord >= 0 {
+    if !ownHeap && (layout.imageBindings.contains(where: { $0.binding < 2 }) || layout.dummySamplerWord >= 0) {
       // The textures and samplers as they stand now: table 1.
       let heap = try snapshotHeap(held: &held)
       request.heapTable = (heap.address, (samplerWords.count + textureWords.count) * 4)
