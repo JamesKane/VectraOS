@@ -338,7 +338,6 @@ extension CoreCases {
     // of detail is the quad's (derivatives), so whether a minifying quad takes the minification filter on a one-level texture is the
     // hardware's: the descriptor's maximum level of detail (the last level, or one more) and the sampler's mipmap mode (nearest, or
     // none: the base level always) are tried in each combination, and the case needs one that is right.
-    probing = true
     defer { probing = false }
     if f.samplerMinMagFilters {
       var checker: [UInt8] = []
@@ -386,7 +385,6 @@ extension CoreCases {
       skip("samplers: separate filters", "no separate minify and magnify filters")
     }
 
-    probing = false
     // Level of detail: bias, minimum and maximum, on the four coloured levels.
     if f.mipmaps {
       let levelColors: [[Float]] = [[1, 0, 0, 1], [0, 1, 0, 1], [0, 0, 1, 1], [1, 1, 1, 1]]
@@ -721,23 +719,18 @@ extension CoreCases {
     unsafe source.pointer!.initializeMemory(as: UInt8.self, repeating: 0, count: 4096)
     // A plain store through the imported address: invocation i stores i + 1 in word i; the exporter's pointer reads them.
     let shader = try d.makeComputePipeline(spirv: LoinnirShaders.plainstoreComp)
-    let root = try d.allocate(.upload, bytes: 16)
-    store(root, bytes: le32(UInt32(truncatingIfNeeded: imported.address)) + le32(UInt32(truncatingIfNeeded: imported.address >> 32)))
     var list = GPUCommandList()
-    list.dispatch(shader, root: root.address, x: 1)
+    // The root pointer is the buffer itself (the shader's root block is the words it stores).
+    list.dispatch(shader, root: imported.address, x: 1)
     try run(list)
     let n: UInt32 = 64
     var wrongWords = 0
     for i in 0..<64 where word(source, i) != UInt32(i + 1) { wrongWords += 1 }
-    // A probe: a plain store through a root pointer reads 0 on the Mali backend whatever the memory (gpucore(2)'s BUGS), so
-    // this says what it read and is not judged.
-    probing = true
     if wrongWords != 0 { bad("import: \(wrongWords) of 64 words the GPU stored through the imported address are not in the exporter's pages") }
-    probing = false
     // And the other way: the CPU's write through the import is the exporter's read, and the GPU sees the owner's later write.
     unsafe imported.pointer!.storeBytes(of: 7, toByteOffset: 64, as: UInt32.self)
     if word(source, 16) != 7 { bad("import: a write through the import isn't in the exporter's pages") }
-    ok("import: memory exported and imported again, a write through the import in the exporter's pages (\(n) GPU stores probed)")
+    ok("import: memory exported and imported again, a write through the import in the exporter's pages and \(n) words the GPU stored through the import read through the exporter's pages")
     // An image: drawn into by the GPU, imported as another image, sampled.
     guard rgbaTarget else { return }
     let pattern8 = try image(.rgba8, 8, 8, usage: .sampled | .copyDestination)

@@ -920,7 +920,7 @@ layout above where they differ.
     window's frame is a `scanout` image with packed rows: render targets 40 and 104 pixels wide (rows of 160 and 416 bytes) were drawn
     and read back through the window's mapping exactly, but the texture unit read zeros from a linear plane of 160 or 400-byte rows
     (imported images of rows of 256 and 512 bytes sampled exactly), so an import needs rows of a multiple of 64 bytes. Memory imported
-    and stored to by a compute shader through a root pointer read 0, as root-pointer stores do on this backend (below). The timeline's
+    and stored to by a compute shader (64 words, the root pointer the import's address) read exactly through the exporter. The timeline's
     counter, duplicated without the write right, read 104 after 104 was signalled and refused an add. compose-test: Radharc's GPU
     renderer sampled a 128-wide window's image from a second context in place and uploaded a 100-wide one, both composed as the CPU
     composes them over two frames in the same pages.
