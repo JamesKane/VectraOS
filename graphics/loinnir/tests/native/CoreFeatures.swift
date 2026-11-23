@@ -231,7 +231,16 @@ final class CoreChecks {
     } else {
       print("loinnir-test: skipped: storage images")
     }
-    attempt("atomics on a storage buffer") { () throws(GPUError) in try bufferAtomics() }
+    if f.shaderAtomic32 {
+      attempt("atomics on memory") { () throws(GPUError) in try bufferAtomics() }
+    } else {
+      print("loinnir-test: skipped: atomics on memory (the device does not claim them)")
+    }
+    if f.shaderImageAtomics && gpu.limits.formats(.r32uint).storageAtomic {
+      attempt("image atomics") { () throws(GPUError) in try imageAtomics() }
+    } else {
+      print("loinnir-test: skipped: image atomics (the device does not claim them)")
+    }
     // Texel buffers, where the device has them.
     let tb = gpu.limits.features
     if tb.uniformTexelBuffers && tb.storageTexelBuffers {
@@ -248,77 +257,93 @@ final class CoreChecks {
     if failed != 0 { throw .invalid("\(failed) of the core's features failed") }
   }
 
-  /// Atomics on ordinary memory (allocate(.device), which the GPU maps cacheable): 16384 invocations each add 1 to a counter, add
-  /// their index to a sum and take the maximum of their index, exactly.
+  /// Atomics on memory, which the GPU maps cacheable: 16384 invocations each add 1 to a counter, add their index to a sum and take
+  /// the maximum of their index, exactly, over what the CPU wrote there (a nonzero start, so a result that never left the GPU's
+  /// caches reads as what the CPU wrote, not as zero); and again over what the CPU wrote after the GPU's result, so nothing stale is
+  /// read from the GPU's caches either way. Then device memory the CPU never maps, filled, added to and copied out by the GPU.
   func bufferAtomics() throws(GPUError) {
-    // Atomics need memory the GPU maps cacheable: all memory made from here is. The two ways the stream's end maintains the GPU's
-    // caches are tried, each reported: cleaning only, and cleaning and invalidating (which the next stream reading what the CPU
-    // wrote in between needs).
-    let mali = gpu as? MaliDevice
-    defer { mali?.probeCacheMaintenance(false) }
     let shader = try gpu.makeComputePipeline(spirv: LoinnirShaders.atomicsComp)
     let n: UInt32 = 256 * 64
-    let want = [n, n * (n - 1) / 2, n - 1]
-    var worked = 0
-    for (invalidating, userOnly) in [(true, false), (false, false), (true, true), (false, true)] {
-      mali?.probeCacheMaintenance(true, invalidating: invalidating, userOnly: userOnly)
-      let target = try upload(4096)
-      let root = try upload(16)
-      put32(root, [UInt32(truncatingIfNeeded: target.address), UInt32(truncatingIfNeeded: target.address >> 32)])
-      var list = GPUCommandList()
-      list.dispatch(shader, root: root.address, x: 256)
-      try run(list)
-      // What the memory and the atomics do apart: a plain store through the root pointer, then a store and one atomic add.
-      let plain = try gpu.makeComputePipeline(spirv: LoinnirShaders.plainstoreComp)
-      let single = try gpu.makeComputePipeline(spirv: LoinnirShaders.atomicstoreComp)
-      let probe = try upload(4096)
-      let probeRoot = try upload(16)
-      put32(probeRoot, [UInt32(truncatingIfNeeded: probe.address), UInt32(truncatingIfNeeded: probe.address >> 32)])
-      var one = GPUCommandList()
-      one.dispatch(plain, root: probeRoot.address, x: 1)
-      try run(one)
-      let stored = [word(probe, 0), word(probe, 1), word(probe, 63)]
-      var two = GPUCommandList()
-      two.dispatch(single, root: probeRoot.address, x: 4)
-      try run(two)
-      print("loinnir-test: probe: a plain store read \(stored[0]), \(stored[1]), \(stored[2]) (1, 2, 64 expected); a store and 256 atomic adds read counter \(word(probe, 0)) and word 3 \(word(probe, 3)) (256 and 7 expected)")
-      let got = [word(target, 0), word(target, 1), word(target, 2)]
-      let name = (invalidating ? "clean and invalidate" : "clean") + (userOnly ? ", only the clients' memory cacheable" : ", all memory cacheable")
-      if got != want {
-        print("loinnir-test: atomics with \(name): read \(got[0]), \(got[1]), \(got[2]), expected \(want[0]), \(want[1]), \(want[2])")
-        continue
+    let sum = n * (n - 1) / 2
+    let target = try upload(4096)
+    put32(target, [1000, 2000, 0])
+    var list = GPUCommandList()
+    list.dispatch(shader, root: target.address, x: 256)
+    try run(list)
+    var got = [word(target, 0), word(target, 1), word(target, 2)]
+    if got != [1000 + n, 2000 &+ sum, n - 1] {
+      throw failure("atomics read \(got[0]), \(got[1]), \(got[2]), expected \(1000 + n), \(2000 &+ sum), \(n - 1)")
+    }
+    put32(target, [100, 0, 0])
+    try run(list)
+    got = [word(target, 0), word(target, 1), word(target, 2)]
+    if got != [100 + n, sum, n - 1] {
+      throw failure("atomics after a CPU write read \(got[0]), \(got[1]), \(got[2]), expected \(100 + n), \(sum), \(n - 1)")
+    }
+    // A plain store and atomic adds in one dispatch: invocation 0 stores 7 in word 3, every invocation adds 1 to word 0.
+    let single = try gpu.makeComputePipeline(spirv: LoinnirShaders.atomicstoreComp)
+    let probe = try upload(4096)
+    put32(probe, [0x5E5E_5E5E, 0, 0, 0x5E5E_5E5E])
+    var one = GPUCommandList()
+    one.dispatch(single, root: probe.address, x: 4)
+    try run(one)
+    if word(probe, 0) != 0x5E5E_5E5E &+ 256 || word(probe, 3) != 7 {
+      throw failure("a store and 256 atomic adds read \(word(probe, 0)) and \(word(probe, 3)), expected \(0x5E5E_5E5E &+ 256) and 7")
+    }
+    var device = ""
+    if gpu.limits.features.fillBuffer {
+      let memory = try gpu.allocate(.device, bytes: 4096)
+      let out = try gpu.allocate(.readback, bytes: 4096)
+      var l = GPUCommandList()
+      l.fill(memory, bytes: 16, value: 0)
+      l.barrier(from: .transfer, to: .compute)
+      l.dispatch(shader, root: memory.address, x: 256)
+      l.barrier(from: .compute, to: .transfer)
+      l.copy(memory, to: out, bytes: 16)
+      try run(l)
+      let g = [word(out, 0), word(out, 1), word(out, 2)]
+      if g != [n, sum, n - 1] {
+        throw failure("atomics on device memory read \(g[0]), \(g[1]), \(g[2]), expected \(n), \(sum), \(n - 1)")
       }
-      // And again, onto what the CPU has just written over the GPU's result: nothing stale is read from the GPU's caches.
-      put32(target, [100, 0, 0])
-      try run(list)
-      let again = [word(target, 0), word(target, 1), word(target, 2)]
-      if again != [100 + n, n * (n - 1) / 2, n - 1] {
-        print("loinnir-test: atomics with \(name), after a CPU write: read \(again[0]), \(again[1]), \(again[2])")
-        continue
-      }
-      print("loinnir-test: core feature ok: atomics on an ordinary storage buffer with \(name): \(n) invocations twice, counter, sum and maximum exact")
-      worked += 1
-      if gpu.limits.features.fillBuffer {
-        // Device memory the CPU never maps: filled, added to, and copied out by the GPU's own passes.
-        let device = try gpu.allocate(.device, bytes: 4096)
-        let out = try gpu.allocate(.readback, bytes: 4096)
-        put32(root, [UInt32(truncatingIfNeeded: device.address), UInt32(truncatingIfNeeded: device.address >> 32)])
-        var l = GPUCommandList()
-        l.fill(device, bytes: 16, value: 0)
-        l.barrier(from: .transfer, to: .compute)
-        l.dispatch(shader, root: root.address, x: 256)
-        l.barrier(from: .compute, to: .transfer)
-        l.copy(device, to: out, bytes: 16)
-        try run(l)
-        let g = [word(out, 0), word(out, 1), word(out, 2)]
-        if g != want {
-          throw failure("atomics on device memory read \(g[0]), \(g[1]), \(g[2]), expected \(want[0]), \(want[1]), \(want[2])")
+      device = ", and on device memory filled, added to and copied out by the GPU"
+    }
+    print("loinnir-test: ok: atomics on memory (\(n) invocations twice: counter, sum and maximum exact over what the CPU wrote, a store beside 256 adds\(device))")
+  }
+
+  /// Atomics on an r32uint storage image: each of 64 x 64 invocations adds 1 to texel (x mod 8, y mod 8) and takes the maximum of its
+  /// index into texel (8 + x mod 8, y mod 8) of a 16 x 8 image the CPU filled with a nonzero start.
+  func imageAtomics() throws(GPUError) {
+    let shader = try gpu.makeComputePipeline(spirv: LoinnirShaders.imageatomicsComp)
+    let image = try gpu.makeImage(ImageDescriptor(format: .r32uint, width: 16, height: 8,
+                                                  usage: .storage | .copySource | .copyDestination))
+    try gpu.writeStorageImage(7, image)
+    let start = try upload(16 * 8 * 4)
+    put32(start, [UInt32](repeating: 5, count: 16 * 8))
+    let out = try gpu.allocate(.readback, bytes: 16 * 8 * 4)
+    let params = try upload(64)
+    put32(params, [7])
+    var list = GPUCommandList()
+    list.copy(start, to: image)
+    list.barrier(from: .transfer, to: .compute)
+    list.dispatch(shader, root: params.address, x: 8, y: 8)
+    list.barrier(from: .compute, to: .transfer)
+    list.copy(image, to: out)
+    try run(list)
+    var bad = 0
+    var first = ""
+    for y in 0..<8 {
+      for x in 0..<16 {
+        // Texel (x, y) of the left half is added to by 64 invocations; of the right half, the maximum of the indices that land on it.
+        let want: UInt32 = x < 8 ? 5 + 64 : UInt32((7 * 8 + y) * 64 + 7 * 8 + x - 8)
+        let got = word(out, y * 16 + x)
+        if got != want {
+          if bad == 0 { first = "texel (\(x), \(y)) is \(got), not \(want)" }
+          bad += 1
         }
-        print("loinnir-test: core feature ok: atomics on device memory with \(name) (filled, added to and copied out by the GPU), exact")
       }
     }
-    // Not a check yet: the device doesn't claim atomics on ordinary memory (C1's scheme is not confirmed), so what the probe read is said.
-    if worked == 0 { print("loinnir-test: probe: atomics on an ordinary storage buffer did not give the sums in any of the four ways") }
+    if bad != 0 { throw failure("image atomics: \(bad) of 128 texels wrong, \(first)") }
+    print("loinnir-test: ok: image atomics (an r32uint storage image: 64 x 64 invocations added to 64 texels and took the maximum into 64 more, exact)")
   }
 
   /// A pass that keeps the target: what an earlier pass drew is under what this one draws, the tile loaded from memory.

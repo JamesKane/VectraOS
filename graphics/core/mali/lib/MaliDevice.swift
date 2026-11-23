@@ -272,6 +272,11 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     // backend's copies run on the CPU, so a frame is never staged.
     l.features.presentDirect = true
     l.heapStorageImages = UInt32(Heap.storageSlots)
+    // 32-bit atomics on memory and storage images, which are mapped cacheable for the GPU (an atomic in write-combining memory
+    // raises GPU_CACHEABILITY_FAULT and does nothing); judged by loinnir-test on the board. The 64-bit ones wait for the
+    // compiler's 64-bit integers to be claimed and judged.
+    l.features.shaderAtomic32 = true
+    l.features.shaderImageAtomics = true
     // Texel buffers: Buffer descriptors in table 2 after the storage images (MaliTexelBuffers.swift); `enableTexelBuffers` fills the limits.
     // The fixed function of the pipeline (PipelineMapping.swift; valhall 06, 08, 09).
     l.features.depth = true
@@ -349,22 +354,11 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     return at
   }
 
-  /// A buffer of at least `bytes`, mapped and bound.
-  /// Whether every region is mapped cacheable for the GPU (panthor 04 section 4.7.3), with the cleans at a stream's end
-  /// invalidating too; atomics on ordinary memory need it (`probeCacheMaintenance`).
-  public internal(set) var cacheAllMemory = false
-  /// Whether the memory a client allocates (and imports) is mapped cacheable for the GPU, the streams and code apart.
-  public internal(set) var cacheUserMemory = false
-
-  /// Turns on the GPU-cacheable mapping of all memory made from now on, and the invalidating clean at the end of every stream.
-  public func probeCacheMaintenance(_ on: Bool, invalidating: Bool = true, userOnly: Bool = false) {
-    cacheAllMemory = on && !userOnly
-    cacheUserMemory = on
-    unsafe CSBuilder.cleanInvalidates = on && invalidating
-  }
-
-  func makeRegion(_ bytes: Int, window: Bool = false, cpuCached: Bool = false, gpuCacheable: Bool? = nil) throws(GPUError) -> Region {
-    let gpuCacheable = gpuCacheable ?? cacheAllMemory
+  /// A buffer of at least `bytes`, mapped and bound; `gpuCacheable`, mapped cacheable for the GPU (panthor 04 section 4.7.3):
+  /// a client's memory, a storage image's and an occlusion query set's, where shader atomics and the counters work. The CPU sees
+  /// what the GPU wrote there after the stream's clean (`CSBuilder.cleanCachesForHost`), and the GPU what the CPU wrote since
+  /// after the clean and invalidate that begins each job (the driver's ring); streams, descriptors and code stay uncached.
+  func makeRegion(_ bytes: Int, window: Bool = false, cpuCached: Bool = false, gpuCacheable: Bool = false) throws(GPUError) -> Region {
     let size = max((bytes + 4095) & ~4095, 4096)
     let address = try takeAddress(size, window: window)
     let buffer = try transport.createBuffer(size: size, cpuCached: cpuCached)
@@ -446,7 +440,7 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     guard bytes > 0 else { throw .invalid("an allocation of no bytes") }
     reclaim()
     // Readback memory is for the CPU to read: cached there, and maintained (syncCached).
-    let region = try makeRegion(bytes, cpuCached: intent == .readback, gpuCacheable: cacheUserMemory)
+    let region = try makeRegion(bytes, cpuCached: intent == .readback, gpuCacheable: true)
     let handle = memories.insert(region)
     // The CPU's pointer where the intent allows it (the mapping is write-combining).
     return unsafe GPUMemory(handle: handle, address: region.address, pointer: intent == .device ? nil : region.buffer.pointer,
@@ -604,7 +598,7 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     // One 64-bit word a query, in memory the CPU maps write-combining and the GPU writes (the counters live in the GPU's
     // cache until a clean, which every stream's tail does).
     // Occlusion counts accumulate in the GPU's caches (06 section 6.11.1), so their memory is mapped cacheable for the GPU.
-    let region = try makeRegion(count * 8, gpuCacheable: kind == .occlusion && probeQueryCacheable ? true : nil)
+    let region = try makeRegion(count * 8, gpuCacheable: kind == .occlusion && probeQueryCacheable)
     var i = 0
     while i < count {
       region.buffer.store(UInt64(0), at: i * 8)

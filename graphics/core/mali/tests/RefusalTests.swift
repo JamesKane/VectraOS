@@ -36,7 +36,8 @@ private func unsupported(_ body: () throws -> Void) -> Bool {
     // The texel-buffer capabilities are a format's own (texelbufferTests): the image capabilities are judged without them.
     for format in PixelFormat.all {
       var caps = gpu.limits.formats(format)
-      #expect(caps.texelBuffer == (format.texelBufferFormat != nil) && caps.storageTexelBuffer == caps.texelBuffer && !caps.storageTexelBufferAtomic, "\(format)")
+      #expect(caps.texelBuffer == (format.texelBufferFormat != nil) && caps.storageTexelBuffer == caps.texelBuffer
+              && caps.storageTexelBufferAtomic == (format == .r32uint || format == .r32sint), "\(format)")
       caps.texelBuffer = false
       caps.storageTexelBuffer = false
       switch format {
@@ -50,6 +51,8 @@ private func unsupported(_ body: () throws -> Void) -> Bool {
         #expect(caps.sampled && caps.depthTarget && !caps.renderTarget && !caps.storage, "\(format)")
       case .depth24stencil8, .depth32fstencil8:
         #expect(caps.sampled && !caps.depthTarget && !caps.renderTarget && !caps.storage, "\(format)")
+      case .r32uint, .r32sint:
+        #expect(caps.storage && caps.storageAtomic && caps.sampled && !caps.filterable && !caps.renderTarget, "\(format)")
       case .r8uint, .r8sint, .r16uint, .r16sint:
         #expect(caps.storage && caps.sampled && !caps.filterable && !caps.renderTarget && !caps.storageAtomic, "\(format)")
       default:

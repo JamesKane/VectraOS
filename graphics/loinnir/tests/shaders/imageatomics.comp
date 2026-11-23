@@ -1,0 +1,18 @@
+// SPDX-License-Identifier: BSD-3-Clause
+// The core's feature checks (CoreFeatures.swift): atomics on an r32uint storage image of the heap (binding 2, the slot from the
+// root block). Invocation (x, y) of 64 x 64 adds 1 to texel (x mod 8, y mod 8) and takes the maximum of its index y * 64 + x into
+// texel (8 + x mod 8, y mod 8).
+#version 460
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_nonuniform_qualifier : require
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(set = 0, binding = 2, r32ui) uniform uimage2D images[];
+layout(buffer_reference, std430) readonly buffer Params { uint image; };
+layout(push_constant) uniform Root { Params params; } root;
+
+void main() {
+  ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+  uint slot = root.params.image;
+  imageAtomicAdd(images[nonuniformEXT(slot)], ivec2(p.x % 8, p.y % 8), 1u);
+  imageAtomicMax(images[nonuniformEXT(slot)], ivec2(8 + p.x % 8, p.y % 8), uint(p.y * 64 + p.x));
+}

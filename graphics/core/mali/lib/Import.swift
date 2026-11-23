@@ -2,12 +2,13 @@
 
 // Memory and images over another process's pages (gpucore(2); panthor 04 section 4.8.3.1 and 09 section 9.6.4, 11 section
 // 11.7.1): `exportHandle` gives a handle to the VMO behind memory, `exportWindowHandle` one behind a window's image (a
-// `scanout` image, its rows packed), and `importHandle` maps the pages of such a handle into this device's VM, as the memory
-// this backend allocates is mapped (not GPU-cacheable unless `cacheUserMemory`), and into this process, as the VMO's owner
+// `scanout` image, its rows packed), and `importHandle` maps the pages of such a handle into this device's VM as the owner's
+// were bound (memory GPU-cacheable, as a client's memory is; an image write-combining, as a scanout image is), and into this process, as the VMO's owner
 // mapped them (write-combining, for what this backend exports). The pages are the other process's too, so they are
 // non-coherent for the CPU of either: nothing here takes it that a CPU write in the other process is visible without a
 // barrier the writer made; what the GPU reads is what the owner had made visible when the submission was made, and every
-// stream's end cleans the GPU's caches (CSBuilder.cleanCachesForHost), so a later submission reads what was written in between.
+// stream's end cleans the GPU's caches (CSBuilder.cleanCachesForHost) and every job begins with the driver's clean and invalidate, so a
+// later submission reads what was written in between, through either mapping.
 
 import GPUCore
 
@@ -34,7 +35,7 @@ extension MaliDevice {
   public func importHandle(_ vmo: UInt32, intent: MemoryIntent, bytes: Int) throws(GPUError) -> GPUMemory {
     guard bytes > 0 else { throw .invalid("an import of no bytes") }
     reclaim()
-    let region = try makeImportedRegion(vmo, bytes: bytes)
+    let region = try makeImportedRegion(vmo, bytes: bytes, gpuCacheable: true)
     let handle = memories.insert(region)
     return unsafe GPUMemory(handle: handle, address: region.address, pointer: intent == .device ? nil : region.buffer.pointer,
                             size: bytes, intent: intent)
@@ -57,15 +58,16 @@ extension MaliDevice {
     guard let texel = d.format.texelFormat(aspect: .color) else { throw .unsupported("an imported image of \(d.format)") }
     reclaim()
     let layout = ImageLayout(format: texel, kind: .linear, width: Int(d.width), height: Int(d.height), rowAlignment: 4)
-    let region = try makeImportedRegion(vmo, bytes: layout.levels[0].rowStride * Int(d.height))
+    let region = try makeImportedRegion(vmo, bytes: layout.levels[0].rowStride * Int(d.height), gpuCacheable: false)
     let record = ImageRecord(region: region, descriptor: d, rowStride: layout.levels[0].rowStride, layout: layout, planeAt: nil)
     record.planes = [AspectPlane(aspect: .color, layout: layout, offset: 0, texel: texel)]
     return GPUImage(handle: images.insert(record), descriptor: d)
   }
 
-  /// The pages of `vmo` mapped here and bound in the VM, as allocated memory is: a window's image another process draws and
-  /// this one reads is never GPU-cacheable here while the CPU's reads of cacheable memory are not coherent.
-  func makeImportedRegion(_ vmo: UInt32, bytes: Int) throws(GPUError) -> Region {
+  /// The pages of `vmo` mapped here and bound in the VM. A window's image is bound write-combining, as its owner's scanout image is:
+  /// the texture unit only reads it, so the L2 holding its lines buys nothing, and every process that touches the pages then maps
+  /// them alike. Memory is GPU-cacheable, as a client's own is, so shader atomics work in it.
+  func makeImportedRegion(_ vmo: UInt32, bytes: Int, gpuCacheable: Bool) throws(GPUError) -> Region {
     let size = (bytes + 4095) & ~4095
     let buffer = try transport.importBuffer(vmo: vmo, size: size)
     let address: UInt64
@@ -73,7 +75,7 @@ extension MaliDevice {
       transport.destroyBuffer(buffer)
       throw error
     }
-    do { try transport.bind(vm: vm, buffer: buffer, address: address, gpuCacheable: cacheUserMemory) } catch {
+    do { try transport.bind(vm: vm, buffer: buffer, address: address, gpuCacheable: gpuCacheable) } catch {
       transport.destroyBuffer(buffer)
       throw error
     }
