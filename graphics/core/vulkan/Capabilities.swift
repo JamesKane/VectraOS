@@ -18,6 +18,7 @@ import Vulkan
   var customBorder = unsafe VkPhysicalDeviceCustomBorderColorFeaturesEXT()
   var hasCustomBorder = false
   var limits = VkPhysicalDeviceLimits()
+  var sparse = VkPhysicalDeviceSparseProperties()
   /// The Vulkan version the device reports. A device of 1.3 or later has every feature the spec makes mandatory of it, which is how
   /// the flags for those are set: from what the device says it is, not assumed.
   var apiVersion: UInt32 = 0
@@ -62,14 +63,28 @@ import Vulkan
     }
     unsafe h.p11.pNext = nil
     h.limits = unsafe props.properties.limits
+    h.sparse = unsafe props.properties.sparseProperties
     h.apiVersion = unsafe props.properties.apiVersion
     return h
   }
 
   /// What the backend asks of the device: the features the core names that the device has, the heap's, and what the
   /// backend's own commands need.
-  func enabled(storageOK: Bool, texelOK: Bool = false) -> HostFeatures {
+  func enabled(storageOK: Bool, texelOK: Bool = false, sparseQueue: Bool = false) -> HostFeatures {
     var e = HostFeatures()
+    unsafe e.core.multiViewport = core.multiViewport
+    // Sparse resources, where the queue the backend uses binds them.
+    if sparseQueue && core.sparseBinding != 0 {
+      unsafe e.core.sparseBinding = core.sparseBinding
+      unsafe e.core.sparseResidencyBuffer = core.sparseResidencyBuffer
+      unsafe e.core.sparseResidencyImage2D = core.sparseResidencyImage2D
+      unsafe e.core.sparseResidencyImage3D = core.sparseResidencyImage3D
+      unsafe e.core.sparseResidency2Samples = core.sparseResidency2Samples
+      unsafe e.core.sparseResidency4Samples = core.sparseResidency4Samples
+      unsafe e.core.sparseResidency8Samples = core.sparseResidency8Samples
+      unsafe e.core.sparseResidency16Samples = core.sparseResidency16Samples
+      unsafe e.core.sparseResidencyAliased = core.sparseResidencyAliased
+    }
     e.hasCustomBorder = hasCustomBorder
     unsafe e.customBorder.customBorderColors = customBorder.customBorderColors
     unsafe e.customBorder.customBorderColorWithoutFormat = customBorder.customBorderColorWithoutFormat
@@ -255,7 +270,22 @@ import Vulkan
     f.shaderMinLod = core.shaderResourceMinLod != 0
     f.shaderDrawParameters = unsafe f11.shaderDrawParameters != 0
     f.shaderDemoteToHelperInvocation = unsafe f13.shaderDemoteToHelperInvocation != 0
-    f.shaderViewportIndexLayer = unsafe f12.shaderOutputViewportIndex != 0 && f12.shaderOutputLayer != 0
+    f.shaderViewportIndexLayer = unsafe f12.shaderOutputLayer != 0
+    f.multiViewport = core.multiViewport != 0
+    f.shaderOutputViewportIndex = unsafe f12.shaderOutputViewportIndex != 0 && f.multiViewport
+    // Sparse resources: the device's, where the queue the backend uses binds them (the features enabled are the same).
+    let sparseQueue = queueFlags & VK_QUEUE_SPARSE_BINDING_BIT.rawValue != 0 && core.sparseBinding != 0
+    f.sparseBinding = sparseQueue
+    f.sparseResidencyBuffer = sparseQueue && core.sparseResidencyBuffer != 0
+    f.sparseResidencyImage2D = sparseQueue && core.sparseResidencyImage2D != 0
+    f.sparseResidencyImage3D = sparseQueue && core.sparseResidencyImage3D != 0
+    f.sparseResidency2Samples = sparseQueue && core.sparseResidency2Samples != 0
+    f.sparseResidency4Samples = sparseQueue && core.sparseResidency4Samples != 0
+    f.sparseResidency8Samples = sparseQueue && core.sparseResidency8Samples != 0
+    f.sparseResidency16Samples = sparseQueue && core.sparseResidency16Samples != 0
+    f.sparseResidencyAliased = sparseQueue && core.sparseResidencyAliased != 0
+    // OpImageSparse* reach the host as the application wrote them only without the lowering; the core says none.
+    f.shaderResourceResidency = false
     f.shaderSampleRateShading = core.sampleRateShading != 0
 
     // Limits.
@@ -277,6 +307,20 @@ import Vulkan
     l.maxMultiviewViews = unsafe f11.multiview != 0 ? p11.maxMultiviewViewCount : 0
     l.maxPatchControlPoints = core.tessellationShader != 0 ? limits.maxTessellationPatchSize : 0
     l.subgroupSize = unsafe f.subgroupOperations ? p11.subgroupSize : 0
+    l.maxViewports = f.multiViewport ? max(limits.maxViewports, 1) : 1
+    l.maxViewportWidth = limits.maxViewportDimensions.0
+    l.maxViewportHeight = limits.maxViewportDimensions.1
+    l.viewportBoundsMin = limits.viewportBoundsRange.0
+    l.viewportBoundsMax = limits.viewportBoundsRange.1
+    l.viewportSubPixelBits = limits.viewportSubPixelBits
+    if f.sparseBinding {
+      l.sparseAddressSpaceSize = limits.sparseAddressSpaceSize
+      l.sparse.residencyStandard2DBlockShape = sparse.residencyStandard2DBlockShape != 0
+      l.sparse.residencyStandard2DMultisampleBlockShape = sparse.residencyStandard2DMultisampleBlockShape != 0
+      l.sparse.residencyStandard3DBlockShape = sparse.residencyStandard3DBlockShape != 0
+      l.sparse.residencyAlignedMipSize = sparse.residencyAlignedMipSize != 0
+      l.sparse.residencyNonResidentStrict = sparse.residencyNonResidentStrict != 0
+    }
     // The period is in nanoseconds a tick (a float); kept in picoseconds.
     l.timestampPeriodPicoseconds = timestampBits > 0 ? UInt64(limits.timestampPeriod * 1000) : 0
 

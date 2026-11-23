@@ -251,6 +251,17 @@ extension MaliDevice {
       case .setScissor(let x, let y, let w, let h):
         guard target != nil else { throw .invalid("a scissor outside a pass") }
         dyn.scissor = PipelineMapping.scissorBox(x: Int(x), y: Int(y), width: Int(w), height: Int(h), targetWidth: planSize.width, targetHeight: planSize.height)
+      // One viewport and scissor (`multiViewport` is false): the first, with its depth range.
+      case .setViewports(let first, let vs):
+        guard target != nil else { throw .invalid("a viewport outside a pass") }
+        guard first == 0, vs.count == 1 else { throw .unsupported("more than one viewport") }
+        dyn.viewport = DrawViewport(x: vs[0].x, y: vs[0].y, width: vs[0].width, height: vs[0].height, minDepth: vs[0].minDepth,
+                                    maxDepth: vs[0].maxDepth)
+      case .setScissors(let first, let rs):
+        guard target != nil else { throw .invalid("a scissor outside a pass") }
+        guard first == 0, rs.count == 1 else { throw .unsupported("more than one scissor") }
+        dyn.scissor = PipelineMapping.scissorBox(x: Int(rs[0].x), y: Int(rs[0].y), width: Int(rs[0].width), height: Int(rs[0].height),
+                                                 targetWidth: planSize.width, targetHeight: planSize.height)
       case .setBlendConstants(let k): dyn.constants = k
       case .setStencilReference(let faces, let v):
         if faces.rawValue & 1 != 0 { dyn.frontReference = v }

@@ -107,8 +107,27 @@ public struct RenderArea: Sendable, Equatable {
   }
 }
 
-/// A pass with dynamic rendering: the attachments it draws into, each with its load and store. The viewport and
-/// scissor start as the whole of the first attachment.
+/// A viewport: the rectangle of the attachments that normalized device coordinates map onto, and the depths that 0 and 1 map
+/// to. A negative height flips it.
+public struct Viewport: Sendable, Equatable {
+  public var x: Float
+  public var y: Float
+  public var width: Float
+  public var height: Float
+  public var minDepth: Float
+  public var maxDepth: Float
+  public init(x: Float = 0, y: Float = 0, width: Float, height: Float, minDepth: Float = 0, maxDepth: Float = 1) {
+    self.x = x
+    self.y = y
+    self.width = width
+    self.height = height
+    self.minDepth = minDepth
+    self.maxDepth = maxDepth
+  }
+}
+
+/// A pass with dynamic rendering: the attachments it draws into, each with its load and store. Every viewport and
+/// scissor starts as the whole of the first attachment (depths 0 to 1).
 public struct RenderingInfo: Sendable, Equatable {
   public var colors: [Attachment]
   public var depthStencil: DepthStencilAttachment?
@@ -283,6 +302,10 @@ public enum Command: Sendable, Equatable {
   case endRendering
   case setViewport(x: Float, y: Float, width: Float, height: Float)
   case setScissor(x: Int32, y: Int32, width: UInt32, height: UInt32)
+  /// Viewports `first` on, with their depth ranges; past the first needs `DeviceFeatures.multiViewport`.
+  case setViewports(first: UInt32, [Viewport])
+  /// Scissors `first` on, one for each viewport.
+  case setScissors(first: UInt32, [RenderArea])
   case draw(GPUPipeline, root: UInt64, vertexCount: UInt32, instanceCount: UInt32, firstVertex: UInt32, firstInstance: UInt32)
   case drawIndexed(GPUPipeline, root: UInt64, indices: GPUMemory, indexOffset: Int, indexType: IndexType, indexCount: UInt32,
                    instanceCount: UInt32, firstIndex: UInt32, vertexOffset: Int32, firstInstance: UInt32)
@@ -353,6 +376,12 @@ public struct GPUCommandList: Sendable, Equatable {
   }
   public mutating func setScissor(x: Int32, y: Int32, width: UInt32, height: UInt32) {
     commands.append(.setScissor(x: x, y: y, width: width, height: height))
+  }
+  public mutating func setViewports(first: UInt32 = 0, _ viewports: [Viewport]) {
+    commands.append(.setViewports(first: first, viewports))
+  }
+  public mutating func setScissors(first: UInt32 = 0, _ scissors: [RenderArea]) {
+    commands.append(.setScissors(first: first, scissors))
   }
   public mutating func draw(_ pipeline: GPUPipeline, root: UInt64, vertices: UInt32, instances: UInt32 = 1,
                             firstVertex: UInt32 = 0, firstInstance: UInt32 = 0) {

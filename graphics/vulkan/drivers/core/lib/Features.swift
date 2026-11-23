@@ -2,7 +2,7 @@
 
 // The device's features and limits as Vulkan words them (D174 amendment, step 5): every flag is `DeviceFeatures`' or
 // `DeviceLimits`', and a feature the core's device lacks is reported absent, never emulated. What Vulkan has that the
-// core has no word for (sparse resources, 16-bit storage, protected memory...) is absent.
+// core has no word for (16-bit storage, protected memory...) is absent.
 
 import GPUCore
 import TDVulkan
@@ -50,6 +50,17 @@ func fillFeatures(_ f: inout VkPhysicalDeviceFeatures, _ gpu: any GPUDevice) {
   f.shaderInt64 = b(d.shaderInt64)
   f.shaderInt16 = b(d.shaderInt16)
   f.shaderResourceMinLod = b(d.shaderMinLod)
+  f.multiViewport = b(d.multiViewport)
+  f.sparseBinding = b(d.sparseBinding)
+  f.sparseResidencyBuffer = b(d.sparseResidencyBuffer)
+  f.sparseResidencyImage2D = b(d.sparseResidencyImage2D)
+  f.sparseResidencyImage3D = b(d.sparseResidencyImage3D)
+  f.sparseResidency2Samples = b(d.sparseResidency2Samples)
+  f.sparseResidency4Samples = b(d.sparseResidency4Samples)
+  f.sparseResidency8Samples = b(d.sparseResidency8Samples)
+  f.sparseResidency16Samples = b(d.sparseResidency16Samples)
+  f.sparseResidencyAliased = b(d.sparseResidencyAliased)
+  f.shaderResourceResidency = b(d.shaderResourceResidency)
 }
 
 /// A features structure of a `pNext` chain: its size, and a function that fills it for a device (leaving its type and next
@@ -81,6 +92,9 @@ private func b32(_ v: Bool) -> VkBool32 { v ? 1 : 0 }
       unsafe s.pointee.shaderFloat16 = b32(d.shaderFloat16)
       unsafe s.pointee.shaderInt8 = b32(d.shaderInt8)
       unsafe s.pointee.shaderBufferInt64Atomics = b32(d.shaderAtomic64)
+      // ViewportIndex and Layer from the vertex and tessellation evaluation stages.
+      unsafe s.pointee.shaderOutputViewportIndex = b32(d.shaderOutputViewportIndex && d.multiViewport)
+      unsafe s.pointee.shaderOutputLayer = b32(d.shaderViewportIndexLayer)
     }
   }
   if type == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES {
@@ -217,6 +231,25 @@ func fillDeviceLimits(_ m: inout VkPhysicalDeviceLimits, _ l: DeviceLimits) {
   m.timestampComputeAndGraphics = f.timestampQueries ? 1 : 0
   m.timestampPeriod = Float(l.timestampPeriodPicoseconds) / 1000
   m.maxSamplerLodBias = 15
+  // Viewports: as many as the device has, the size and bounds where it says them.
+  m.maxViewports = f.multiViewport ? max(l.maxViewports, 1) : 1
+  if l.maxViewportWidth > 0 && l.maxViewportHeight > 0 { m.maxViewportDimensions = (l.maxViewportWidth, l.maxViewportHeight) }
+  if l.viewportBoundsMax > l.viewportBoundsMin { m.viewportBoundsRange = (l.viewportBoundsMin, l.viewportBoundsMax) }
+  if l.viewportSubPixelBits > 0 { m.viewportSubPixelBits = l.viewportSubPixelBits }
+  m.sparseAddressSpaceSize = f.sparseBinding ? l.sparseAddressSpaceSize : 0
+}
+
+/// The device's sparse properties as Vulkan words them.
+func fillSparseProperties(_ p: inout VkPhysicalDeviceSparseProperties, _ l: DeviceLimits) {
+  func b(_ v: Bool) -> VkBool32 { v ? 1 : 0 }
+  let s = l.sparse
+  p = VkPhysicalDeviceSparseProperties()
+  guard l.features.sparseBinding else { return }
+  p.residencyStandard2DBlockShape = b(s.residencyStandard2DBlockShape)
+  p.residencyStandard2DMultisampleBlockShape = b(s.residencyStandard2DMultisampleBlockShape)
+  p.residencyStandard3DBlockShape = b(s.residencyStandard3DBlockShape)
+  p.residencyAlignedMipSize = b(s.residencyAlignedMipSize)
+  p.residencyNonResidentStrict = b(s.residencyNonResidentStrict)
 }
 
 func fillSubgroupProperties(_ size: inout UInt32, _ stages: inout UInt32, _ ops: inout UInt32, _ l: DeviceLimits) {

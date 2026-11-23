@@ -36,6 +36,10 @@ public protocol GPUQueue: AnyObject {
   /// Runs `list` once the timeline reaches `wait` (0 for no wait), and sets the timeline to `signal` when
   /// it is done. Lists on one queue run in the order submitted.
   func submit(_ list: GPUCommandList, wait: UInt64, signal: UInt64) throws(GPUError)
+  /// Binds pages of memory into sparse resources (Sparse.swift) once the timeline reaches `wait` and everything submitted on
+  /// the queue before it has finished, and sets the timeline to `signal` when the binds are done; the queue's later
+  /// submissions run after them. `.unsupported` where the device has no sparse resources (the default).
+  func bindSparse(_ bindings: SparseBindings, wait: UInt64, signal: UInt64) throws(GPUError)
 }
 
 public protocol GPUDevice: AnyObject {
@@ -121,6 +125,19 @@ public protocol GPUDevice: AnyObject {
   /// is (`exportWindowHandle`). `.unsupported` where the device can't (the default), or the rows break its rule for a linear
   /// plane.
   func importHandle(_ vmo: UInt32, as descriptor: ImageDescriptor, rowBytes: Int) throws(GPUError) -> GPUImage
+
+  // Sparse resources (Sparse.swift; `DeviceFeatures.sparseBinding`). A device without them keeps the defaults, which refuse.
+  /// A buffer of `bytes` with an address and no pages, `.device` memory a list uses like any other once its pages are bound
+  /// (`GPUQueue.bindSparse`). Freed with `free`.
+  func makeSparseBuffer(bytes: Int, flags: SparseFlags) throws(GPUError) -> GPUMemory
+  /// What binds to a sparse buffer or a sparse image (one made with `ImageDescriptor.sparse`) cover: the range, and the page.
+  func sparseRequirements(_ buffer: GPUMemory) throws(GPUError) -> SparseMemoryRequirements
+  func sparseRequirements(_ image: GPUImage) throws(GPUError) -> SparseMemoryRequirements
+  /// A sparse image's block shapes and mip tails, for each aspect.
+  func sparseImageRequirements(_ image: GPUImage) throws(GPUError) -> [SparseImageRequirements]
+  /// How a sparse image of the format, kind, samples and usage would be bound: one entry for each aspect, none where it can't be.
+  func sparseImageFormats(_ format: PixelFormat, dimension: ImageDimension, samples: UInt32, usage: ImageUsage)
+    -> [SparseImageFormatProperties]
 }
 
 extension GPUDevice {

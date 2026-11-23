@@ -59,6 +59,9 @@ class VenusState {
 
 final class PhysicalDeviceState: VenusState {
   var memory = VkPhysicalDeviceMemoryProperties()
+  /// The renderer's device extensions the driver forwards (indices into
+  /// `forwardedExtensions`, with the renderer's spec version), once asked.
+  var forwarded: [(index: Int, specVersion: UInt32)]?
 }
 
 @safe final class DeviceState: VenusState {

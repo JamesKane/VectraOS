@@ -172,15 +172,15 @@ struct SubmitSemaphore {
   var value: UInt64
 }
 
-/// One batch: it waits, runs the command buffers' lists in order, and signals.
-func submitBatch(_ q: QueueObject, waits: [SubmitSemaphore], buffers: [CommandBufferObject], signals: [SubmitSemaphore]) -> (VkResult, UInt64) {
-  let d = q.device
+/// The device value a batch waits for: the greatest its semaphores need (a binary semaphore is consumed), nil where one waits
+/// for a value nothing signals.
+func batchWait(_ waits: [SubmitSemaphore]) -> UInt64? {
   var wait: UInt64 = 0
   for w in waits {
     if w.semaphore.timeline {
       guard let v = w.semaphore.deviceValue(reaching: w.value) else {
         say("unsupported: a wait for a semaphore value no submission signals")
-        return (VK_ERROR_FEATURE_NOT_PRESENT, 0)
+        return nil
       }
       wait = max(wait, v)
     } else {
@@ -188,6 +188,20 @@ func submitBatch(_ q: QueueObject, waits: [SubmitSemaphore], buffers: [CommandBu
       w.semaphore.value = 0
     }
   }
+  return wait
+}
+
+/// A batch's semaphores signalled at the device value `signal`.
+func batchSignal(_ signals: [SubmitSemaphore], _ signal: UInt64) {
+  for s in signals {
+    if s.semaphore.timeline { s.semaphore.points.append((s.value, signal)) } else { s.semaphore.value = signal }
+  }
+}
+
+/// One batch: it waits, runs the command buffers' lists in order, and signals.
+func submitBatch(_ q: QueueObject, waits: [SubmitSemaphore], buffers: [CommandBufferObject], signals: [SubmitSemaphore]) -> (VkResult, UInt64) {
+  let d = q.device
+  guard let wait = batchWait(waits) else { return (VK_ERROR_FEATURE_NOT_PRESENT, 0) }
   var list = GPUCommandList()
   for b in buffers { list.append(contentsOf: b.list) }
   let signal = d.nextValue()
@@ -203,11 +217,99 @@ func submitBatch(_ q: QueueObject, waits: [SubmitSemaphore], buffers: [CommandBu
     }
     for w in b.eventWrites { w.event.isSet = w.set }
   }
-  for s in signals {
-    if s.semaphore.timeline { s.semaphore.points.append((s.value, signal)) } else { s.semaphore.value = signal }
-  }
+  batchSignal(signals, signal)
   d.retire()
   return (VK_SUCCESS, signal)
+}
+
+// MARK: Sparse binding
+
+/// The semaphores of a submission's or a bind's arrays, with the values a VkTimelineSemaphoreSubmitInfo gives them.
+func semaphores(_ count: UInt32, _ list: UnsafePointer<VkSemaphore?>?, _ values: UnsafePointer<UInt64>?) -> [SubmitSemaphore]? {
+  var out: [SubmitSemaphore] = []
+  for k in 0..<Int(count) {
+    guard let sem = unsafe Handle.get(list![k], SemaphoreObject.self) else { return nil }
+    out.append(SubmitSemaphore(semaphore: sem, value: unsafe values.map { unsafe $0[k] } ?? 0))
+  }
+  return out
+}
+
+/// The core's memory a sparse bind names: nil for VK_NULL_HANDLE (a range bound to nothing).
+func boundMemory(_ m: VkDeviceMemory?) -> GPUMemory? {
+  unsafe Handle.get(m, MemoryObject.self)?.gpu
+}
+
+/// The core's binds for one VkBindSparseInfo, or nil where it names a buffer or image that isn't sparse.
+func sparseBindings(_ info: VkBindSparseInfo) -> SparseBindings? {
+  var b = SparseBindings()
+  for i in 0..<Int(unsafe info.bufferBindCount) {
+    let bb = unsafe info.pBufferBinds[i]
+    guard let buffer = unsafe Handle.get(bb.buffer, BufferObject.self), let sparse = buffer.sparse else { return nil }
+    for k in 0..<Int(unsafe bb.bindCount) {
+      let m = unsafe bb.pBinds[k]
+      unsafe b.buffers.append(SparseBufferBind(buffer: sparse, offset: Int(m.resourceOffset), size: Int(m.size), memory: unsafe boundMemory(m.memory),
+                                        memoryOffset: Int(m.memoryOffset)))
+    }
+  }
+  for i in 0..<Int(unsafe info.imageOpaqueBindCount) {
+    let ob = unsafe info.pImageOpaqueBinds[i]
+    guard let image = unsafe Handle.get(ob.image, ImageObject.self) else { return nil }
+    for k in 0..<Int(unsafe ob.bindCount) {
+      let m = unsafe ob.pBinds[k]
+      unsafe b.opaque.append(SparseImageOpaqueBind(image: image.image, offset: Int(m.resourceOffset), size: Int(m.size),
+                                            memory: unsafe boundMemory(m.memory), memoryOffset: Int(m.memoryOffset),
+                                            metadata: m.flags & VK_SPARSE_MEMORY_BIND_METADATA_BIT.rawValue != 0))
+    }
+  }
+  for i in 0..<Int(unsafe info.imageBindCount) {
+    let ib = unsafe info.pImageBinds[i]
+    guard let image = unsafe Handle.get(ib.image, ImageObject.self) else { return nil }
+    for k in 0..<Int(unsafe ib.bindCount) {
+      let m = unsafe ib.pBinds[k]
+      var aspects = ImageAspects(rawValue: 0)
+      if unsafe m.subresource.aspectMask & VK_IMAGE_ASPECT_COLOR_BIT.rawValue != 0 { aspects = aspects | .color }
+      if unsafe m.subresource.aspectMask & VK_IMAGE_ASPECT_DEPTH_BIT.rawValue != 0 { aspects = aspects | .depth }
+      if unsafe m.subresource.aspectMask & VK_IMAGE_ASPECT_STENCIL_BIT.rawValue != 0 { aspects = aspects | .stencil }
+      unsafe b.images.append(SparseImageBind(image: image.image, aspects: aspects, mip: m.subresource.mipLevel, layer: m.subresource.arrayLayer,
+                                      offset: Offset3D(x: m.offset.x, y: m.offset.y, z: m.offset.z),
+                                      extent: Extent3D(width: m.extent.width, height: m.extent.height, depth: m.extent.depth),
+                                      memory: unsafe boundMemory(m.memory), memoryOffset: Int(m.memoryOffset)))
+    }
+  }
+  return b
+}
+
+/// Each VkBindSparseInfo is a batch of the core's queue: it waits for its semaphores, binds in order with the submissions,
+/// and signals the next device value.
+func core_vkQueueBindSparse(_ queue: VkQueue?, _ bindInfoCount: UInt32, _ pBindInfo: UnsafePointer<VkBindSparseInfo>?, _ fence: VkFence?) -> VkResult {
+  guard let q = unsafe Handle.get(queue, QueueObject.self) else { return VK_ERROR_DEVICE_LOST }
+  let d = q.device
+  var last: UInt64 = 0
+  for i in 0..<Int(bindInfoCount) {
+    let info = unsafe pBindInfo![i]
+    var waitValues: UnsafePointer<UInt64>?
+    var signalValues: UnsafePointer<UInt64>?
+    if let t = unsafe findStructure(info.pNext, VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO) {
+      let ti = unsafe t.load(as: VkTimelineSemaphoreSubmitInfo.self)
+      unsafe waitValues = ti.pWaitSemaphoreValues
+      unsafe signalValues = ti.pSignalSemaphoreValues
+    }
+    guard let waits = unsafe semaphores(info.waitSemaphoreCount, info.pWaitSemaphores, waitValues),
+      let signals = unsafe semaphores(info.signalSemaphoreCount, info.pSignalSemaphores, signalValues)
+    else { return VK_ERROR_INITIALIZATION_FAILED }
+    guard let bindings = unsafe sparseBindings(info) else {
+      say("invalid: a sparse bind of a buffer or image that isn't sparse")
+      return VK_ERROR_INITIALIZATION_FAILED
+    }
+    guard let wait = batchWait(waits) else { return VK_ERROR_FEATURE_NOT_PRESENT }
+    let signal = d.nextValue()
+    do throws(GPUError) { try d.gpu.graphicsQueue.bindSparse(bindings, wait: wait, signal: signal) } catch { return vkResult(error) }
+    d.lastSubmitted = signal
+    batchSignal(signals, signal)
+    d.retire()
+    last = signal
+  }
+  return unsafe finishSubmit(q, fence, last)
 }
 
 func core_vkQueueSubmit(_ queue: VkQueue?, _ submitCount: UInt32, _ pSubmits: UnsafePointer<VkSubmitInfo>?, _ fence: VkFence?) -> VkResult {

@@ -359,6 +359,41 @@ final class FakeGPU: GPUDevice {
 
   var completed: UInt64 { reached }
 
+  // Sparse resources: a sparse buffer is an address range of its own, binds are kept as the queue had them.
+  var sparseBuffers: [GPUMemory] = []
+  var bound: [(bindings: SparseBindings, wait: UInt64, signal: UInt64)] = []
+  /// The page a sparse resource is bound in.
+  var sparsePage = 65536
+
+  func makeSparseBuffer(bytes: Int, flags: SparseFlags) throws(GPUError) -> GPUMemory {
+    if let e = sparseBufferError(bytes: bytes, flags: flags, limits: limits) { throw e }
+    let m = unsafe GPUMemory(handle: handle(), address: 0x1_0000_0000 * UInt64(sparseBuffers.count + 1), pointer: nil, size: bytes,
+                             intent: .device, sparse: flags)
+    sparseBuffers.append(m)
+    return m
+  }
+
+  func sparseRequirements(_ buffer: GPUMemory) throws(GPUError) -> SparseMemoryRequirements {
+    guard !buffer.sparse.isEmpty else { throw .invalid("memory that isn't a sparse buffer") }
+    return SparseMemoryRequirements(size: (buffer.size + sparsePage - 1) / sparsePage * sparsePage, pageBytes: sparsePage)
+  }
+
+  func sparseRequirements(_ image: GPUImage) throws(GPUError) -> SparseMemoryRequirements {
+    guard !image.descriptor.sparse.isEmpty else { throw .invalid("an image that isn't sparse") }
+    return SparseMemoryRequirements(size: 4 * sparsePage, pageBytes: sparsePage)
+  }
+
+  func sparseImageRequirements(_ image: GPUImage) throws(GPUError) -> [SparseImageRequirements] {
+    [SparseImageRequirements(format: SparseImageFormatProperties(aspects: .color, blockShape: Extent3D(width: 128, height: 128),
+                                                                 singleMipTail: true),
+                             mipTailFirstLevel: 1, mipTailSize: sparsePage, mipTailOffset: 3 * sparsePage, mipTailStride: 0)]
+  }
+
+  func sparseImageFormats(_ format: PixelFormat, dimension: ImageDimension, samples: UInt32, usage: ImageUsage) -> [SparseImageFormatProperties] {
+    guard limits.features.sparseResidencyImage2D, dimension == .d2, samples == 1, format == .rgba8 else { return [] }
+    return [SparseImageFormatProperties(aspects: .color, blockShape: Extent3D(width: 128, height: 128), nonStandardBlockSize: true)]
+  }
+
   /// A wait runs the timeline up to the value, as a real device's wait would, but only to a value it has signalled.
   func wait(_ value: UInt64) throws(GPUError) {
     guard value <= rule.lastSignalled else { throw .invalid("a wait for \(value), which nothing has signalled") }
@@ -396,6 +431,12 @@ final class FakeQueue: GPUQueue {
     if let e = list.validate(limits: device.limits) { throw e }
     if let e = device.rule.accept(wait: wait, signal: signal) { throw e }
     device.submitted.append((list, wait, signal))
+    if device.autoComplete { device.reached = signal }
+  }
+  func bindSparse(_ bindings: SparseBindings, wait: UInt64, signal: UInt64) throws(GPUError) {
+    if let e = bindings.validate(limits: device.limits) { throw e }
+    if let e = device.rule.accept(wait: wait, signal: signal) { throw e }
+    device.bound.append((bindings, wait, signal))
     if device.autoComplete { device.reached = signal }
   }
 }

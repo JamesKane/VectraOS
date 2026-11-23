@@ -192,11 +192,101 @@ final class GPU {
 
   @Test func everyEntryPointHasAName() {
     for name in ["vkCreateInstance", "vkCmdCopyBuffer", "vkQueueSubmit2", "vkGetBufferMemoryRequirements",
-                 "vkCreateGraphicsPipelines", "vkGetDeviceQueue"] {
+                 "vkCreateGraphicsPipelines", "vkGetDeviceQueue", "vkQueueBindSparse"] {
       #expect(name.withCString { VenusDriver.procAddress($0) } != nil, "\(name)")
     }
     #expect("vkNotACommand".withCString { VenusDriver.procAddress($0) } == nil)
     #expect("vkCreateRingMESA".withCString { VenusDriver.procAddress($0) } == nil)  // Venus's own: not Vulkan
+  }
+
+  /// The renderer's extensions the driver forwards: those its device offers and its protocol carries (the capset's mask, or
+  /// every one where the mask isn't given), with the renderer's spec version.
+  @Test func forwardedExtensionsAreOfferedAndCarried() {
+    let name = Array("VK_EXT_custom_border_color".utf8)
+    let offered: [(name: [UInt8], specVersion: UInt32)] = [(Array("VK_KHR_swapchain".utf8), 70), (name, 12)]
+    var mask = [UInt32](repeating: 0, count: 32)
+    // No mask: every extension is carried.
+    var f = forwardable(offered: offered, mask: mask)
+    #expect(f.count == 1 && f.first?.index == 0 && f.first?.specVersion == 12)
+    // A mask without 288 (bit 0 of word 9): not forwarded; with it, forwarded.
+    mask[0] = 1
+    #expect(forwardable(offered: offered, mask: mask).isEmpty)
+    mask[9] = 1
+    f = forwardable(offered: offered, mask: mask)
+    #expect(f.count == 1 && f.first?.specVersion == 12)
+    // Not offered: not forwarded, and a prefix of the name is another name.
+    #expect(forwardable(offered: [(Array("VK_EXT_custom_border".utf8), 1)], mask: mask).isEmpty)
+    #expect(VenusContext.carries(mask, extension: 288) && !VenusContext.carries(mask, extension: 289))
+  }
+
+  /// Against the host's renderer: VK_EXT_custom_border_color is listed where the renderer offers it, and a device made with it
+  /// enabled takes a sampler with a colour of its own; an extension the driver doesn't forward is refused.
+  @Test(.enabled(if: Server.shared.available)) func aForwardedExtensionReachesTheRenderer() throws {
+    let gpu = try GPU()
+    var count: UInt32 = 0
+    try check(venus_vkEnumerateDeviceExtensionProperties(gpu.physical, nil, &count, nil), "count")
+    var props = [VkExtensionProperties](repeating: VkExtensionProperties(), count: Int(count))
+    try check(venus_vkEnumerateDeviceExtensionProperties(gpu.physical, nil, &count, &props), "extensions")
+    let names = props.map { p in withUnsafeBytes(of: p.extensionName) { String(decoding: $0.prefix { $0 != 0 }, as: UTF8.self) } }
+    var priority: Float = 1
+    var queueInfo = VkDeviceQueueCreateInfo()
+    queueInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO
+    queueInfo.queueFamilyIndex = gpu.family
+    queueInfo.queueCount = 1
+    func make(_ extensions: [String]) -> (VkResult, VkDevice?) {
+      var device: VkDevice?
+      let strings = extensions.map { strdup($0) }
+      defer { for s in strings { free(s) } }
+      var pointers = strings.map { UnsafePointer<CChar>($0) }
+      return withUnsafePointer(to: &priority) { p in
+        queueInfo.pQueuePriorities = p
+        return withUnsafePointer(to: &queueInfo) { q in
+          pointers.withUnsafeMutableBufferPointer { e in
+            var info = VkDeviceCreateInfo()
+            info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO
+            info.queueCreateInfoCount = 1
+            info.pQueueCreateInfos = q
+            info.enabledExtensionCount = UInt32(e.count)
+            info.ppEnabledExtensionNames = UnsafePointer(e.baseAddress)
+            return (venus_vkCreateDevice(gpu.physical, &info, nil, &device), device)
+          }
+        }
+      }
+    }
+    #expect(make(["VK_KHR_swapchain"]).0 == VK_ERROR_EXTENSION_NOT_PRESENT)
+    guard names.contains("VK_EXT_custom_border_color") else { return }  // the renderer's device doesn't offer it
+    let (r, device) = make(["VK_EXT_custom_border_color"])
+    try check(r, "vkCreateDevice with VK_EXT_custom_border_color")
+    defer { venus_vkDestroyDevice(device, nil) }
+    var custom = VkSamplerCustomBorderColorCreateInfoEXT()
+    custom.sType = VK_STRUCTURE_TYPE_SAMPLER_CUSTOM_BORDER_COLOR_CREATE_INFO_EXT
+    custom.customBorderColor.float32 = (0.25, 0.5, 0.75, 1)
+    custom.format = VK_FORMAT_R8G8B8A8_UNORM
+    try withUnsafePointer(to: &custom) { c in
+      var info = VkSamplerCreateInfo()
+      info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO
+      info.pNext = UnsafeRawPointer(c)
+      info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER
+      info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER
+      info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER
+      info.borderColor = VK_BORDER_COLOR_FLOAT_CUSTOM_EXT
+      var sampler: VkSampler?
+      try check(venus_vkCreateSampler(device, &info, nil, &sampler), "vkCreateSampler (custom border)")
+      venus_vkDestroySampler(device, sampler, nil)
+    }
+  }
+
+  /// vkQueueBindSparse of no binds goes in order with the queue's submissions, and its fence is signalled by the renderer.
+  @Test(.enabled(if: Server.shared.available)) func anEmptyBindSparseSignalsItsFence() throws {
+    let gpu = try GPU()
+    var fenceInfo = VkFenceCreateInfo()
+    fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO
+    var fence: VkFence?
+    try check(venus_vkCreateFence(gpu.device, &fenceInfo, nil, &fence), "vkCreateFence")
+    defer { venus_vkDestroyFence(gpu.device, fence, nil) }
+    try check(venus_vkQueueBindSparse(gpu.queue, 0, nil, fence), "vkQueueBindSparse")
+    try check(venus_vkWaitForFences(gpu.device, 1, &fence, 1, 10_000_000_000), "vkWaitForFences")
+    #expect(venus_vkGetFenceStatus(gpu.device, fence) == VK_SUCCESS)
   }
 
   @Test(.enabled(if: Server.shared.available)) func aBufferCopiedOnTheHostsGPU() throws {

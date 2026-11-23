@@ -429,7 +429,7 @@ let text: [Target] = [
           path: "graphics/vulkan/drivers/hosted", linkerSettings: [.unsafeFlags(["-Xlinker", "-z", "-Xlinker", "nodelete"])]),
   // The core (D174 section 1, gpucore(2)): what a native GPU driver implements and Loinnir is written on. Tier 0,
   // no graphics API in it; its backends are graphics/core/vulkan and graphics/core/mali.
-  .target(name: "GPUCore", path: "graphics/core", sources: ["Types.swift", "Formats.swift", "Images.swift", "PipelineState.swift", "Commands.swift", "Rules.swift", "Device.swift", "Present.swift"],
+  .target(name: "GPUCore", path: "graphics/core", sources: ["Types.swift", "Formats.swift", "Images.swift", "PipelineState.swift", "Commands.swift", "Rules.swift", "Device.swift", "Present.swift", "Sparse.swift"],
           swiftSettings: tier0),
   .testTarget(name: "GPUCoreTests", dependencies: ["GPUCore"], path: "graphics/core/tests"),
   // The core over Vulkan (D174 section 5): Loinnir's Vulkan code behind the core, the backend Venus is reached through.

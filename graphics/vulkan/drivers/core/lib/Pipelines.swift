@@ -6,7 +6,7 @@
 // for each attachment, the logic op, and which state the pass's commands set. Specialization constants are the
 // lowering's: each stage is lowered with its stage's VkSpecializationInfo. What the core's device lacks, it refuses at
 // creation; the layer refuses only what Vulkan has and the core has no word for (adjacency topologies, dynamic state
-// beyond the core's, more than one viewport).
+// beyond the core's).
 
 import GPUCore
 import TDVulkan
@@ -69,9 +69,10 @@ final class PipelineObject: CoreObject {
   let gpu: GPUPipeline
   let layout: PipelineLayoutObject?
   let device: DeviceObject
-  /// The viewport and scissor a pipeline states (x, y, width, height), nil where they are dynamic.
-  var viewport: (Float, Float, Float, Float)?
-  var scissor: (Int32, Int32, UInt32, UInt32)?
+  /// The viewports and scissors a pipeline states, nil where they are dynamic, and how many it draws with.
+  var viewports: [Viewport]?
+  var scissors: [RenderArea]?
+  var viewportCount: UInt32 = 1
   /// The state a pass's commands set in place of the pipeline's.
   var dynamic = DynamicStates()
   var depthStencil = DepthStencilState()
@@ -391,16 +392,17 @@ func makeGraphicsPipeline(_ d: DeviceObject, _ pInfo: UnsafePointer<VkGraphicsPi
       }
     }
   }
-  var viewport: (Float, Float, Float, Float)?
-  var scissor: (Int32, Int32, UInt32, UInt32)?
+  var viewports: [Viewport]?
+  var scissors: [RenderArea]?
+  var viewportCount: UInt32 = 1
   if let vs = unsafe c.pViewportState {
-    if unsafe vs.pointee.viewportCount > 1 || vs.pointee.scissorCount > 1 {
-      say("unsupported: more than one viewport")
-      return VK_ERROR_FEATURE_NOT_PRESENT
+    // The core's device refuses more viewports than it has, at creation.
+    viewportCount = unsafe max(vs.pointee.viewportCount, 1)
+    if !dynamicViewport, let v = unsafe vs.pointee.pViewports {
+      viewports = unsafe (0..<Int(vs.pointee.viewportCount)).map { unsafe viewport(v[$0]) }
     }
-    if !dynamicViewport, let v = unsafe vs.pointee.pViewports { viewport = unsafe (v[0].x, v[0].y, v[0].width, v[0].height) }
     if !dynamicScissor, let s = unsafe vs.pointee.pScissors {
-      scissor = unsafe (s[0].offset.x, s[0].offset.y, s[0].extent.width, s[0].extent.height)
+      scissors = unsafe (0..<Int(vs.pointee.scissorCount)).map { unsafe renderArea(s[$0]) }
     }
   }
 
@@ -476,14 +478,15 @@ func makeGraphicsPipeline(_ d: DeviceObject, _ pInfo: UnsafePointer<VkGraphicsPi
       vertex: v, fragment: f, colorFormats: formats, blend: .opaque, topology: topology, depthStencilFormat: depthFormat,
       depthStencil: depthStencil, rasterization: raster, multisample: multisample, attachmentBlends: blends, logicOp: logic,
       blendConstants: constants, dynamic: dynamic, primitiveRestart: restart, patchControlPoints: patchPoints, geometry: g,
-      tessellationControl: tc, tessellationEvaluation: te, viewMask: viewMask)
+      tessellationControl: tc, tessellationEvaluation: te, viewMask: viewMask, viewportCount: viewportCount)
     // One attachment's blend states every attachment, as Vulkan's own count does for all but a pipeline of one.
     if let b = descriptor.attachmentBlends, b.count != formats.count && b.count != 1 { descriptor.attachmentBlends = nil }
     do throws(GPUError) {
       let p = try d.gpu.makeGraphicsPipeline(descriptor)
       let o = PipelineObject(gpu: p, layout: layout, device: d)
-      o.viewport = viewport
-      o.scissor = scissor
+      o.viewports = viewports
+      o.scissors = scissors
+      o.viewportCount = viewportCount
       o.dynamic = dynamic
       o.depthStencil = depthStencil
       unsafe pOut.pointee = Handle.make(o)

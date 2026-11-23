@@ -1434,6 +1434,9 @@ final class CoreCases {
     do throws(GPUError) { try texelBuffers() } catch { caught("texel buffers", error) }
     lap("1d, swizzle, custom border and texel buffers", t)
     t = Clock.monotonic()
+    elsewhereCases()
+    lap("viewports and sparse resources", t)
+    t = Clock.monotonic()
     do throws(GPUError) { try copyRegion() } catch { caught("copy region", error) }
     do throws(GPUError) { try blit() } catch { caught("blit", error) }
     do throws(GPUError) { try clears() } catch { caught("clears", error) }

@@ -207,6 +207,67 @@ func bytes(_ text: String) -> [UInt8] { text.split(separator: " ").map { UInt8($
     }
   }
 
+  /// A sampler with a colour of its own (VK_EXT_custom_border_color, forwarded to the renderer): the extension's struct goes
+  /// in the chain, a marker, its sType, its own (empty) chain, the colour as VkClearColorValue's union (§5: the member's index,
+  /// then its array) and the format.
+  @Test func samplerWithACustomBorderColour() {
+    let device = FakeObject(2), sampler = FakeObject(9)
+    var plain = VkSamplerCreateInfo()
+    plain.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO
+    plain.borderColor = VK_BORDER_COLOR_FLOAT_CUSTOM_EXT
+    var handle: VkSampler? = sampler.handle
+    var without = VenusEncoder()
+    Venus.vkCreateSampler(&without, reply: false, device.handle, &plain, nil, &handle)
+
+    var custom = VkSamplerCustomBorderColorCreateInfoEXT()
+    custom.sType = VK_STRUCTURE_TYPE_SAMPLER_CUSTOM_BORDER_COLOR_CREATE_INFO_EXT
+    custom.customBorderColor.float32 = (0.25, 0.5, 0.75, 1)
+    custom.format = VK_FORMAT_UNDEFINED
+    withUnsafePointer(to: &custom) { c in
+      var info = plain
+      info.pNext = UnsafeRawPointer(c)
+      var e = VenusEncoder()
+      Venus.vkCreateSampler(&e, reply: false, device.handle, &info, nil, &handle)
+      // Type, flags, the device's id, the info's marker and sType: then the chain.
+      let head = 4 + 4 + 8 + 8 + 4
+      #expect(Array(e.bytes[..<head]) == Array(without.bytes[..<head]))
+      var chain = bytes("01 00 00 00 00 00 00 00 18 2b 9f 3b 00 00 00 00 00 00 00 00 02 00 00 00 04 00 00 00 00 00 00 00")
+      for f: Float in [0.25, 0.5, 0.75, 1] { withUnsafeBytes(of: f.bitPattern.littleEndian) { chain += $0 } }
+      chain += bytes("00 00 00 00")
+      #expect(hex(Array(e.bytes[head..<(head + chain.count)])) == hex(chain))
+      // The rest is the info's own fields, as without the chain (whose end was one empty marker).
+      #expect(Array(e.bytes[(head + chain.count)...]) == Array(without.bytes[(head + 8)...]))
+    }
+  }
+
+  /// The extension's features in a features2 query: asked for partly, and filled by the reply.
+  @Test func customBorderFeaturesThroughAChain() throws {
+    let device = FakeObject(2)
+    var border = VkPhysicalDeviceCustomBorderColorFeaturesEXT()
+    border.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT
+    var features = VkPhysicalDeviceFeatures2()
+    features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2
+    try withUnsafeMutablePointer(to: &border) { pb in
+      features.pNext = UnsafeMutableRawPointer(pb)
+      var e = VenusEncoder()
+      Venus.vkGetPhysicalDeviceFeatures2(&e, reply: true, device.handle, &features)
+      #expect(e.count == 24 + 4 + (8 + 4) + 8)
+      pb.pointee.customBorderColors = 1
+      pb.pointee.customBorderColorWithoutFormat = 1
+      var r = VenusEncoder()
+      Venus.vkGetPhysicalDeviceFeatures2_encodeReply(&r, device.handle, &features)
+      #expect(r.count == Venus.vkGetPhysicalDeviceFeatures2_replySize(device.handle, &features))
+      pb.pointee.customBorderColors = 0
+      pb.pointee.customBorderColorWithoutFormat = 0
+      try r.bytes.withUnsafeBytes { b in
+        var d = VenusDecoder(b)
+        try Venus.vkGetPhysicalDeviceFeatures2_reply(&d, device.handle, &features)
+        #expect(d.at == d.end)
+      }
+      #expect(pb.pointee.customBorderColors == 1 && pb.pointee.customBorderColorWithoutFormat == 1)
+    }
+  }
+
   @Test func aReplyForAnotherCommandIsRefused() throws {
     let device = FakeObject(2)
     var count: UInt32 = 0

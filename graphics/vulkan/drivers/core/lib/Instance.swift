@@ -216,6 +216,7 @@ func fillProperties(_ gpu: any GPUDevice, _ p: inout VkPhysicalDeviceProperties)
   m.nonCoherentAtomSize = 64
   fillDeviceLimits(&m, l)
   p.limits = m
+  fillSparseProperties(&p.sparseProperties, l)
 }
 
 /// The numbers of the root block the limits state (RootBlock's, as plain integers).
@@ -299,6 +300,8 @@ func core_vkGetPhysicalDeviceFeatures2(_ physicalDevice: VkPhysicalDevice?,
 func fillQueueFamily(_ p: inout VkQueueFamilyProperties, _ gpu: any GPUDevice) {
   p = VkQueueFamilyProperties()
   p.queueFlags = VkQueueFlags(VK_QUEUE_GRAPHICS_BIT.rawValue | VK_QUEUE_COMPUTE_BIT.rawValue | VK_QUEUE_TRANSFER_BIT.rawValue)
+  // The one queue binds sparse resources' pages where the device has them, in order with its submissions.
+  if gpu.limits.features.sparseBinding { p.queueFlags |= VkQueueFlags(VK_QUEUE_SPARSE_BINDING_BIT.rawValue) }
   p.queueCount = 1
   p.timestampValidBits = gpu.limits.features.timestampQueries ? 64 : 0
   p.minImageTransferGranularity = VkExtent3D(width: 1, height: 1, depth: 1)
@@ -427,7 +430,45 @@ func core_vkGetPhysicalDeviceSparseImageFormatProperties(_ physicalDevice: VkPhy
                                                          _ tiling: VkImageTiling, _ pPropertyCount: UnsafeMutablePointer<UInt32>?,
                                                          _ pProperties: UnsafeMutablePointer<VkSparseImageFormatProperties>?)
 {
-  unsafe pPropertyCount?.pointee = 0
+  guard let d = unsafe Handle.get(physicalDevice, PhysicalDeviceObject.self), let pCount = unsafe pPropertyCount else { return }
+  let all = sparseImageFormats(d.gpu, format, type, samples.rawValue, usage, tiling)
+  guard let out = unsafe pProperties else {
+    unsafe pCount.pointee = UInt32(all.count)
+    return
+  }
+  let n = min(Int(unsafe pCount.pointee), all.count)
+  for k in 0..<n { unsafe out[k] = all[k] }
+  unsafe pCount.pointee = UInt32(n)
+}
+
+func core_vkGetPhysicalDeviceSparseImageFormatProperties2(_ physicalDevice: VkPhysicalDevice?,
+                                                          _ pFormatInfo: UnsafePointer<VkPhysicalDeviceSparseImageFormatInfo2>?,
+                                                          _ pPropertyCount: UnsafeMutablePointer<UInt32>?,
+                                                          _ pProperties: UnsafeMutablePointer<VkSparseImageFormatProperties2>?)
+{
+  guard let d = unsafe Handle.get(physicalDevice, PhysicalDeviceObject.self), let i = unsafe pFormatInfo,
+    let pCount = unsafe pPropertyCount
+  else { return }
+  let all = unsafe sparseImageFormats(d.gpu, i.pointee.format, i.pointee.type, i.pointee.samples.rawValue, i.pointee.usage, i.pointee.tiling)
+  guard let out = unsafe pProperties else {
+    unsafe pCount.pointee = UInt32(all.count)
+    return
+  }
+  let n = min(Int(unsafe pCount.pointee), all.count)
+  for k in 0..<n { unsafe out[k].properties = all[k] }
+  unsafe pCount.pointee = UInt32(n)
+}
+
+/// How a sparse image of the format, type, samples and usage is bound on the device (optimal tiling only): an entry for each
+/// aspect, none where the device can't make it used partly bound.
+func sparseImageFormats(_ gpu: any GPUDevice, _ format: VkFormat, _ type: VkImageType, _ samples: UInt32, _ usage: UInt32,
+                        _ tiling: VkImageTiling) -> [VkSparseImageFormatProperties]
+{
+  guard tiling == VK_IMAGE_TILING_OPTIMAL, let px = pixelFormat(format) else { return [] }
+  let dimension: ImageDimension
+  if type == VK_IMAGE_TYPE_2D { dimension = .d2 } else if type == VK_IMAGE_TYPE_3D { dimension = .d3 } else { return [] }
+  guard let u = imageUsage(usage, format: px, dimension: dimension, gpu) else { return [] }
+  return gpu.sparseImageFormats(px, dimension: dimension, samples: samples, usage: u).map { sparseFormatProperties($0) }
 }
 
 // MARK: Device and queue

@@ -316,6 +316,7 @@ extension ImageDescriptor {
         return .invalid("a scanout image that isn't one four-byte colour layer")
       }
     }
+    if let e = sparseError(limits) { return e }
     // What the device lacks.
     if width > limits.maxImageDimension || height > limits.maxImageDimension {
       return .unsupported("an image of \(width) x \(height)")
@@ -407,6 +408,7 @@ extension GraphicsPipelineDescriptor {
     if multisample.samples == 1 && multisample.sampleMask & 1 == 0 { return .invalid("a sample mask that keeps no sample") }
     if multisample.minSampleShading < 0 || multisample.minSampleShading > 1 { return .invalid("a sample shading outside 0 to 1") }
     if rasterization.lineWidth <= 0 { return .invalid("a line of no width") }
+    if viewportCount == 0 { return .invalid("a pipeline of no viewports") }
     if depthStencil.depthBoundsTest && depthStencil.minDepthBounds > depthStencil.maxDepthBounds {
       return .invalid("depth bounds whose minimum is above the maximum")
     }
@@ -486,6 +488,9 @@ extension GraphicsPipelineDescriptor {
     if geometry != nil && !f.geometryShader { return .unsupported("geometry shaders") }
     if (tessellationControl != nil || tessellationEvaluation != nil) && !f.tessellation { return .unsupported("tessellation") }
     if !specialization.isEmpty && !f.specializationConstants { return .unsupported("specialization constants") }
+    if viewportCount > 1 && (!f.multiViewport || viewportCount > limits.maxViewports) {
+      return .unsupported("a pipeline of \(viewportCount) viewports")
+    }
     if viewMask != 0 {
       if !f.multiview { return .unsupported("multiview") }
       if UInt32(32 - viewMask.leadingZeroBitCount) > limits.maxMultiviewViews { return .unsupported("a view mask of \(viewMask)") }
@@ -517,6 +522,30 @@ struct ListRules {
         pass = nil
       case .setViewport, .setScissor:
         if pass == nil { return .invalid("a viewport or scissor outside a pass") }
+      case .setViewports(let first, let viewports):
+        if pass == nil { return .invalid("a viewport or scissor outside a pass") }
+        if let e = viewportRange(first, viewports.count) { return e }
+        for v in viewports {
+          if !(v.width > 0) || v.height == 0 || !v.height.isFinite || !v.x.isFinite || !v.y.isFinite {
+            return .invalid("a viewport of \(v.width) x \(v.height)")
+          }
+          if !(v.minDepth >= 0 && v.minDepth <= 1 && v.maxDepth >= 0 && v.maxDepth <= 1) { return .invalid("a viewport's depths outside 0 to 1") }
+          if let l = limits {
+            if l.maxViewportWidth > 0 && (v.width > Float(l.maxViewportWidth) || abs(v.height) > Float(l.maxViewportHeight)) {
+              return .unsupported("a viewport of \(v.width) x \(v.height)")
+            }
+            if l.viewportBoundsMax > l.viewportBoundsMin {
+              let xs = [v.x, v.x + v.width], ys = [v.y, v.y + v.height]
+              for c in xs + ys where c < l.viewportBoundsMin || c > l.viewportBoundsMax { return .unsupported("a viewport past the device's bounds") }
+            }
+          }
+        }
+      case .setScissors(let first, let scissors):
+        if pass == nil { return .invalid("a viewport or scissor outside a pass") }
+        if let e = viewportRange(first, scissors.count) { return e }
+        for r in scissors where r.x < 0 || r.y < 0 || Int(r.x) + Int(r.width) > Int(Int32.max) || Int(r.y) + Int(r.height) > Int(Int32.max) {
+          return .invalid("a scissor before its attachments' origin or past the largest offset")
+        }
       case .draw(let p, _, _, _, _, _):
         if let e = drawable(p, pass) { return e }
         passDraws += 1
@@ -641,6 +670,15 @@ struct ListRules {
       }
     }
     if pass != nil { return .invalid("a pass that never ends") }
+    return nil
+  }
+
+  /// Viewports or scissors `first` on, `count` of them: one at least, and past the first only where the device has more.
+  private func viewportRange(_ first: UInt32, _ count: Int) -> GPUError? {
+    if count == 0 { return .invalid("no viewports or scissors") }
+    let end = UInt64(first) + UInt64(count)
+    if end > 1 && !features.multiViewport { return .unsupported("more than one viewport") }
+    if let l = limits, end > UInt64(l.maxViewports) { return .unsupported("viewports past the device's \(l.maxViewports)") }
     return nil
   }
 

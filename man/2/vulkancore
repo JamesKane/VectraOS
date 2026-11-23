@@ -37,10 +37,10 @@ The loader reads its commands by name from `coreGetInstanceProcAddr` and `coreGe
 There is one physical device for the core device, one queue family that draws, computes and copies, and one queue.
 It reports Vulkan 1.3 with buffer device address, timeline semaphores, dynamic rendering, synchronization 2 and multiview, and two device extensions: `VK_EXT_descriptor_buffer` (below), `VK_EXT_custom_border_color` where the core's device has a sampler's own border colour.
 Where the layer is given a window system (`CoreDriver.windowSystem`: a protocol of windows, which the registry of tier 1 implements over the SDK's loop and a test over a fake), it also has the instance extensions `VK_KHR_surface` and `VK_VECTRA_window_surface` and the device extension `VK_KHR_swapchain`, and a swapchain's images are the core's present images (gpucore(2)) that the window is given as its own: vulkansurface(2) says what they do.
-Every feature, limit and format property it reports is the core device's: `VkPhysicalDeviceFeatures` and the 1.1, 1.2 and 1.3 feature structures are `DeviceFeatures` (a feature the device lacks is reported absent, never emulated), the limits are `DeviceLimits` (image sizes, array layers, sample counts, anisotropy, line widths, colour attachments, patch size, subgroup size, multiview views, the timestamp period), and `vkGetPhysicalDeviceFormatProperties`, `vkGetPhysicalDeviceImageFormatProperties` and their "2" forms are `DeviceLimits.formats(_:)`.
+Every feature, limit and format property it reports is the core device's: `VkPhysicalDeviceFeatures` and the 1.1, 1.2 and 1.3 feature structures are `DeviceFeatures` (a feature the device lacks is reported absent, never emulated), the limits are `DeviceLimits` (image sizes, array layers, sample counts, anisotropy, line widths, colour attachments, patch size, subgroup size, multiview views, the viewports, their size, bounds and sub-pixel bits, the sparse address space, the timestamp period), the sparse properties are `DeviceLimits.sparse`, and `vkGetPhysicalDeviceFormatProperties`, `vkGetPhysicalDeviceImageFormatProperties` and their "2" forms are `DeviceLimits.formats(_:)`.
 A device that is asked to enable a feature it lacks fails.
 The heap's slots for the sampled images, samplers, storage images and the two kinds of texel buffer are the device's; four descriptor sets, 128 bytes of push constants and eight vertex buffers are the root block's (below).
-What Vulkan has that the core has no word for is absent: sparse resources, geometry stages' adjacency topologies, more than one viewport, 16-bit and 8-bit storage, protected memory and presentation.
+What Vulkan has that the core has no word for is absent: geometry stages' adjacency topologies, 16-bit and 8-bit storage, protected memory and presentation.
 Dispatchable objects keep their first word for the loader, which puts its dispatch table there.
 
 ## Memory, buffers and images
@@ -59,6 +59,13 @@ A sampler takes a sampler slot when it is made, with all the state Vulkan gives 
 A buffer can be a texel buffer: `vkCreateBufferView` makes a core `BufferView` of the buffer's memory (the buffer's place plus the view's offset, the range or the rest of the buffer, the format), and takes a slot in the heap's array of uniform texel buffers if the buffer was made with `UNIFORM_TEXEL_BUFFER`, and in the array of storage texel buffers if it was made with `STORAGE_TEXEL_BUFFER`, giving each back when the view is destroyed.
 A heap slot belongs to its view or sampler; writing a descriptor only writes the slot's number.
 Where the device has no clears, a transfer destination that can be drawn into is also a render target, since `vkCmdClearColorImage` is then a pass that clears.
+
+## Sparse resources
+
+Where the device has them (`DeviceFeatures.sparseBinding` and the residency features), a buffer made with `VK_BUFFER_CREATE_SPARSE_BINDING_BIT` (and residency or aliasing) is the core's sparse buffer, made with the `VkBuffer`: its device address is the sparse buffer's from the start, every command that names it uses that range, and memory is never bound to it with `vkBindBufferMemory`.
+An image made with the sparse flags is a core image made sparse (`ImageDescriptor.sparse`).
+A sparse resource's memory requirements are the core's (`sparseRequirements`): its range in whole pages, aligned to the page, in device-local memory; `vkGetImageSparseMemoryRequirements` and its "2" form give each aspect's block shape and mip tail (`sparseImageRequirements`), and `vkGetPhysicalDeviceSparseImageFormatProperties` and its "2" form the device's block shapes for 2D and 3D images of optimal tiling (`sparseImageFormats`).
+The one queue family says `VK_QUEUE_SPARSE_BINDING_BIT` where the device binds sparse resources.
 
 ## Descriptors and pipelines
 
@@ -85,10 +92,10 @@ Each stage's `VkSpecializationInfo` goes through the lowering with it, as the va
 A graphics pipeline has a vertex and a fragment stage, and a compute pipeline a compute stage; the entry point is named by the stage.
 The vertex input state is a binding and a stride (a multiple of 4) for each of up to eight vertex buffers, and an attribute at a location with an offset that is a multiple of 4, in one of the formats `R32`, `R32G32`, `R32G32B32` or `R32G32B32A32` as `SFLOAT`, `UINT` or `SINT`, or `R8G8B8A8_UNORM`.
 The topology is a triangle list or strip, a line list or a point list.
-A pipeline that states its viewport and scissor has them sent before its draws.
+A pipeline draws with the viewport state's count of viewports and scissors (`GraphicsPipelineDescriptor.viewportCount`; more than one where the device has `multiViewport`, up to its `maxViewports`), and one that states them has them sent before its draws, depths and all.
 The rest of the fixed state is the core's, each stated field for field: the depth and stencil state (where the pass has such an attachment), culling, front face, polygon mode, depth bias, depth clamp, line width, rasterizer discard, the samples, the sample mask, sample shading, alpha to coverage and alpha to one, the blend of each colour attachment (every factor and operation, and the colour write mask), the logic op, the blend constants, and primitive restart.
 The topologies are the lists, strips and fans of points, lines and triangles, and patches with the tessellation stages; a geometry stage and the two tessellation stages are lowered as the stages they are.
-The state a pass's commands set is the dynamic state: the viewport and scissor, the blend constants, the stencil reference, compare and write masks, the depth bias, the depth bounds and the line width.
+The state a pass's commands set is the dynamic state: the viewports and scissors (`vkCmdSetViewport` and `vkCmdSetScissor` from any first one, each kept and sent before a draw that uses it where it changed: a pipeline of one viewport whose depths are 0 to 1 gets the core's single viewport and scissor, otherwise `setViewports` and `setScissors` with the depths), the blend constants, the stencil reference, compare and write masks, the depth bias, the depth bounds and the line width.
 A device without general blends has opaque and source alpha over for the colour, and a source alpha over for which the alpha's source factor is source alpha is drawn as one.
 The targets come from the render pass's subpass or from `VkPipelineRenderingCreateInfo`: the colour formats, the depth and stencil format, and the view mask.
 A pipeline cache keeps nothing, and its data is empty.
@@ -145,6 +152,7 @@ A binary semaphore is the value of the submission that signalled it, and a wait 
 A timeline semaphore keeps the device value each of its values was signalled at: a wait for one of them waits for the first submission that signals it or a later value, a value the host signalled or the semaphore began with is reached at once, and `vkSignalSemaphore` by the host is reached at once too.
 `vkQueueSubmit` and `vkQueueSubmit2` are the same; a fence given with no submissions is signalled by an empty one.
 `vkWaitForFences`, `vkWaitSemaphores` and the idle waits wait for the device to reach the values; a timeout of 0 only looks.
+`vkQueueBindSparse` is a batch like a submission's for each of its bind infos: it waits for its semaphores, binds through the core's `bindSparse` (buffer binds, opaque image binds with the metadata flag, and image binds by blocks; memory `VK_NULL_HANDLE` binds a range to nothing), signals the next value, and the fence takes the last.
 The layer owns the device's timeline: it counts from the value the device has reached, and nothing else may signal on it.
 
 ## What it leaves out
@@ -152,8 +160,8 @@ The layer owns the device's timeline: it counts from the value the device has re
 What the device lacks, it refuses: the core's rules judge every image, view, sampler, pipeline and list, and an error is `VK_ERROR_FEATURE_NOT_PRESENT` for a feature or format the device doesn't have and `VK_ERROR_UNKNOWN` for a shape no device takes.
 What Vulkan has and the core has no word for, the layer leaves out:
 
-- Sparse images and buffers, and aliased image memory; the pass dependencies that name an input attachment (the layer ends a subpass's pass and begins the next with a barrier between them, whatever the dependencies say), and a multisampled or depth input attachment.
-- Adjacency topologies, dynamic state past the core's (the 1.3 and extension states), and more than one viewport or scissor.
+- Aliased image memory (`VK_IMAGE_CREATE_ALIAS_BIT`); the pass dependencies that name an input attachment (the layer ends a subpass's pass and begins the next with a barrier between them, whatever the dependencies say), and a multisampled or depth input attachment.
+- Adjacency topologies, and dynamic state past the core's (the 1.3 and extension states, among them the viewport and scissor counts set by commands).
 - Texel buffers by address (a descriptor buffer's `pUniformTexelBuffer` and `pStorageTexelBuffer`), inline uniform blocks, push descriptors, descriptor update templates, `vkCmdCopyQueryPoolResults`, and, with descriptor buffers, push descriptors, capture and replay, embedded immutable samplers and dynamic buffers (an immutable sampler's slot is not in a record the application writes).
 - Float64, float atomics, depth bounds and tessellation on a device without them, and anything else the device's features say it lacks.
 - Instance extensions but the surface ones (vulkansurface(2)), device extensions but `VK_KHR_swapchain`, `VK_EXT_descriptor_buffer` and, where the core's device has a sampler's own border colour, `VK_EXT_custom_border_color`, and queues but the one; presentation but FIFO, and the display and other surface extensions.
@@ -171,6 +179,7 @@ A wait takes no time limit from the device: a timeout of more than 0 waits for t
 `vkGetQueryPoolResults` without `VK_QUERY_RESULT_WAIT_BIT` returns `VK_NOT_READY` while any submission is unfinished, not only those that wrote the queries.
 The memory heap's size is nominal, and the limits that aren't the device's (the compute workgroup sizes, the vertex input counts, the range of a uniform buffer) are the layer's own.
 The bound sets are not reset when a pipeline with another layout is bound; a draw reads the sets that were bound last.
+`vkGetDeviceImageSparseMemoryRequirements` is not provided.
 A command buffer's list is merged into its submission's when it is submitted, so a command buffer that failed `vkEndCommandBuffer` and is submitted anyway runs what it recorded.
 An event is set when the submission that sets it is made, not when the device reaches the command, and a host that reads its status before then reads it reset.
 The state a secondary command buffer sets is not known to its primary afterwards, so the primary sends its own again before its next draw.

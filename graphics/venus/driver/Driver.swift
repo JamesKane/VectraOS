@@ -216,6 +216,77 @@ func clientExtensions(_ context: VenusContext) -> [StaticString] {
   context.canExportVMOs ? ["VK_FUCHSIA_external_memory"] : []
 }
 
+/// The renderer's device extensions the driver forwards, by name and
+/// number: their structs are on the wire (venusRendererExtensions), and
+/// the driver adds nothing of its own to them. Each is offered where the
+/// renderer's device offers it and its protocol carries it.
+let forwardedExtensions: [(name: StaticString, number: Int)] = [("VK_EXT_custom_border_color", 288)]
+
+/// Whether the bytes of `name` (no terminator) are `s`'s.
+func sameName(_ name: [UInt8], _ s: StaticString) -> Bool {
+  guard name.count == s.utf8CodeUnitCount else { return false }
+  let p = unsafe s.utf8Start
+  for i in 0..<name.count where unsafe p[i] != name[i] { return false }
+  return true
+}
+
+/// Which of `forwardedExtensions` a renderer's device offers (its names
+/// and spec versions) and its protocol carries (the capset's mask).
+func forwardable(offered: [(name: [UInt8], specVersion: UInt32)], mask: [UInt32]) -> [(index: Int, specVersion: UInt32)] {
+  var out: [(index: Int, specVersion: UInt32)] = []
+  for i in 0..<forwardedExtensions.count where VenusContext.carries(mask, extension: forwardedExtensions[i].number) {
+    for o in offered where sameName(o.name, forwardedExtensions[i].name) {
+      out.append((i, o.specVersion))
+      break
+    }
+  }
+  return out
+}
+
+/// The forwarded extensions the renderer offers for `physicalDevice`,
+/// asked of it once. Takes the lock.
+func forwarded(_ physicalDevice: VkPhysicalDevice?) -> [(index: Int, specVersion: UInt32)] {
+  guard let s = unsafe state(physicalDevice, PhysicalDeviceState.self) else { return [] }
+  if let f = s.forwarded { return f }
+  let context = s.context
+  let offered: [(name: [UInt8], specVersion: UInt32)]? = try? context.locked {
+    () throws(VenusLost) -> [(name: [UInt8], specVersion: UInt32)] in
+    var count: UInt32 = 0
+    _ = try unsafe context.call(Venus.vkEnumerateDeviceExtensionProperties_replySize(physicalDevice, nil, &count, nil),
+                                { e in unsafe Venus.vkEnumerateDeviceExtensionProperties(&e, reply: true, physicalDevice, nil, &count, nil) },
+                                { (d: inout VenusDecoder) throws(VenusError) -> VkResult in
+                                  try unsafe Venus.vkEnumerateDeviceExtensionProperties_reply(&d, physicalDevice, nil, &count, nil)
+                                })
+    var props = [VkExtensionProperties](repeating: VkExtensionProperties(), count: Int(count))
+    if count > 0 {
+      _ = try props.withUnsafeMutableBufferPointer { b throws(VenusLost) -> VkResult in
+        try unsafe context.call(Venus.vkEnumerateDeviceExtensionProperties_replySize(physicalDevice, nil, &count, b.baseAddress),
+                                { e in unsafe Venus.vkEnumerateDeviceExtensionProperties(&e, reply: true, physicalDevice, nil, &count,
+                                                                                         b.baseAddress) },
+                                { (d: inout VenusDecoder) throws(VenusError) -> VkResult in
+                                  try unsafe Venus.vkEnumerateDeviceExtensionProperties_reply(&d, physicalDevice, nil, &count, b.baseAddress)
+                                })
+      }
+    }
+    var names: [(name: [UInt8], specVersion: UInt32)] = []
+    for p in props.prefix(Int(count)) {
+      var name: [UInt8] = []
+      withUnsafeBytes(of: p.extensionName) { b in
+        for unsafe c in unsafe b {
+          if c == 0 { break }
+          name.append(c)
+        }
+      }
+      names.append((name, p.specVersion))
+    }
+    return names
+  }
+  guard let offered else { return [] }  // lost: asked again next time
+  let f = forwardable(offered: offered, mask: context.extensionMask)
+  s.forwarded = f
+  return f
+}
+
 func venus_vkEnumerateDeviceExtensionProperties(_ physicalDevice: VkPhysicalDevice?, _ pLayerName: UnsafePointer<CChar>?,
                                                 _ pPropertyCount: UnsafeMutablePointer<UInt32>?,
                                                 _ pProperties: UnsafeMutablePointer<VkExtensionProperties>?) -> VkResult
@@ -224,7 +295,10 @@ func venus_vkEnumerateDeviceExtensionProperties(_ physicalDevice: VkPhysicalDevi
   guard let context = unsafe VenusHandle.context(physicalDevice), let pCount = unsafe pPropertyCount else {
     return VK_ERROR_INITIALIZATION_FAILED
   }
-  let ours = clientExtensions(context)  // core 1.3 and these, so far
+  // Core 1.3, the driver's own, and the renderer's it forwards.
+  var ours: [(name: StaticString, specVersion: UInt32)] = []
+  for n in clientExtensions(context) { ours.append((n, 1)) }
+  for f in unsafe forwarded(physicalDevice) { ours.append((forwardedExtensions[f.index].name, f.specVersion)) }
   guard let out = unsafe pProperties else {
     unsafe pCount.pointee = UInt32(ours.count)
     return VK_SUCCESS
@@ -232,9 +306,10 @@ func venus_vkEnumerateDeviceExtensionProperties(_ physicalDevice: VkPhysicalDevi
   let n = min(Int(unsafe pCount.pointee), ours.count)
   for i in 0..<n {
     var p = VkExtensionProperties()
-    p.specVersion = 1
+    p.specVersion = ours[i].specVersion
+    let name = ours[i].name
     withUnsafeMutableBytes(of: &p.extensionName) { b in
-      for unsafe (k, c) in unsafe UnsafeBufferPointer(start: ours[i].utf8Start, count: ours[i].utf8CodeUnitCount).enumerated() {
+      for unsafe (k, c) in unsafe UnsafeBufferPointer(start: name.utf8Start, count: name.utf8CodeUnitCount).enumerated() {
         unsafe b[k] = c
       }
     }
@@ -291,16 +366,32 @@ func venus_vkCreateDevice(_ physicalDevice: VkPhysicalDevice?, _ pCreateInfo: Un
   guard let physical = unsafe state(physicalDevice, PhysicalDeviceState.self), let info = unsafe pCreateInfo,
     let pDevice = unsafe pDevice
   else { return VK_ERROR_INITIALIZATION_FAILED }
-  // Only the driver's own extensions, which the renderer doesn't see.
+  // The driver's own extensions, which the renderer doesn't see, and the
+  // renderer's it forwards where it offers them.
   let context = physical.context
+  var offered: [StaticString] = []
+  for f in unsafe forwarded(physicalDevice) { offered.append(forwardedExtensions[f.index].name) }
+  var names: [UnsafePointer<CChar>?] = unsafe []
   for i in 0..<Int(unsafe info.pointee.enabledExtensionCount) {
-    guard unsafe listed(info.pointee.ppEnabledExtensionNames?[i], in: clientExtensions(context)) else {
-      return VK_ERROR_EXTENSION_NOT_PRESENT
-    }
+    let name = unsafe info.pointee.ppEnabledExtensionNames?[i]
+    if unsafe listed(name, in: clientExtensions(context)) { continue }
+    guard unsafe listed(name, in: offered) else { return VK_ERROR_EXTENSION_NOT_PRESENT }
+    unsafe names.append(name)
   }
-  var forwarded = unsafe info.pointee
-  unsafe forwarded.enabledExtensionCount = 0
-  unsafe forwarded.ppEnabledExtensionNames = nil
+  return unsafe names.withUnsafeBufferPointer { b in
+    var forwarded = unsafe info.pointee
+    unsafe forwarded.enabledExtensionCount = UInt32(b.count)
+    unsafe forwarded.ppEnabledExtensionNames = b.isEmpty ? nil : b.baseAddress
+    return unsafe createDevice(physicalDevice, physical, info, &forwarded, pDevice)
+  }
+}
+
+/// vkCreateDevice with `forwarded`: the application's info with the
+/// extensions the renderer sees.
+func createDevice(_ physicalDevice: VkPhysicalDevice?, _ physical: PhysicalDeviceState, _ info: UnsafePointer<VkDeviceCreateInfo>,
+                  _ forwarded: inout VkDeviceCreateInfo, _ pDevice: UnsafeMutablePointer<VkDevice?>) -> VkResult
+{
+  let context = physical.context
   do {
     return try context.locked { () throws(VenusLost) -> VkResult in
       let device = DeviceState(context, physical: physical)
@@ -406,6 +497,15 @@ func venus_vkQueueSubmit(_ queue: VkQueue?, _ submitCount: UInt32, _ pSubmits: U
                          _ fence: VkFence?) -> VkResult
 {
   unsafe submit(queue, fence) { e in unsafe Venus.vkQueueSubmit(&e, reply: false, queue, submitCount, pSubmits, fence) }
+}
+
+/// Sparse binds go in order with the queue's submissions and, like them,
+/// without a reply: their semaphores are the renderer's, and the fence
+/// waits for the queue's next sync value.
+func venus_vkQueueBindSparse(_ queue: VkQueue?, _ bindInfoCount: UInt32, _ pBindInfo: UnsafePointer<VkBindSparseInfo>?,
+                             _ fence: VkFence?) -> VkResult
+{
+  unsafe submit(queue, fence) { e in unsafe Venus.vkQueueBindSparse(&e, reply: false, queue, bindInfoCount, pBindInfo, fence) }
 }
 
 func venus_vkQueueSubmit2(_ queue: VkQueue?, _ submitCount: UInt32, _ pSubmits: UnsafePointer<VkSubmitInfo2>?,
