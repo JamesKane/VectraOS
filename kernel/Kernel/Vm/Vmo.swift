@@ -341,6 +341,14 @@ enum DiscardState: UInt8 {
                 if !copied {
                     arch_zero_page(KernelLayout.physmap(phys))
                 }
+                // The zeroing (dc zva allocates its lines) or copy went
+                // through the cached physmap: a VMO mapped another way has
+                // no line of it left, or one written back later would land
+                // over what a device or the uncached mapping wrote since.
+                if pointee.cache != .cached {
+                    arch_cache_op(KernelLayout.physmap(phys), KernelLayout.pageSize, UInt32(CROI_CACHE_CLEAN_INVALIDATE),
+                                  VmoCache.line)
+                }
                 pointee.committedPages += 1
                 if zero {
                     let start = offset & ~(KernelLayout.pageSize - 1)
@@ -617,6 +625,11 @@ struct Vmo: ~Copyable {
         }
         unsafe UnsafeMutableRawPointer(bitPattern: UInt(KernelLayout.physmap(base)))!
             .initializeMemory(as: UInt8.self, repeating: 0, count: Int(size))
+        // Zeroed through the cached physmap: no line of it outlives that in
+        // memory a device or an uncached mapping uses (as `commit`'s pages).
+        if cache != .cached {
+            arch_cache_op(KernelLayout.physmap(base), size, UInt32(CROI_CACHE_CLEAN_INVALIDATE), VmoCache.line)
+        }
         do throws(VmError) {
             let made = try Self.make(.contiguous(base: base), size: size, cache: cache)
             if let account {

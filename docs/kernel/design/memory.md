@@ -131,6 +131,15 @@ User address spaces and VMOs (K4a, Kernel/Vm/):
   first (`croi.contiguous_pool=<MiB>`, default 8, below 4 GiB if it can).
   `cacheOp` (include/cache.h: clflush, dc cvac/ivac/civac, Zicbom cbo.*
   when the RHCT lists it) and `setCachePolicy` (unmapped VMOs only).
+  A page committed into a VMO that isn't cached (`commit`, by a fault
+  or a pin), and a contiguous VMO made uncached, is cleaned and
+  invalidated through the physmap after its zeroing or copy, as
+  Zircon's `AllocateAndZeroPage` path does: `dc zva` allocates dirty
+  lines there, and one evicted later would land over what a non-coherent
+  device or the uncached mapping wrote (the Orange Pi 6 Plus's GPU
+  memory is made write-combining, then pinned: before, only pages
+  committed before the policy change were cleaned). DriverSuite's
+  `freshUncachedPages` checks it where caches are real.
 - Accounts (ext 6): `MemoryAccount` limit + pressure level; anonymous VMOs
   charge per committed page, contiguous (pinned) and `deviceLocal` VMOs in
   full and are `neverEvict`; over-budget commits fail; pressure (a port packet)
