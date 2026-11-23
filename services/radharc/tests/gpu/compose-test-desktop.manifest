@@ -1,0 +1,12 @@
+# compose-test on the board's desktop: an app, started by `echo start compose-test >/svc/launcher/ctl` from a cpu
+# session, with the desktop's Radharc on the display. In its `desktop` mode it starts vulkan-present and judges its
+# exit, presents Loinnir's window, and has a window's GPU frame sampled where it lies; it prints `compose-test: all
+# passed` and exits.
+service compose-test
+program compose-test
+arg desktop
+app compose-test
+use windows
+launcher
+mount /dev devmgr/dev
+mount /lib/theme bootfs/lib/theme

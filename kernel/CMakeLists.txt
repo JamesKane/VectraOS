@@ -687,6 +687,7 @@ get_property(_vulkan_test GLOBAL PROPERTY CROI_TIER1_VULKAN_TEST)
 set(_vulkan_test_entries)
 set(_vulkan_test_board_entries)
 set(_vulkan_present_entries)
+set(_vulkan_present_board_entries)
 if(_vulkan_test)
   set(_vulkan_test_entries bin/vulkan-test=${_vulkan_test}
       etc/manifests/vulkan-test.manifest=${PROJECT_SOURCE_DIR}/user/tier1/vulkan-test.manifest)
@@ -694,6 +695,8 @@ if(_vulkan_test)
   if(_vulkan_present)
     list(APPEND _vulkan_test_entries bin/vulkan-present=${_vulkan_present}
          etc/manifests/vulkan-present.manifest=${PROJECT_SOURCE_DIR}/user/tier1/vulkan-present.manifest)
+    set(_vulkan_present_board_entries bin/vulkan-present=${_vulkan_present}
+        etc/manifests/vulkan-present.manifest=${PROJECT_SOURCE_DIR}/user/tier1/vulkan-present-board.manifest)
   endif()
   set(_vulkan_test_board_entries bin/vulkan-test=${_vulkan_test}
       etc/manifests/vulkan-test.manifest=${PROJECT_SOURCE_DIR}/user/tier1/vulkan-test-board.manifest)
@@ -1092,7 +1095,10 @@ croi_bootfs(bootfs-board-desktop "Building bootfs for the board's desktop"
   bin/minimal=${_minimal} etc/manifests/minimal.manifest=${PROJECT_SOURCE_DIR}/shell/rio/tests/native/minimal.manifest
   bin/compose-cpu=${_compose_cpu} etc/manifests/compose-cpu.manifest=${_compose_cpu_manifest}
   bin/twenty=${_twenty} etc/manifests/twenty.manifest=${_twenty_manifest}
-  bin/crash-test=${_crash_test})
+  bin/crash-test=${_crash_test}
+  bin/compose-test=${_compose_test}
+  etc/manifests/compose-test.manifest=${PROJECT_SOURCE_DIR}/services/radharc/tests/gpu/compose-test-desktop.manifest
+  ${_vulkan_present_board_entries})
 add_dependencies(bootfs-board-desktop cpu-keys)
 
 # Atomics count with one AMO, never a checked add's LR/SC loop

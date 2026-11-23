@@ -1,0 +1,8 @@
+# vulkan-present on the board's desktop (vulkan-present(8)): the same program as boot-venus's, an app of the desktop
+# image where tier 1 is built, started by `compose-test desktop` (or `echo start vulkan-present >/svc/launcher/ctl`)
+# once Radharc is up: a swapchain on the native Mali driver, presented to a window of the Radharc on the display.
+service vulkan-present
+program vulkan-present
+app vulkan-present
+use windows
+mount /dev devmgr/dev
