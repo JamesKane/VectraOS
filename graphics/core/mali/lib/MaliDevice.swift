@@ -228,6 +228,17 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   public var probeQueryReadback = false
   /// A probe of the hardware: the fragment queue does not zero the reports (the CPU did, at the query set's making).
   public var probeSkipQueryZero = false
+  /// A probe of the hardware: passes hand back only their last tiler context's chunks (07 section 7.10's leak).
+  public var probeFinishLastContextOnly = false
+  /// The tiler heap's memory as the GPU left it, for a check that a pass hands back what it used: the heap context's eight words
+  /// and the first chunk's 64-byte header (nil before the first pass).
+  public var probeHeapWords: [UInt32]? {
+    guard let t = tilerHeap else { return nil }
+    var out: [UInt32] = []
+    for i in 0..<8 { out.append(unsafe t.context.buffer.pointer.load(fromByteOffset: 4 * i, as: UInt32.self)) }
+    for i in 0..<16 { out.append(unsafe t.chunk.buffer.pointer.load(fromByteOffset: 4 * i, as: UInt32.self)) }
+    return out
+  }
   /// Whether the memory of occlusion query sets made from now on is mapped cacheable for the GPU.
   public var probeQueryCacheable = true
   var queryReadbackRegion: Region?

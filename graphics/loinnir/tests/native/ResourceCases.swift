@@ -878,6 +878,68 @@ extension CoreCases {
 
   /// Runs the resource cases, and gives the count of checks that failed (they go on past a failure, to show every one).
   @discardableResult
+  /// Passes of 10 layers (two tiler contexts) one after another, each handing back both contexts' chunk lists: the heap's context and
+  /// its first chunk's header read the same after 48 such passes as after one pass of one layer, and the last pass's ten layers are
+  /// exact. Then the same passes made to hand back only the last context's list (07 section 7.10's leak), whose words are printed: a
+  /// probe of whether this heap shows the leak (each pass's heap descriptor starts the chunk afresh, so it may not).
+  func heapReturn() throws(GPUError) {
+    guard let mali = d as? MaliDevice, f.shaderViewportIndexLayer, f.arrayImages else { return skip("heap return", "not the Mali backend's layers") }
+    let w = 16, h = 16
+    let pso = try meshPipeline(vertex: LoinnirShaders.layerVert)
+    let mesh = try meshBuffer([Rect(x0: 4, y0: 0, x1: 12, y1: 16, color: [0, 1, 0, 1])], width: Float(w), height: Float(h))
+    let image = try image(.rgba8, Int32(w), Int32(h), layers: 10, usage: .renderTarget | .copySource)
+    func pass(_ layers: UInt32) throws(GPUError) {
+      var list = GPUCommandList()
+      list.render(RenderingInfo(colors: [Attachment(view: ImageView(image, dimension: .d2Array, layerCount: layers), load: .clear(0, 0, 1, 1))],
+                                layerCount: layers)) { r in
+        r.draw(pso, root: mesh.address, vertices: 6, instances: layers)
+      }
+      try run(list)
+    }
+    func hex(_ words: [UInt32]) -> String {
+      var s = ""
+      for (i, x) in words.enumerated() { s += (i == 0 ? "" : i == 8 ? " | " : " ") + String(x, radix: 16) }
+      return s
+    }
+    try pass(1)
+    let start = mali.probeHeapWords ?? []
+    for _ in 0..<48 { try pass(10) }
+    let after = mali.probeHeapWords ?? []
+    mali.probeFinishLastContextOnly = true
+    for _ in 0..<48 { try pass(10) }
+    mali.probeFinishLastContextOnly = false
+    let leaky = mali.probeHeapWords ?? []
+    try pass(10)
+    var n = 0
+    for l in 0..<10 {
+      var list = GPUCommandList()
+      let readback = try d.allocate(.readback, bytes: w * h * 4)
+      list.copy(image, to: readback, regions: [BufferImageRegion(subresource: ImageSubresourceLayers(baseLayer: UInt32(l)),
+                                                                 imageExtent: Extent3D(width: UInt32(w), height: UInt32(h)))])
+      try run(list)
+      let px = read(readback, w * h * 4)
+      for y in 0..<h {
+        for x in 0..<w {
+          let want: [UInt8] = x >= 4 && x < 12 ? [UInt8(20 * l), 255, 0, 255] : [0, 0, 255, 255]
+          let o = (y * w + x) * 4
+          if [px[o], px[o + 1], px[o + 2], px[o + 3]] != want { bad("heap return: layer \(l) (\(x), \(y)) after 97 passes"); return }
+          n += 1
+        }
+      }
+    }
+    let lines = [
+      "loinnir-test: heap words (context | chunk header) after one pass of one layer: " + hex(start),
+      "loinnir-test: heap words after 48 passes of 10 layers: " + hex(after),
+      "loinnir-test: heap words after 48 more handing back only the last context's chunks: " + hex(leaky),
+    ]
+    for line in lines {
+      print(line)
+      notes.append(line)
+    }
+    if after != start { bad("heap return: the heap's words changed over 48 passes of 10 layers: " + hex(after)) }
+    ok("heap return: 97 passes of 10 layers (two tiler contexts), the last pass's \(n) texels exact")
+  }
+
   func resourceCases() -> Int {
     var t = Clock.monotonic()
     do throws(GPUError) { try formats() } catch { caught("formats", error) }
@@ -900,6 +962,9 @@ extension CoreCases {
     t = Clock.monotonic()
     do throws(GPUError) { try presentImages() } catch { caught("present", error) }
     lap("present", t)
+    t = Clock.monotonic()
+    do throws(GPUError) { try heapReturn() } catch { caught("heap return", error) }
+    lap("heap return", t)
     for n in notes { print(n) }
     return softFailures
   }

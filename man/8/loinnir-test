@@ -40,6 +40,7 @@ Then it runs these cases, each of which prints `loinnir-test: ok: core: ...` and
 - texel buffers: a compute shader that fetches 16 texels from a uniform texel buffer, stores three times each, plus its index, to a storage texel buffer and gives each an atomic add of one, through the heap's texel-buffer arrays; read back from the buffer's own memory, exact;
 - copy region, blit and clears: an image region copied to another offset, a blit at twice the size and flipped, a clear of an image, of a rectangle inside a pass, a buffer filled and updated, and a buffer copied in and out of an image by regions with a row length; each exact.
 
+On the Mali backend a last resource case runs 97 passes of 10 layers (two tiler contexts) in a row, the last judged exactly, and requires the tiler heap's context and its chunk's header to read the same after 48 of them as after one pass of one layer; it then prints those words after 48 more passes made to hand back only the last context's chunks (`loinnir-test: heap words`), a probe of whether that leak shows.
 The lines of the multisampling, layers, clear and kept cases, and every skip, are printed again after the resource cases, as the board's serial console drops lines.
 
 A case runs only if the device reports the features it uses, and is skipped, with the missing feature named, if it doesn't.

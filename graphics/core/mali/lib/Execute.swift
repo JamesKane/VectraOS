@@ -814,6 +814,7 @@ extension MaliDevice {
     request.colourSurfaceStride = main.surfaceStride
     request.colourLayerStride = main.layerStride
     request.layers = pass.layers
+    request.finishLastContextOnly = probeFinishLastContextOnly
     // Multisampled (valhall 08 section 8.3): the tile holds every sample; a stored target writes each to its surface (Layered),
     // a resolved one the mean to the resolve image (Average), and one both stored and resolved gets a second descriptor over the
     // same tile for the mean.

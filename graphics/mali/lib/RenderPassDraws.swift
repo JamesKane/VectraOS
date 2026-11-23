@@ -205,6 +205,8 @@ public struct DrawPassRequest: Sendable {
   /// 7.8), and the first colour target's bytes from one layer to the next.
   public var layers: Int = 1
   public var colourLayerStride = 0
+  /// A probe of the hardware: hand back only the last context's chunk list (the leak of 07 section 7.10), to see what shows it.
+  public var finishLastContextOnly = false
   /// The first colour target's writeback (08 section 8.3.2) and the distance between its sample surfaces.
   public var colourMSAA: UInt32 = 0
   public var colourSurfaceStride: Int?
@@ -692,16 +694,22 @@ extension RenderPass {
         b.move32(43, box.max)
         b.emit(CSInstruction.runFragment())
       }
-      // The heap chunks go back by one FINISH_FRAGMENT, from the completed words of the context of the pass's last layer, as the
-      // reference does (07 section 7.10). 01 section 1.9.7's reading, a FINISH_FRAGMENT a context and one HEAP_OPERATION after them,
-      // drew a pass of 10 layers exactly and then stalled the queue for 5 s and lost the group on the board.
-      let last = contexts - 1
-      b.move64(completedAddressRegister, va(tilerAt) + UInt64(last * TilerContext.size + TilerContext.completedOffset))
-      b.emit(CSInstruction.loadMultiple(base: completedTopRegister, address: completedAddressRegister, mask: 0xF))
-      b.wait(mask: b.scoreboards.slotMask(dataSlot))
-      b.emit(CSInstruction.finishFragment(
-        firstChunkPair: completedTopRegister, lastChunkPair: completedBottomRegister, incrementFragmentCompleted: true,
-        waitMask: fragmentMask, signalSlot: finishSlot))
+      // 01 section 1.9.7, 07 section 7.10: each context's chunk list goes back by a FINISH_FRAGMENT of its own, from context 0 up,
+      // with that context's completed top and bottom. One context: its FINISH_FRAGMENT bumps the fragment-completed counter; several:
+      // none does, and one HEAP_OPERATION after them does. Every one waits only for the pass's runs and signals the finish slot:
+      // none may wait on the slot it signals (01 section 1.11; a chain that did stalled the queue for 5 s on the board).
+      let only = r.finishLastContextOnly ? [contexts - 1] : Array(0..<contexts)
+      for k in only {
+        b.move64(completedAddressRegister, va(tilerAt) + UInt64(k * TilerContext.size + TilerContext.completedOffset))
+        b.emit(CSInstruction.loadMultiple(base: completedTopRegister, address: completedAddressRegister, mask: 0xF))
+        b.wait(mask: b.scoreboards.slotMask(dataSlot))
+        b.emit(CSInstruction.finishFragment(
+          firstChunkPair: completedTopRegister, lastChunkPair: completedBottomRegister, incrementFragmentCompleted: only.count == 1,
+          waitMask: fragmentMask, signalSlot: finishSlot))
+      }
+      if only.count > 1 {
+        b.emit(CSInstruction.heapOperation(.fragmentCompleted, waitMask: fragmentMask, signalSlot: finishSlot))
+      }
     }
     func tail(_ b: inout CSBuilder) {
       b.waitAll()

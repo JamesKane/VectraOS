@@ -190,6 +190,18 @@ struct PassMemory {
     // Ten fragment runs (RUN_FRAGMENT, opcode 7), and the draw, which writes no layer, issued once (into the first context).
     let fragment = t.streams.last { runs($0, opcode: 7).count > 0 } ?? []
     #expect(runs(fragment, opcode: 7).count == 10)
+    // A FINISH_FRAGMENT (opcode 11) for each context, none bumping the counter, then one HEAP_OPERATION (opcode 49) fragment completed;
+    // each waits for the fragment runs' slot only, and none for the slot it signals (01 sections 1.9.7 and 1.11).
+    var finishes: [UInt64] = []
+    var heapOps: [UInt64] = []
+    for w in fragment where w >> 56 == 11 { finishes.append(w) }
+    for w in fragment where w >> 56 == 49 && w >> 32 & 7 == 3 { heapOps.append(w) }
+    #expect(finishes.count == 2 && heapOps.count == 1)
+    for w in finishes + heapOps {
+      let wait = w >> 16 & 0xFFFF, signal = w >> 48 & 0xF
+      #expect(wait & (1 << signal) == 0, "no self-wait")
+      #expect(w >> 56 != 11 || w & 1 == 0, "no increment")
+    }
     #expect(runs(t.streams.last { runs($0).count > 0 } ?? []).count == 1)
   }
 }
