@@ -1,0 +1,96 @@
+// SPDX-License-Identifier: BSD-3-Clause
+// The Mali backend's blits between images of one format with the nearest filter (Transfers.swift): a compute job that moves
+// each destination texel's bytes from the source texel nearest its centre, through memory accesses, as the raw views of
+// valhall 05 section 5.3.2 and 03 section 3.8.5 move a depth or stencil plane (or any format) unchanged. Each job is a
+// destination rectangle of a level, in slices and layers (workgroup z names one, through the table); the source position is
+// the destination's centre scaled into the source rectangle (Vulkan's blit), its corners in either order flipping it.
+#version 460
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
+#extension GL_EXT_shader_8bit_storage : require
+#extension GL_EXT_shader_16bit_storage : require
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(buffer_reference, std430, buffer_reference_align = 1) buffer U8 { uint8_t v[]; };
+layout(buffer_reference, std430, buffer_reference_align = 2) buffer U16 { uint16_t v[]; };
+layout(buffer_reference, std430, buffer_reference_align = 4) buffer U32 { uint v[]; };
+layout(buffer_reference, std430, buffer_reference_align = 8) buffer U64 { uvec2 v[]; };
+layout(buffer_reference, std430, buffer_reference_align = 16) buffer U128 { uvec4 v[]; };
+struct Blit {
+  U8 src;
+  U8 dst;
+  uint bytes;
+  uint srcRowStride;
+  uint srcSliceStride;
+  uint srcLayerStride;
+  uint dstRowStride;
+  uint dstSliceStride;
+  uint dstLayerStride;
+  uint dx;
+  uint dy;
+  uint dz;
+  uint w;
+  uint h;
+  uint d;
+  float sx;
+  float sy;
+  float sz;
+  float sw;
+  float sh;
+  float sd;
+  uint flips;
+  uint srcWidth;
+  uint srcHeight;
+  uint srcDepth;
+  uint firstZ;
+  uint textureIndex;
+  uint samplerIndex;
+  uint format;
+  uint kind;
+  uint pad0;
+  uint pad1;
+};
+layout(buffer_reference, std430, buffer_reference_align = 8) readonly buffer Params { U32 table; uint count; uint pad; Blit jobs[]; };
+layout(push_constant) uniform Root { Params params; } root;
+
+void main() {
+  uint z = gl_WorkGroupID.z;
+  uint j = root.params.table.v[z];
+  uint x = gl_GlobalInvocationID.x;
+  uint y = gl_GlobalInvocationID.y;
+  uint w = root.params.jobs[j].w;
+  uint h = root.params.jobs[j].h;
+  if (x >= w || y >= h) return;
+  uint d = root.params.jobs[j].d;
+  uint local = z - root.params.jobs[j].firstZ;
+  uint layer = local / d;
+  uint slice = local - layer * d;
+  uint flips = root.params.jobs[j].flips;
+  float u = (float(x) + 0.5) / float(w);
+  float v = (float(y) + 0.5) / float(h);
+  float t = (float(slice) + 0.5) / float(d);
+  if ((flips & 1u) != 0u) u = 1.0 - u;
+  if ((flips & 2u) != 0u) v = 1.0 - v;
+  if ((flips & 4u) != 0u) t = 1.0 - t;
+  int sx = clamp(int(floor(root.params.jobs[j].sx + u * root.params.jobs[j].sw)), 0, int(root.params.jobs[j].srcWidth) - 1);
+  int sy = clamp(int(floor(root.params.jobs[j].sy + v * root.params.jobs[j].sh)), 0, int(root.params.jobs[j].srcHeight) - 1);
+  int sz = clamp(int(floor(root.params.jobs[j].sz + t * root.params.jobs[j].sd)), 0, int(root.params.jobs[j].srcDepth) - 1);
+  uint bytes = root.params.jobs[j].bytes;
+  uint s = layer * root.params.jobs[j].srcLayerStride + uint(sz) * root.params.jobs[j].srcSliceStride
+    + uint(sy) * root.params.jobs[j].srcRowStride + uint(sx) * bytes;
+  uint o = layer * root.params.jobs[j].dstLayerStride + (root.params.jobs[j].dz + slice) * root.params.jobs[j].dstSliceStride
+    + (root.params.jobs[j].dy + y) * root.params.jobs[j].dstRowStride + (root.params.jobs[j].dx + x) * bytes;
+  U8 src = root.params.jobs[j].src;
+  U8 dst = root.params.jobs[j].dst;
+  if (bytes == 16u) {
+    U128(dst).v[o >> 4] = U128(src).v[s >> 4];
+  } else if (bytes == 8u) {
+    U64(dst).v[o >> 3] = U64(src).v[s >> 3];
+  } else if (bytes == 4u) {
+    U32(dst).v[o >> 2] = U32(src).v[s >> 2];
+  } else if (bytes == 2u) {
+    U16(dst).v[o >> 1] = U16(src).v[s >> 1];
+  } else {
+    dst.v[o] = src.v[s];
+  }
+}

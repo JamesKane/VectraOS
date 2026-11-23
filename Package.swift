@@ -494,7 +494,9 @@ let text: [Target] = [
   .testTarget(name: "VulkanLayerTests",
               dependencies: ["VulkanCoreDriver", "VulkanLowering", "GPUCore", "GPUCoreMali", "MaliFakeTransport", "TDVulkan"],
               path: "graphics/vulkan/layer-tests"),
-  .testTarget(name: "GPUCoreMaliTests", dependencies: ["GPUCoreMali", "GPUCore", "MaliCore", "ShaderTestKit", "MaliFakeTransport"], path: "graphics/core/mali/tests"),
+  // The transfers' kernels run on the interpreter over the fake transport's memory (TransferTests.swift).
+  .testTarget(name: "GPUCoreMaliTests", dependencies: ["GPUCoreMali", "GPUCore", "MaliCore", "ShaderTestKit", "MaliFakeTransport",
+                                                     "ValhallBackend", "ValhallBridge", "ValhallInterp"], path: "graphics/core/mali/tests"),
   .target(name: "IconGen", dependencies: ["XMLReader"], path: "ui/icons/gen"),
   .executableTarget(name: "iconsgen", dependencies: ["IconGen"], path: "tools/iconsgen"),
   .target(name: "UICore", dependencies: ["AccessTree", "Themes", "Light", "PixelKernels", "Raster", "TextLayout", "GlyphAtlas", "MSDF",

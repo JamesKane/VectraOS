@@ -10,9 +10,9 @@ import Testing
 
 @testable import GPUCoreMali
 
+/// The copies, blits and clears are the GPU's kernels: they run on the interpreter (KernelRunner.swift).
 private func resourceDevice() throws -> (MaliDevice, FakeTransport) {
-  let (gpu, t) = try device()
-  gpu.probeEnableResources()
+  let (gpu, t, _) = try kernelDevice()
   return (gpu, t)
 }
 
@@ -146,12 +146,15 @@ private func read(_ m: GPUMemory, _ count: Int) -> [UInt8] {
   }
 
   @Test func aBlitScalesFlipsAndConverts() throws {
-    let (gpu, _) = try resourceDevice()
+    let (gpu, _, runner) = try kernelDevice()
     let usage: ImageUsage = .copySource | .copyDestination
     let small = try gpu.makeImage(ImageDescriptor(format: .rgba8, width: 2, height: 2, usage: usage))
     let big = try gpu.makeImage(ImageDescriptor(format: .rgba8, width: 4, height: 4, usage: usage))
     let flipped = try gpu.makeImage(ImageDescriptor(format: .bgra8, width: 2, height: 2, usage: usage))
-    let up = try upload(gpu, [10, 20, 30, 255, 40, 50, 60, 255, 70, 80, 90, 255, 100, 110, 120, 255])
+    let texels: [UInt8] = [10, 20, 30, 255, 40, 50, 60, 255, 70, 80, 90, 255, 100, 110, 120, 255]
+    // The same format with the nearest filter is a raw move; into bgra8, the texture unit reads the source (modelled here).
+    runner.textures[0] = unormTexture(texels, width: 2, height: 2)
+    let up = try upload(gpu, texels)
     let a = try gpu.allocate(.readback, bytes: 64)
     let b = try gpu.allocate(.readback, bytes: 16)
     var list = GPUCommandList()

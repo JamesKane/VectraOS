@@ -56,7 +56,7 @@ final class CoreCases {
   /// The cases whose lines are printed again at the end (the board's serial console drops lines): multisampling, the clears and
   /// the kept depth and stencil.
   func reprinted(_ what: String) -> Bool {
-    for prefix in ["msaa", "clears", "depth kept", "stencil kept", "layers", "heap return", "multiview"] where what.utf8.starts(with: prefix.utf8) { return true }
+    for prefix in ["msaa", "clears", "transfers", "blit", "copy region", "depth kept", "stencil kept", "layers", "heap return", "multiview"] where what.utf8.starts(with: prefix.utf8) { return true }
     return false
   }
 
@@ -1438,6 +1438,7 @@ final class CoreCases {
     do throws(GPUError) { try blit() } catch { caught("blit", error) }
     do throws(GPUError) { try clears() } catch { caught("clears", error) }
     lap("copies, blits and clears", t)
+    transferCases()
     t = Clock.monotonic()
     pipelineCases()
     lap("pipeline state", t)

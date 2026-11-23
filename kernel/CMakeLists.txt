@@ -527,6 +527,7 @@ croi_user_program(${_loinnir_test} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/graph
   ${PROJECT_SOURCE_DIR}/graphics/loinnir/tests/native/generated/LoinnirShaders.swift
   ${PROJECT_SOURCE_DIR}/graphics/loinnir/tests/native/CoreFeatures.swift
   ${PROJECT_SOURCE_DIR}/graphics/loinnir/tests/native/ResourceCases.swift
+  ${PROJECT_SOURCE_DIR}/graphics/loinnir/tests/native/TransferCases.swift
   ${PROJECT_SOURCE_DIR}/graphics/loinnir/tests/native/CoreTexelBuffers.swift
   ${PROJECT_SOURCE_DIR}/graphics/loinnir/tests/native/PipelineCases.swift
   ${PROJECT_SOURCE_DIR}/graphics/loinnir/tests/native/PipelineCases2.swift

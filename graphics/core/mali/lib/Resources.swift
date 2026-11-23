@@ -184,6 +184,8 @@ extension MaliDevice {
     depth.sampled = true
     depth.filterable = true
     depth.blitSource = true
+    // Blits of depth and stencil are the nearest texels' bytes moved (Transfers.swift's blitRaw kernel).
+    depth.blitDestination = true
     var stencil = depth
     stencil.filterable = false
     // (what the pipeline made of a format's attachment capability stays)

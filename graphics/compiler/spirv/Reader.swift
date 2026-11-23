@@ -169,8 +169,16 @@ private struct Parser {
     switch width {
     case 32: break
     case 64: if !m.hasCapability(11) { throw err(i, "64-bit integers need capability Int64") }
-    case 16: if !m.hasCapability(22) { throw err(i, "16-bit integers need capability Int16") }
-    case 8: if !m.hasCapability(39) { throw err(i, "8-bit integers need capability Int8") }
+    // A narrow type is declared for storage alone under the storage capabilities (SPIR-V 2.16.1: StorageBuffer16BitAccess and
+    // its kin, 4433 to 4435; the 8-bit forms, 4448 to 4450), as glslang declares it for loads, stores and conversions.
+    case 16:
+      if !m.hasCapability(22) && !m.hasCapability(4433) && !m.hasCapability(4434) && !m.hasCapability(4435) {
+        throw err(i, "16-bit integers need capability Int16")
+      }
+    case 8:
+      if !m.hasCapability(39) && !m.hasCapability(4448) && !m.hasCapability(4449) && !m.hasCapability(4450) {
+        throw err(i, "8-bit integers need capability Int8")
+      }
     default: throw err(i, "integer width \(width) is not supported")
     }
   }

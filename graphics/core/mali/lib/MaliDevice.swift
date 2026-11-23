@@ -24,8 +24,8 @@
 //
 // This v0 runs one submission at a time: a submission starts when the one
 // before it has finished, so the lists need no ordering between the render
-// and compute groups, and a CPU copy sees what the GPU wrote. Copies and
-// clears with no draw are done by the CPU, in order with the GPU's passes.
+// and compute groups. Copies, blits, fills and clears with no draw are compute
+// kernels of the GPU's (Transfers.swift), in order with its passes.
 
 import GPUCore
 
@@ -223,6 +223,11 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   var clearPrograms: (vertex: VertexShader, layered: VertexShader, fragments: [FragmentShader])?
   /// The clear's vertex shader for each view mask a multiview pass has cleared in, made at first use.
   var clearMultiview: [(mask: UInt32, vertex: VertexShader)] = []
+  /// The transfers' compute kernels (Transfers.swift), compiled at first use, by `TransferKernel`'s raw value.
+  var transferPrograms: [Int: (shader: ComputeShader, layout: FauLayout)] = [:]
+  /// Host tests only: called for each transfer kernel as it is launched (its root pointer, grid and own heap), so a test can run it
+  /// on the interpreter over the fake transport's memory.
+  var transferKernelRan: ((TransferKernel, UInt64, Dim3, (address: UInt64, bytes: Int)?) -> Void)?
   /// Bits of every draw's flags 0 to set and to clear, for probes of the hardware (gpu-test's, loinnir-test's).
   public var probeFlags0: (or: UInt32, clear: UInt32) = (0, 0)
   /// A probe of the hardware: after a pass with occlusion queries the fragment queue loads the first report through the GPU
@@ -287,8 +292,8 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     // A clear inside a pass is a draw of it (ClearAttachments.swift).
     l.features.clearAttachments = true
     l.features.storageImages = true
-    // A window's frames are scanout images whose own pages the window maps (Import.swift's `exportWindowHandle`): this
-    // backend's copies run on the CPU, so a frame is never staged.
+    // A window's frames are scanout images whose own pages the window maps (Import.swift's `exportWindowHandle`), so a
+    // frame is never staged.
     l.features.presentDirect = true
     l.heapStorageImages = UInt32(Heap.storageSlots)
     // 32-bit atomics on memory and storage images, which are mapped cacheable for the GPU (an atomic in write-combining memory

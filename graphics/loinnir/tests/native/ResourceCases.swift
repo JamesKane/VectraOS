@@ -441,7 +441,7 @@ extension CoreCases {
     let cases: [(PixelFormat, String, Float, [UInt8])] = [
       (.depth16, "depth16", 0.25, le16(16384)),
       (.depth32f, "depth32f", 0.5, f32(0.5)),
-      (.depth24stencil8, "depth24stencil8", 0.75, le32(12_582_911 + 1)),
+      (.depth24stencil8, "depth24stencil8", 0.75, le32(12_582_911)),
       (.depth32fstencil8, "depth32fstencil8", 0.125, f32(0.125)),
     ]
     var names = ""
