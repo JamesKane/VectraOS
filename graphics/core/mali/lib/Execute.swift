@@ -447,6 +447,28 @@ extension MaliDevice {
     var pipelineState = PipelineMapping.drawState(state, dyn, width: planSize.width, height: planSize.height)
     pipelineState.scissorArrayLength = probeScissorArrayLength
     pipelineState.scissorProbe = probeScissorMode
+    if let vs = probeViewports {
+      pipelineState.viewports = vs.map { DrawViewport(x: Float($0.0), y: Float($0.1), width: Float($0.2), height: Float($0.3)) }
+      pipelineState.viewport = pipelineState.viewports.first ?? nil
+    }
+    if let ss = probeScissors {
+      pipelineState.scissors = ss.map {
+        PipelineMapping.scissorBox(x: $0.0, y: $0.1, width: $0.2, height: $0.3, targetWidth: planSize.width, targetHeight: planSize.height)
+      }
+      pipelineState.scissor = pipelineState.scissors.first ?? nil
+    }
+    if probeScissorMode == 6 {
+      // The array at an address whose bits 31:0 are zero, made once and written for each draw (one draw a pass in the probe).
+      if probeArrayRegion == nil {
+        let address = try takeAddress(4096, alignment: 1 << 32)
+        let buffer = try transport.createBuffer(size: 4096, cpuCached: false)
+        try transport.bind(vm: vm, buffer: buffer, address: address, gpuCacheable: false)
+        probeArrayRegion = Region(buffer: buffer, address: address, size: buffer.size)
+      }
+      let r = probeArrayRegion!
+      store(ScissorArray(state: pipelineState, width: planSize.width, height: planSize.height).words(), in: r, at: 0)
+      pipelineState.scissorArrayAddress = r.address
+    }
     pipelineState.scissorArrayFill = probeScissorArrayFill.map { ScissorBox(minX: $0.0, minY: $0.1, maxX: $0.2, maxY: $0.3) }
     // Too few vertices for the topology makes no primitive.
     if indirect == nil && vertices < pipelineState.minimumVertices { return }
@@ -882,8 +904,16 @@ extension MaliDevice {
     var attempts = 0
     while image == nil {
       do throws(RenderError) {
-        image = try RenderPass.build(at: region.address, capacity: region.size, request: request, registers: registers,
-                                     scoreboards: scoreboards, arch: info.arch).image
+        let made = try RenderPass.build(at: region.address, capacity: region.size, request: request, registers: registers,
+                                        scoreboards: scoreboards, arch: info.arch)
+        image = made.image
+        if probeScissorMode != 0 {
+          probeLastDraws = made.records.map { d in
+            [("scissor", d.state.scissorArray ?? 0), ("tiler", d.state.tilerContext), ("zsd", d.state.depthStencil), ("blend", d.blend),
+             ("vfau", d.vertexFAU), ("ffau", d.fragmentFAU), ("vspd", d.vertexSPD), ("fspd", d.fragmentSPD), ("vtsd", d.state.vertexTSD),
+             ("fsrt", d.state.fragmentSRT), ("index", d.state.indexBuffer)]
+          }
+        }
       } catch {
         if case .noRoom(let needed, _) = error, attempts == 0 {
           attempts += 1
@@ -901,6 +931,7 @@ extension MaliDevice {
     put(built.memory, into: region)
     if renderGroup == nil { renderGroup = try transport.createGroup(vm: vm, ringSizes: [4096, 4096]) }
     var jobs: [MaliJob] = []
+    probeLastPass = (region.address, region.size, built.streams.map { ($0.address, $0.size) })
     for (queue, s) in built.streams.enumerated() {
       jobs.append(MaliJob(queue: UInt32(queue), address: s.address, size: UInt32(s.size)))
     }

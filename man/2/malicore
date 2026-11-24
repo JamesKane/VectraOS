@@ -131,7 +131,7 @@ valhallbackend(2), shadercompiler(2), mali(3), gpu-test(8)
 
 # BUGS
 
-On the G720 every scissor array the probe makes (8 or 16-byte boxes, 64 or 4096-byte aligned, lengths 0, 1, 2 and 255) raises DATA_INVALID_FAULT (data 0x10c) and the draw is lost; bit 21 with a box in the register cuts as the box does without it.
+On the G720, with bit 21 set every scissor array the probe makes raises DATA_INVALID_FAULT (data 0x10c) at the run and the pass is lost: 8 or 16-byte boxes, 64-byte, 4096-byte or 4 GiB-aligned, lengths 0, 1, 2 and 255, with the index stored in the position pass. An ordinary box in the register with bit 21 set faulted too in one scene and cut as a box in another. Without bit 21 an address and length in the register is read as an empty box, with no fault.
 The linear and u-interleaved layouts are made, the u-interleaved only for formats the CPU reads through `upload` and `download`; no AFBC, AFRC, block-linear or YUV planes, no multisampled descriptors, no ASTC 3D planes, and no sample corner or crop dimensions.
 Whether the render target descriptor's sRGB bit is also set for an sRGB colour target is not established: the tile buffer is taken to hold the encoded bytes, and the bit to encode again on writeback, so it is left clear.
 The border colour is stored as the caller gives it; whether it is before or after the texture's swizzle is not established.

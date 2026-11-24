@@ -700,6 +700,9 @@ public struct CSFHost<M: SharedMemory> {
                        info: memory.load64(cs.output + CSF.StreamOutput.faultInfo))
   }
 
+  /// CS_STATUS_CMD_PTR (panthor 06 section 6.6.4): the VA of the instruction the stream is at, read with a fault to place its info word.
+  public func csCommandPointer(_ g: Int, _ s: Int) -> UInt64 { memory.load64(stream(g, s).output + CSF.StreamOutput.statusCmdPtr) }
+
   /// CS_FATAL and its info.
   public func csFatal(_ g: Int, _ s: Int) -> CSException {
     let cs = stream(g, s)
