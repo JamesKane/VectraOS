@@ -680,7 +680,10 @@ resources wait on the clean-room answers (below).
   binds on the timeline), VulkanCoreDriverTests (ElsewhereTests: the viewport commands and counts, the features, limits,
   queue family bit, sparse requirements and binds), VenusTests (the custom border structs' bytes in a sampler chain and a
   features chain) and VenusDriverTests (which extensions are forwarded, by offer and mask). loinnir-test, boot-venus on
-  brimstone (the host's NVIDIA GeForce RTX 5070 Ti), amd64 and arm64: `customBorderColor` true and its case exact; two viewports
+  brimstone (the host's NVIDIA GeForce RTX 5070 Ti), amd64 and arm64, reports `customBorderColor`, `multiViewport` with 16
+  viewports, `shaderOutputViewportIndex`, every sparse feature (binding, residency of buffers, 2D, 3D, 2 to 16 samples,
+  aliased), unbound pages reading zero and 1 TiB of sparse address space, and `shaderResourceResidency` false. The cases: the
+  custom border exact; two viewports
   by ViewportIndex, each cut by its scissor, 256 pixels exact; a sparse buffer of three 64 KiB pages, two bound and filled, then one unbound (reading zero) and its memory
   bound at another page, which reads its word; a 256 x 256 rgba8 sparse image of 128 x 128 blocks, two
   bound and sampled, 64 pixels exact and the unbound blocks zero. 47 core cases passed, 3 skipped (depth resolves and alpha
