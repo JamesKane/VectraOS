@@ -42,6 +42,21 @@ private func word(_ b: FakeBuffer, _ offset: Int) -> UInt32 { b.pointer.load(fro
     #expect(gpu.sparseImageFormats(.etc2rgb8, dimension: .d2, samples: 1, usage: usage).isEmpty)
   }
 
+  @Test func anAddressRangeGivenBackServesAgainSoTheTablesDoNotGrowForever() throws {
+    let gpu = try MaliDevice(transport: FakeTransport())
+    let a = try gpu.allocate(.device, bytes: 3 * 4096)
+    let b = try gpu.allocate(.device, bytes: 4096)
+    gpu.free(a)
+    gpu.reclaim()
+    // A smaller one takes the start of the range a gave back, and the rest is still there; then b's neighbour merges with it.
+    let c = try gpu.allocate(.device, bytes: 4096)
+    #expect(c.address == a.address)
+    gpu.free(b)
+    gpu.reclaim()
+    let d = try gpu.allocate(.device, bytes: 3 * 4096)
+    #expect(d.address == a.address + 4096)
+  }
+
   @Test func aSparseBufferIsTheDummyUntilBoundAndAnUnbindIsTheDummyAgain() throws {
     let (gpu, t, _) = try kernelDevice()
     let page = 4096

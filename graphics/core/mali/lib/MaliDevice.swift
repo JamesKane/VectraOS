@@ -186,6 +186,8 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   let vm: UInt32
   let userRange: UInt64
   var nextAddress: UInt64 = 0x10_0000
+  /// Ranges below `nextAddress` that regions gave back, in address order.
+  var freeRanges: [(address: UInt64, size: UInt64)] = []
   var memories = Slots<Region>()
   var images = Slots<ImageRecord>()
   var pipelines = Slots<PipelineRecord>()
@@ -426,11 +428,36 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   /// The next address of the VM for `size` bytes, a page-aligned run; inside one 4 GiB window when `window`
   /// (workgroup memory is addressed by a 32-bit offset from its base).
   func takeAddress(_ size: Int, window: Bool = false, alignment: UInt64 = 4096) throws(GPUError) -> UInt64 {
+    // A range given back first (the first that fits), so the VM's page tables, which the driver keeps, serve again.
+    let bytes = UInt64(size)
+    for (k, r) in freeRanges.enumerated() {
+      var start = (r.address + alignment - 1) & ~(alignment - 1)
+      if window && start >> 32 != (start + bytes - 1) >> 32 { start = ((start >> 32) + 1) << 32 }
+      guard start + bytes <= r.address + r.size else { continue }
+      freeRanges.remove(at: k)
+      if start > r.address { giveBack(r.address, start - r.address) }
+      if start + bytes < r.address + r.size { giveBack(start + bytes, r.address + r.size - start - bytes) }
+      return start
+    }
     var at = (nextAddress + alignment - 1) & ~(alignment - 1)
     if window && at >> 32 != (at + UInt64(size) - 1) >> 32 { at = ((at >> 32) + 1) << 32 }
     guard userRange == 0 || at + UInt64(size) <= userRange else { throw .outOfMemory("the GPU's address space") }
     nextAddress = at + UInt64(size)
     return at
+  }
+
+  /// A range of the VM no region uses any more, merged with its neighbours.
+  func giveBack(_ address: UInt64, _ size: UInt64) {
+    var lo = address, hi = address + size
+    freeRanges.removeAll { r in
+      guard r.address <= hi && lo <= r.address + r.size else { return false }
+      lo = min(lo, r.address)
+      hi = max(hi, r.address + r.size)
+      return true
+    }
+    var at = 0
+    while at < freeRanges.count && freeRanges[at].address < lo { at += 1 }
+    freeRanges.insert((lo, hi - lo), at: at)
   }
 
   /// A buffer of at least `bytes`, mapped and bound; `gpuCacheable`, mapped cacheable for the GPU (panthor 04 section 4.7.3):
@@ -470,6 +497,7 @@ public final class MaliDevice: GPUDevice, GPUQueue {
       // Dirty lines the CPU holds must not be written back over what another buffer puts in these pages.
       if r.cached { r.buffer.cleanInvalidate() }
       transport.unbind(vm: vm, address: r.address, size: r.size)
+      giveBack(r.address, UInt64(r.size))
       // A sparse resource's range has no buffer of its own: its pages are memory's, which the unbind let go of.
       if r.buffer is SparseRange { continue }
       transport.destroyBuffer(r.buffer)

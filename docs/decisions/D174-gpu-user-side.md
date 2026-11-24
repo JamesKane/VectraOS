@@ -731,6 +731,10 @@ The Mali halves of "Elsewhere", built from the clean room's answers to V1 and S1
   tile's width and height and the element's size as log2): the element (x, y) is addressed through its tile, block and u-curve
   place (05 §5.7.2), the units of a row never wider than an element. A sampled source is the texture unit's, whose descriptor
   names the layout.
+- **The VM's addresses are used again.** The backend took addresses in order and never gave them back, and the driver keeps a
+  VM's page tables (at most 1024 table pages, 2 GiB of addresses at 4 KiB); with the new cases loinnir-test's samplers case
+  crossed 2 GiB (a bind of 6 MiB at 0x7edbd000 refused, `noMemory`). A region released (after the work that used it) now gives
+  its range back, merged with its neighbours, and a new one takes the first range given back that fits before new addresses.
 - **More than one viewport: off, as measured.** Built as the inference says: a vertex shader that writes ViewportIndex takes
   its transform from a table of the draw's viewports by the index (`IRBuiltin.viewportTable`, a FAU slot holding the address;
   entry `index & 15`, so no index reads past it; 14 §14.3.7), stores the index in the attributes' byte 2 (extended record), and
@@ -759,7 +763,9 @@ The Mali halves of "Elsewhere", built from the clean room's answers to V1 and S1
   its viewport's transform from the table, run on the interpreter). Board: loinnir-test's sparse buffer, sparse image (now of
   two levels, level 1 the tail) and a new sparse image drawn into (one block bound, cleared and drawn into by a pass, copied
   out) pass exactly; the two viewports cases skip on Mali (the new "viewports at the most": the device's viewports up to 16,
-  each its own transform and scissor, and an index past the count). BOARD_SUMMARY.
+  each its own transform and scissor, and an index past the count). Board-test passed (2026-11-23): loinnir-test 113 core
+  cases passed, 2 skipped (the two viewports cases); brimstone (`vx test --changed amd64 arm64`, boot-venus on its NVIDIA) passed
+  with the viewports cases run there.
 
 ## The amendment, where it stands (2026-11-21, end of day; main f8d3c683; Mali present 2026-11-23)
 

@@ -91,7 +91,7 @@ public final class CSFTransport: MaliTransport {
     do throws(CSFClientError) {
       try context.bind(vm: vm, buffer: b.buffer, size: UInt64(b.size), address: address, flags: gpuCacheable ? 8 : 0)
     } catch {
-      throw Self.core(error, "bind")
+      throw Self.core(error, "bind of \(b.size) bytes at 0x" + String(address, radix: 16))
     }
   }
 
@@ -100,7 +100,7 @@ public final class CSFTransport: MaliTransport {
       try context.bind(vm: vm, buffer: handle(buffer).buffer, offset: UInt64(offset), size: UInt64(size), address: address,
                        flags: gpuCacheable ? 8 : 0)
     } catch {
-      throw Self.core(error, "bind")
+      throw Self.core(error, "bind of \(size) bytes at 0x" + String(address, radix: 16))
     }
   }
 
