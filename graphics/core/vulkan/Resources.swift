@@ -302,7 +302,7 @@ extension VulkanDevice {
 
   /// A new handle to `memory`'s VMO, for another process (VK_FUCHSIA_external_memory); nil where the driver can't.
   public func exportHandle(_ memory: GPUMemory) -> UInt32? {
-    guard let record = buffers[memory.handle], record.memory != nil,
+    guard let record = buffers[memory.handle], unsafe record.memory != nil,
       let export = unsafe vk.commands.vkGetMemoryZirconHandleFUCHSIA
     else { return nil }
     var info = unsafe VkMemoryGetZirconHandleInfoFUCHSIA()
