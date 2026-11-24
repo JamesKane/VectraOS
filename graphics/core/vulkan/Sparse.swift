@@ -178,6 +178,7 @@ extension VulkanDevice {
     }
     // The bind waits for everything submitted before it, and for `wait`.
     var waitValue = max(wait, rule.lastSignalled)
+    let waits = waitValue != 0
     var signalValue = signal
     var semaphore: VkSemaphore? = timeline
     let r: VkResult = unsafe bufferBinds.withUnsafeBufferPointer { bb in
@@ -198,8 +199,8 @@ extension VulkanDevice {
               unsafe timelineInfo.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO
               unsafe timelineInfo.signalSemaphoreValueCount = 1
               unsafe timelineInfo.pSignalSemaphoreValues = unsafe sv
-              unsafe timelineInfo.waitSemaphoreValueCount = waitValue == 0 ? 0 : 1
-              unsafe timelineInfo.pWaitSemaphoreValues = waitValue == 0 ? nil : unsafe wv
+              unsafe timelineInfo.waitSemaphoreValueCount = waits ? 1 : 0
+              unsafe timelineInfo.pWaitSemaphoreValues = waits ? unsafe wv : nil
               return unsafe withUnsafePointer(to: &timelineInfo) { tp in
                 unsafe withUnsafePointer(to: &semaphore) { sp in
                   unsafe bufferInfos.withUnsafeMutableBufferPointer { bi in
@@ -208,8 +209,8 @@ extension VulkanDevice {
                         var info = unsafe VkBindSparseInfo()
                         unsafe info.sType = VK_STRUCTURE_TYPE_BIND_SPARSE_INFO
                         unsafe info.pNext = unsafe UnsafeRawPointer(tp)
-                        unsafe info.waitSemaphoreCount = waitValue == 0 ? 0 : 1
-                        unsafe info.pWaitSemaphores = waitValue == 0 ? nil : unsafe sp
+                        unsafe info.waitSemaphoreCount = waits ? 1 : 0
+                        unsafe info.pWaitSemaphores = waits ? unsafe sp : nil
                         unsafe info.bufferBindCount = UInt32(bi.count)
                         unsafe info.pBufferBinds = bi.isEmpty ? nil : UnsafePointer(bi.baseAddress)
                         unsafe info.imageOpaqueBindCount = UInt32(oi.count)
