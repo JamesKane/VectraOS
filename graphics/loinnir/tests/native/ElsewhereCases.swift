@@ -5,6 +5,7 @@
 // the reason.
 
 import GPUCore
+import GPUCoreMali
 import Sys
 
 extension CoreCases {
@@ -23,7 +24,7 @@ extension CoreCases {
     let target = try colorTarget(Int32(w), Int32(h))
     var list = GPUCommandList()
     list.render(RenderingInfo(colors: [Attachment(image: target, load: .clear(0, 0, 0, 1))])) { r in
-      r.setViewports([Viewport(x: 0, y: 0, width: 8, height: 16), Viewport(x: 8, y: 0, width: 8, height: 16)])
+      r.setViewports([GPUCore.Viewport(x: 0, y: 0, width: 8, height: 16), GPUCore.Viewport(x: 8, y: 0, width: 8, height: 16)])
       r.setScissors([RenderArea(x: 0, y: 0, width: 8, height: 8), RenderArea(x: 8, y: 4, width: 8, height: 12)])
       r.draw(pso, root: mesh.address, vertices: 6, instances: 2)
     }
@@ -52,11 +53,11 @@ extension CoreCases {
     let pso = try d.makeGraphicsPipeline(GraphicsPipelineDescriptor(
       vertex: LoinnirShaders.viewportgridVert, fragment: LoinnirShaders.meshFrag, colorFormats: [.rgba8], blend: .opaque,
       viewportCount: UInt32(count)))
-    var viewports: [Viewport] = []
+    var viewports: [GPUCore.Viewport] = []
     var scissors: [RenderArea] = []
     for k in 0..<count {
       let cx = (k % 4) * 16, cy = (k / 4) * 16
-      viewports.append(Viewport(x: Float(cx), y: Float(cy), width: Float(16 - 4 * (k % 2)), height: 16))
+      viewports.append(GPUCore.Viewport(x: Float(cx), y: Float(cy), width: Float(16 - 4 * (k % 2)), height: 16))
       scissors.append(RenderArea(x: Int32(cx + 1 + k % 3), y: Int32(cy + 2), width: 10, height: 11))
     }
     let target = try colorTarget(Int32(w), Int32(h))
@@ -81,7 +82,7 @@ extension CoreCases {
       vertex: LoinnirShaders.viewportgridVert, fragment: LoinnirShaders.meshFrag, colorFormats: [.rgba8], blend: .opaque, viewportCount: 2))
     let whole = try meshBuffer([Rect(x0: 0, y0: 0, x1: 16, y1: 16, color: [1, 1, 1, 1])], width: 16, height: 16)
     past.render(RenderingInfo(colors: [Attachment(image: target, load: .clear(0, 0, 0, 1))])) { r in
-      r.setViewports([Viewport(width: 32, height: 64), Viewport(x: 32, width: 32, height: 64)])
+      r.setViewports([GPUCore.Viewport(width: 32, height: 64), GPUCore.Viewport(x: 32, width: 32, height: 64)])
       r.setScissors([RenderArea(x: 0, y: 0, width: 32, height: 64), RenderArea(x: 32, y: 0, width: 32, height: 64)])
       r.draw(two, root: whole.address, vertices: 6, instances: 1, firstInstance: 7)
       r.draw(two, root: whole.address, vertices: 6, instances: 1, firstInstance: 0)
@@ -237,7 +238,72 @@ extension CoreCases {
     ok("sparse image drawn into: a \(bw) x \(bh) block of \(w) x \(h) rgba8 bound, cleared and drawn into, copied out, \(n) pixels exact")
   }
 
+  /// Off: a probe build for the board turns it on.
+  static let scissorProbeOn = false
+
+  /// A probe of the scissor array (Mali only, reported and not judged; on only in a build for the board, `scissorProbeOn`): for each
+  /// form of `MaliDevice.probeScissorMode`, one pass of 16 x `h` drawing the whole target twice (instance 0 red with viewport 0, then
+  /// instance 1 green with viewport 1, both viewports the whole target), scissor 0 the top-left 8 x 8 (or the form's own) and scissor 1
+  /// columns 8 on, rows 4 to 15. Counted: coloured pixels in box 0, in box 1, in columns 0 and 1 below box 0 (the register's own box
+  /// when bit 21 is ignored in form 6), elsewhere, and none; with the pass's block, streams and descriptors, to place a fault's info.
+  func scissorProbe() throws(GPUError) {
+    guard let mali = d as? MaliDevice, rgbaTarget, Self.scissorProbeOn else { return }
+    let w = 16
+    let pso = try d.makeGraphicsPipeline(GraphicsPipelineDescriptor(
+      vertex: LoinnirShaders.viewportVert, fragment: LoinnirShaders.meshFrag, colorFormats: [.rgba8], blend: .opaque))
+    defer {
+      mali.probeScissorMode = 0
+      mali.probeScissorArrayLength = nil
+      mali.probeViewports = nil
+      mali.probeScissors = nil
+    }
+    // (mode, length field, target height, scissor 0's height, the one instance drawn: 0 index 0, 1 index 1, 2 both)
+    let forms: [(Int, Int, Int, Int, Int)] = [(0, -1, 16, 8, 2), (1, -1, 16, 8, 0), (1, -1, 16, 8, 1), (6, 2, 600, 8, 0), (6, 2, 600, 8, 1),
+                                              (7, -1, 600, 600, 0), (2, -1, 16, 8, 0), (2, -1, 16, 8, 1), (5, -1, 16, 8, 2)]
+    for (mode, length, h, s0, which) in forms {
+      let mesh = try meshBuffer([Rect(x0: 0, y0: 0, x1: Float(w), y1: Float(h), color: [1, 0, 0, 1])], width: Float(w), height: Float(h))
+      let target = try colorTarget(Int32(w), Int32(h))
+      mali.probeScissorMode = mode
+      mali.probeScissorArrayLength = length < 0 ? nil : length
+      mali.probeViewports = [(0, 0, w, h), (0, 0, w, h)]
+      mali.probeScissors = [(0, 0, 8, s0), (8, 4, 8, 12)]
+      var list = GPUCommandList()
+      list.render(RenderingInfo(colors: [Attachment(image: target, load: .clear(0, 0, 0, 1))])) { r in
+        r.draw(pso, root: mesh.address, vertices: 6, instances: which == 2 ? 2 : 1, firstInstance: which == 2 ? 0 : UInt32(which))
+      }
+      let px = try readBack(list, target)
+      var red0 = 0, green0 = 0, green1 = 0, red1 = 0, low = 0, elsewhere = 0, untouched = 0
+      for y in 0..<h {
+        for x in 0..<w {
+          let p = (y * w + x) * 4
+          if px[p + 3] == 0 {
+            untouched += 1
+            continue
+          }
+          let red = px[p] == 255 && px[p + 1] == 0, green = px[p] == 0 && px[p + 1] == 255
+          if !red && !green { continue }
+          if x < 8 && y < 8 {
+            if red { red0 += 1 } else { green0 += 1 }
+          } else if x >= 8 && y >= 4 && y < 16 {
+            if red { red1 += 1 } else { green1 += 1 }
+          } else if x < 2 { low += 1 } else { elsewhere += 1 }
+        }
+      }
+      var line = "m\(mode)/\(length) h\(h) s\(s0) i\(which): r0 \(red0) g0 \(green0) r1 \(red1) g1 \(green1) cols01 \(low) else \(elsewhere) u \(untouched)"
+      if let p = mali.probeLastPass {
+        line += " blk " + String(p.block, radix: 16) + "+" + String(p.bytes, radix: 16)
+        for s in p.streams { line += " cs " + String(s.0, radix: 16) + "+" + String(s.1, radix: 16) }
+      }
+      if let draw = mali.probeLastDraws.first {
+        for (name, at) in draw.prefix(2) where at != 0 { line += " " + name + " " + String(at, radix: 16) }
+      }
+      print("loinnir-test: scissor probe: " + line)
+      probeLines.append(line)
+    }
+  }
+
   func elsewhereCases() {
+    do throws(GPUError) { try scissorProbe() } catch { caught("scissor probe", error) }
     do throws(GPUError) { try viewports() } catch { caught("viewports", error) }
     do throws(GPUError) { try viewportsAtTheMost() } catch { caught("viewports at the most", error) }
     do throws(GPUError) { try sparseBuffer() } catch { caught("sparse buffer", error) }

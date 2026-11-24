@@ -24,6 +24,8 @@ final class CoreCases {
   var notes: [String] = []
   /// What a probe found, for one line at the end.
   var probeSummary = ""
+  /// The scissor probe's lines (ElsewhereCases.swift), printed again three times at the end.
+  var probeLines: [String] = []
   var softKeys: [[UInt8]] = []
   var softCounts: [Int] = []
   /// The heap slots the cases use, from here up (Loinnir's own table uses the first of the sampler slots and none of these).
@@ -1459,5 +1461,6 @@ final class CoreCases {
       if softFailures != 0 { fail("\(softFailures) checks of the resource cases failed") }
     }
     print("loinnir-test: core cases: \(passed) passed, \(skipped) skipped, \((Clock.monotonic() - start) / 1_000_000) ms")
+    for _ in 0..<3 { for l in probeLines { print("loinnir-test: scissor probe: " + l) } }
   }
 }

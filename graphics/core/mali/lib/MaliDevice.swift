@@ -261,6 +261,16 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   /// the scissor array that would cut each primitive by its viewport's scissor (06 section 6.2, inferred) raised DATA_INVALID_FAULT
   /// on the G720 in every form these probes make, and its enable bit changed nothing (D174).
   public var probeScissorMode = 0
+  /// The last render pass's block (address, bytes) and its streams (address, bytes), for a probe to place a fault's words.
+  public var probeLastPass: (block: UInt64, bytes: Int, streams: [(UInt64, Int)])?
+  /// For the scissor probes: every draw's viewports and scissors (x, y, width, height), past what the core lets a list set while
+  /// `multiViewport` is off.
+  public var probeViewports: [(Int, Int, Int, Int)]?
+  public var probeScissors: [(Int, Int, Int, Int)]?
+  /// The last render pass's draws: each one's descriptor and memory addresses by name, for a probe to place a fault's words.
+  public var probeLastDraws: [[(String, UInt64)]] = []
+  /// Scissor probe 6's array (at an address whose bits 31:0 are zero).
+  var probeArrayRegion: Region?
   /// Whether the memory of occlusion query sets made from now on is mapped cacheable for the GPU.
   public var probeQueryCacheable = true
   var queryReadbackRegion: Region?

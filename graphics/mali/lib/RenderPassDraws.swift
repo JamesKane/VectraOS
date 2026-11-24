@@ -398,7 +398,7 @@ extension RenderPass {
       vfauAt.append(place(8 * max(d.vertexShader.layout.slots, 1), 8))
       ffauAt.append(place(8 * d.fragmentShader.layout.slots, 8))
       viewportsAt.append(d.vertexShader.layout.viewportTableWord >= 0 ? place(ViewportTable.bytes, 16) : -1)
-      scissorsAt.append(d.vertexShader.storesViewportIndex && d.state.scissorProbe >= 2
+      scissorsAt.append(d.vertexShader.storesViewportIndex && d.state.scissorProbe >= 2 && d.state.scissorProbe <= 5
         ? place(ScissorArray.entries * (d.state.scissorProbe == 3 ? 16 : 8), d.state.scissorProbe == 4 ? 4096 : 64) : -1)
     }
     // The first pre-frame shader (08 section 8.10): the three frame shaders' draw descriptors (the other two never run),
@@ -602,13 +602,20 @@ extension RenderPass {
           let a = ScissorArray(state: d.state, width: r.width, height: r.height)
           s.scissorArray = va(scissorsAt[n]) | UInt64(a.lengthField & 0xFF) << 56
           s.viewport = a.viewport
+        } else if d.vertexShader.storesViewportIndex && d.state.scissorProbe == 6, let at = d.state.scissorArrayAddress {
+          // The array somewhere of the caller's (an address whose bits 31:0 are zero: the register is also a box from (0, 0)).
+          let a = ScissorArray(state: d.state, width: r.width, height: r.height)
+          s.scissorArray = at | UInt64(a.lengthField & 0xFF) << 56
+          s.viewport = a.viewport
+        } else if d.vertexShader.storesViewportIndex && d.state.scissorProbe == 7 {
+          // The first scissor's box itself (the probe makes its maximum y 256 or more: read as an array, a length byte of 1 or more).
         }
         s.depthStencil = va(zsState(d) != nil ? drawZSDAt[n] : zsdAt)
         s.tilerFlags = PrimitiveFlags(
           mode: d.state.mode, indexType: d.indices?.size.rawValue ?? 0, lowDepthCull: d.state.depthStencil?.depthClip ?? true,
           highDepthCull: d.state.depthStencil?.depthClip ?? true, primitiveRestart: d.state.primitiveRestart,
           positionFIFOFormat: d.vertexShader.extendedRecord ? 2 : 1, viewMask: r.viewMask, secondaryShader: s.varySize > 0,
-          layerIndex: d.vertexShader.writesLayer, scissorArray: scissorsAt[n] >= 0 || (d.vertexShader.storesViewportIndex && d.state.scissorProbe == 1)).word
+          layerIndex: d.vertexShader.writesLayer, scissorArray: d.vertexShader.storesViewportIndex && d.state.scissorProbe >= 1 && d.state.scissorProbe != 5).word
         s.primitiveSize = d.state.primitiveSize.bitPattern
         // 6.10.3: a fragment of this draw may kill an earlier one only if the draw neither reads the destination nor can
         // discard.

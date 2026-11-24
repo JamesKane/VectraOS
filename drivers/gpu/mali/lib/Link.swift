@@ -408,12 +408,15 @@ public struct CSFLink<S: SharedMemory, D: CSFDoorbell, Mem: LinkMemory, C: GPUCl
         if events & CSF.StreamReq.fault != 0 {
           let e = h.csFault(csg, slot)
           var extract: UInt64 = 0
+          var ring = ""
           if group >= 0, let m = self.memory.queue(group: group, queue: slot) {
             extract = RingPages(memory: m.control, input: m.controlOffset, output: m.controlOffset + 0x1000).extract
+            ring = " ring \(hex64(m.ringVA)) + \(m.ringSize)"
           }
+          let pointer = h.csCommandPointer(csg, slot)
           cs.append(.csFault(csg: csg, queue: slot, extract: extract))
           lines.append("CSG \(csg) CS \(slot) FAULT \(MMUFault.exceptionName(e.type)) data \(hex(e.data)) info \(hex64(e.info))"
-            + " at ring offset \(extract)")
+            + " at ring offset \(extract), command pointer \(hex64(pointer))" + ring)
           // The scheduler acknowledges it (`acknowledgeFault`) once it has noted where.
         }
         return acknowledge

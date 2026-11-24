@@ -755,6 +755,32 @@ The Mali halves of "Elsewhere", built from the clean room's answers to V1 and S1
   for the dirty room: 06 §6.2 and 14 §14.3.7 leave open what arch 12 needs, beyond primitive flags bit 21 and the scissor
   register, for the scissor array (another enable, a firmware or GPU_FEATURES gate, a different register, or no array at all on
   arch 12), and what CS fault DATA_INVALID_FAULT with exception data 0x10c names on the tiler queue.
+- **The scissor array, probed again after the clean room's 13b answer** (06 §6.2, §6.6.1, §6.7.1; 14 §14.3.7; 12c §12c.4.2; a
+  probe build of loinnir-test, `scissorProbeOn`, off in the tree). The index path was already what 13b requires: the vertex
+  shader stores ViewportIndex in the position pass, under shader_output bit 1, into the attributes section (the slot's +4 index,
+  byte 2), with the extended FIFO format. One scene for every form: 16 pixels wide, both viewports the whole target, instance 0
+  red with ViewportIndex 0 and instance 1 green with ViewportIndex 1, scissor 0 the top-left 8 x 8 and scissor 1 columns 8 on,
+  rows 4 to 15. Measured on the board (G720, three boots):
+  - **(a) the address and length in the scissor register, bit 21 clear:** no fault. The pass's clear was written and neither
+    draw drew a pixel, which is what a box whose maximum is below its minimum would do. So the 0x10c fault needs bit 21, and
+    without it the register is read as a box but not rejected.
+  - **(b) bit 21 with the array at 0x1_0000_0000** (bits 31:0 zero), length 1 and then 2, on a target 600 rows high, so that the
+    register read as a box is (0, 0) to (1, 256) or (1, 512), inside the target. The array's boxes were clearly different from that.
+    Every draw raised DATA_INVALID_FAULT 0x10c, drawing instance 0 alone and instance 1 alone, and the pass drew nothing (not even
+    its clear). The draw was not cut to the register's own box, so bit 21 is not ignored.
+  - **(c) bit 21 with the array** (8-byte boxes, the length counting boxes, in the pass's block), instance 0 alone and instance 1
+    alone: the same fault. Bit 21 with an ordinary box whose maximum y is 599 on the 600-row target (a length byte of 2): the same
+    fault. Bit 21 with an ordinary box whose maximum y is 7 (a length byte of 0): the same fault this time, with either instance
+    alone. The first probe, whose scene put instance 1 in the right half outside the box, had drawn this form's box with no fault.
+    With every draw faulting, a 16-byte stride was not tried again.
+  - **Where the fault is:** its info word was, every time, the GPU address 0x130 bytes into the pass's tiling stream (0x180
+    bytes; for example stream 0x9b2e00, info 0x9b2f30; stream 0x9f4e00, info 0x9f4f30). CS_STATUS_CMD_PTR was in the queue's
+    ring (0x0000800000001000, 4096 bytes), 0x80 further on for each pass: the ring's call into the stream. So the info word
+    places the instruction in our stream that faulted, at the same offset for every form. It is not the array, a descriptor or the
+    tiler context (the context was at block + 0x40, the array at block + 0xdc0 or 0x1_0000_0000).
+  - So with bit 21 set the GPU does something other than read the register as a box. With an array in every form tried, and
+    with an ordinary box too in this scene, the run raises DATA_INVALID_FAULT 0x10c. None
+    of the forms gave a box picked by the index. `multiViewport` stays false.
 - **Checks.** Host: MaliTests (the sparse bind: the dummy repeated every 2 MiB, replaced by a buffer and back, refused shapes,
   freed with the context); GPUCoreMaliTests' MaliElsewhere (the reported features, block shapes and refusals; a sparse buffer
   mapped to the dummy at creation, bound, filled and copied through on the interpreter, rebound, freed and unmapped; a
