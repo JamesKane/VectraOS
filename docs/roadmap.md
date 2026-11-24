@@ -5,7 +5,7 @@ under `vx ci` and every budget it introduces has a running check
 (principle 13). This file looks ahead: a finished milestone keeps a brief
 here, and its history, step by step, is in git and `docs/decisions/`.
 
-## Where things stand (2026-11-20)
+## Where things stand (2026-11-23)
 
 - **V0 to V7 are done**: the kernel, the userland, the bring-up link,
   Taisce, the desktop, the Orange Pi 6 Plus and the swarm. amd64 and arm64
@@ -33,10 +33,12 @@ here, and its history, step by step, is in git and `docs/decisions/`.
   vulkan-test (tier 1) passes on Mali and under Venus. The owner then asked
   for the full GPU feature set (D174's amendment): the core, Venus, the
   compiler, the layer and presentation have it (on Mali too, with no copy
-  and no CPU wait, 2026-11-23), and Mali has most of its
-  fixed function; what is open is in D174's "The amendment, where it
-  stands". Next: that list, then the video codec (the linlon-vpu spec), then
-  the NPU.
+  and no CPU wait, 2026-11-23). On Mali every amendment item is done
+  (2026-11-23): multisampling, layers, multiview, transfers as GPU kernels,
+  sparse resources; polygon modes and more than one viewport stay off (the
+  hardware has no polygon modes, and its scissor array faulted on the
+  board). Next: the vkmark port and the CTS as a report (D174's step 7),
+  then the video codec (the linlon-vpu spec), then the NPU.
 - **Paused:** V6b, the Orange Pi RV2 (the owner, 2026-11-20). Its
   kernel runs on the board's harts from our own devicetree (D154), V3's
   link and the native suite pass there, 8 of its budgets over their
