@@ -327,12 +327,16 @@ public enum IRBuiltin {
   /// Vertex stage: the view of a multiview draw (i32), which the backend makes a constant of each replica of the shader (valhall 07
   /// section 7.8.2: arch 10 to 13 have no view number for the vertex stage). A fragment shader's ViewIndex is its layer.
   public static let viewIndex = 26
+  /// Vertex stage: the address of the draw's viewports (a `ptr<global>`, a driver value in the FAU), which a vertex shader that writes
+  /// ViewportIndex transforms its position by (valhall 14 section 14.3.7): 32 bytes each, the scale's x, y, z, a word, the offset's x,
+  /// y, z and a word.
+  public static let viewportTable = 27
   public static let names = [
     "num_workgroups", "workgroup_id", "local_invocation_id", "global_invocation_id", "local_invocation_index",
     "subgroup_size", "num_subgroups", "subgroup_id", "subgroup_local_id", "vertex_index", "instance_index",
     "frag_coord", "front_facing", "viewport_scale", "viewport_offset", "non_perspective_mask",
     "sample_id", "sample_position", "sample_mask_in", "helper_invocation", "point_coord", "primitive_id", "layer",
-    "draw_index", "base_vertex", "base_instance", "view_index",
+    "draw_index", "base_vertex", "base_instance", "view_index", "viewport_table",
   ]
   /// The number of components of the builtin (1: a scalar).
   public static func lanes(_ b: Int) -> Int {

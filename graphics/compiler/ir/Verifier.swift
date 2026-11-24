@@ -278,6 +278,10 @@ extension Function {
     case .builtin:
       try need(0)
       guard i.imm >= 0 && i.imm < IRBuiltin.names.count else { throw bad(b, id, "bad builtin") }
+      if i.imm == IRBuiltin.viewportTable {
+        guard i.type == .ptr(.global), i.imm2 < 0 else { throw bad(b, id, "the viewport table is a global pointer") }
+        break
+      }
       let lanes = IRBuiltin.lanes(i.imm)
       let s = IRBuiltin.scalar(i.imm)
       if i.imm2 >= 0 {

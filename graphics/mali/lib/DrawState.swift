@@ -38,10 +38,15 @@ public struct PrimitiveFlags: Equatable, Sendable {
   public var viewMask: UInt32
   /// Layer index enable `[20]`: the vertex shader writes a layer number (6.12), with the extended record.
   public var layerIndex: Bool
+  /// Scissor array enable `[21]`: the scissor register is the address and length of an array of boxes (6.2), of which the byte the vertex
+  /// shader writes at offset 2 of the attributes (its ViewportIndex, the extended record) picks one: that is inference, and on the G720
+  /// the bit changed nothing (`ScissorArray`).
+  public var scissorArray = false
 
   public init(mode: DrawMode = .triangles, indexType: UInt32 = 0, lowDepthCull: Bool = true, highDepthCull: Bool = true,
               primitiveRestart: Bool = false, positionFIFOFormat: UInt32 = 1, viewMask: UInt32 = 0,
-              secondaryShader: Bool = false, layerIndex: Bool = false) {
+              secondaryShader: Bool = false, layerIndex: Bool = false, scissorArray: Bool = false) {
+    self.scissorArray = scissorArray
     self.layerIndex = layerIndex
     self.secondaryShader = secondaryShader
     self.mode = mode
@@ -54,10 +59,10 @@ public struct PrimitiveFlags: Equatable, Sendable {
   }
 
   /// Draw mode `[3:0]`, index type `[10:8]`, low depth cull `[16]`, high depth cull `[17]`, secondary shader `[18]`,
-  /// primitive restart `[19]`, position FIFO format `[23:22]`, view mask `[31:24]`; the rest is zero.
+  /// primitive restart `[19]`, layer index `[20]`, scissor array `[21]`, position FIFO format `[23:22]`, view mask `[31:24]`; the rest is zero.
   public var word: UInt32 {
     mode.rawValue | (indexType & 7) << 8 | (lowDepthCull ? 1 << 16 : 0) | (highDepthCull ? 1 << 17 : 0) | (secondaryShader ? 1 << 18 : 0)
-      | (primitiveRestart ? 1 << 19 : 0) | (layerIndex ? 1 << 20 : 0) | (positionFIFOFormat & 3) << 22 | (viewMask & 0xFF) << 24
+      | (primitiveRestart ? 1 << 19 : 0) | (layerIndex ? 1 << 20 : 0) | (scissorArray ? 1 << 21 : 0) | (positionFIFOFormat & 3) << 22 | (viewMask & 0xFF) << 24
   }
 }
 
@@ -143,6 +148,59 @@ public struct ScissorBox: Equatable, Sendable {
   public var words: [UInt32] {
     [UInt32(truncatingIfNeeded: minX) & 0xFFFF | UInt32(truncatingIfNeeded: minY) << 16,
      UInt32(truncatingIfNeeded: maxX) & 0xFFFF | UInt32(truncatingIfNeeded: maxY) << 16]
+  }
+}
+
+/// The scissor array of a draw whose vertex shader writes ViewportIndex (06 section 6.2's scissor array enable). What is stated is the
+/// register's split, the address in `[55:0]` and a length in `[63:56]`; the element's format, what the length counts and what the
+/// array is indexed by are inference, here as 06 section 6.2 has it: 8-byte boxes in the scissor register's format, picked by the byte
+/// the shader writes at offset 2 of the attributes, the length the count of boxes. On the G720 the GPU read the register as a box whatever the enable bit (an array raised
+/// DATA_INVALID_FAULT, data 0x10c), so the array is a probe (`DrawPipelineState.scissorProbe`), never made otherwise.
+/// Box k is viewport k's rectangle cut by scissor k (the viewport registers then hold every viewport's rectangle at once); there are
+/// 256, so any byte names a box in memory, those past the count the first's.
+public struct ScissorArray: Equatable, Sendable {
+  public static let entries = 256
+  public var boxes: [ScissorBox]
+  /// The register's `[63:56]`.
+  public var lengthField: Int
+  /// The viewport registers: the rectangle around every viewport's and the depth range around every viewport's.
+  public var viewport: Viewport
+
+  /// A box nothing of a target is in (06 section 6.7.1 has no empty box): the far corner of the 16-bit range.
+  public static let outside = ScissorBox(minX: 65535, minY: 65535, maxX: 65535, maxY: 65535)
+
+  public init(state: DrawPipelineState, width: Int, height: Int) {
+    let whole = ScissorBox(width: width, height: height)
+    let count = max(state.viewports.count, 1)
+    var boxes: [ScissorBox] = []
+    var around = ScissorBox(minX: 65535, minY: 65535, maxX: 0, maxY: 0)
+    var minDepth: Float = 1, maxDepth: Float = 0
+    for k in 0..<count {
+      let v = k < state.viewports.count ? state.viewports[k] : nil
+      let rect = v?.box(width: width, height: height) ?? whole
+      let s = (k < state.scissors.count ? state.scissors[k] : nil) ?? whole
+      let x0 = max(rect.minX, s.minX), y0 = max(rect.minY, s.minY), x1 = min(rect.maxX, s.maxX), y1 = min(rect.maxY, s.maxY)
+      boxes.append(x0 <= x1 && y0 <= y1 ? ScissorBox(minX: x0, minY: y0, maxX: x1, maxY: y1) : ScissorArray.outside)
+      around = ScissorBox(minX: min(around.minX, rect.minX), minY: min(around.minY, rect.minY), maxX: max(around.maxX, rect.maxX),
+                          maxY: max(around.maxY, rect.maxY))
+      minDepth = min(minDepth, min(v?.minDepth ?? 0, v?.maxDepth ?? 1))
+      maxDepth = max(maxDepth, max(v?.minDepth ?? 0, v?.maxDepth ?? 1))
+    }
+    let fill = state.scissorArrayFill ?? boxes[0]
+    while boxes.count < ScissorArray.entries { boxes.append(fill) }
+    self.boxes = boxes
+    lengthField = state.scissorArrayLength ?? count
+    viewport = Viewport(rectangle: around, minDepth: minDepth, maxDepth: maxDepth)
+  }
+
+  /// The boxes, `stride` bytes apart (8, or 16 for a probe of the element's size).
+  public func words(stride: Int = 8) -> [UInt32] {
+    var w: [UInt32] = []
+    for b in boxes {
+      w += b.words
+      for _ in 0..<(stride - 8) / 4 { w.append(0) }
+    }
+    return w
   }
 }
 
@@ -271,6 +329,9 @@ public struct IDVSState: Equatable, Sendable {
   public var instanceOffset: UInt32 = 0
   public var tilerContext: UInt64 = 0
   public var scissor = ScissorBox(minX: 0, minY: 0, maxX: 0, maxY: 0)
+  /// With the primitive flags' scissor array: the scissor register's value instead of `scissor`, the array's address in `[55:0]` and its
+  /// length in `[63:56]` (06 section 6.2).
+  public var scissorArray: UInt64?
   public var viewport = Viewport(rectangle: ScissorBox(minX: 0, minY: 0, maxX: 0, maxY: 0))
   public var indexBuffer: UInt64 = 0
   public var indexBufferSize: UInt32 = 0
@@ -342,9 +403,13 @@ public struct IDVSState: Equatable, Sendable {
     b.move32(R.vertexOffset, vertexOffset)
     b.move32(R.instanceOffset, instanceOffset)
     b.move64(R.tilerContext, tilerContext)
-    let s = scissor.words
-    b.move32(R.scissor, s[0])
-    b.move32(R.scissor + 1, s[1])
+    if let a = scissorArray {
+      b.move64(R.scissor, a)
+    } else {
+      let s = scissor.words
+      b.move32(R.scissor, s[0])
+      b.move32(R.scissor + 1, s[1])
+    }
     let v = viewport.words
     for i in 0..<4 { b.move32(R.viewportHigh + i, v[i]) }
     b.move64(R.indexBuffer, indexBuffer)

@@ -32,7 +32,7 @@ struct FakeDevice: CSFBackend {
   var failAllocations = false
   /// Allocations that may still succeed (nil: no limit).
   var allocationsLeft: Int?
-  struct Map { var va: UInt64; var size: UInt64; var buffer: Int; var flags: CSFMapFlags }
+  struct Map { var va: UInt64; var size: UInt64; var buffer: Int; var flags: CSFMapFlags; var offset: UInt64 = 0 }
   var maps: [Int: [Map]] = [:]
   var vmsCreated: [Int] = []
   var vmsDestroyed: [Int] = []
@@ -103,7 +103,7 @@ struct FakeDevice: CSFBackend {
     maps[vm] = nil
   }
   mutating func map(vm: Int, buffer: Int, offset: UInt64, size: UInt64, va: UInt64, flags: CSFMapFlags) -> Bool {
-    maps[vm, default: []].append(Map(va: va, size: size, buffer: buffer, flags: flags))
+    maps[vm, default: []].append(Map(va: va, size: size, buffer: buffer, flags: flags, offset: offset))
     return true
   }
   mutating func unmap(vm: Int, va: UInt64, size: UInt64) {
@@ -113,9 +113,9 @@ struct FakeDevice: CSFBackend {
         kept.append(m)
         continue
       }
-      if m.va < va { kept.append(Map(va: m.va, size: va - m.va, buffer: m.buffer, flags: m.flags)) }
+      if m.va < va { kept.append(Map(va: m.va, size: va - m.va, buffer: m.buffer, flags: m.flags, offset: m.offset)) }
       if va + size < m.va + m.size {
-        kept.append(Map(va: va + size, size: m.va + m.size - (va + size), buffer: m.buffer, flags: m.flags))
+        kept.append(Map(va: va + size, size: m.va + m.size - (va + size), buffer: m.buffer, flags: m.flags, offset: m.offset + (va + size - m.va)))
       }
     }
     maps[vm] = kept
@@ -370,6 +370,38 @@ private struct ServiceRig {
   #expect(s.scheduler.link.freedBuffers.count == 1)  // B is still mapped
   try s.destroyVM(c, vm)
   #expect(s.scheduler.link.freedBuffers.count == 2)
+}
+
+@Test func aSparseBindMapsTheClientsDummyRepeatedEvery2MiB() throws {
+  var s = make()
+  let c = s.openContext()
+  let vm = try s.createVM(c, userRange: 0).id
+  // 3 MiB from 1 MiB: two mappings of the one dummy, at VA mod 2 MiB, never executable.
+  try s.bind(c, vm: vm, buffer: 0, offset: 0, size: 3 << 20, address: 1 << 20, flags: CSFBindFlags.sparse | CSFBindFlags.cacheable)
+  let maps = s.scheduler.link.maps[0] ?? []
+  let dummy = maps.filter { $0.va >= 1 << 20 && $0.va < 4 << 20 }
+  #expect(dummy.count == 2)
+  #expect(dummy.contains { $0.va == 1 << 20 && $0.offset == 1 << 20 && $0.size == 1 << 20 && $0.flags.noExec && $0.flags.cacheable })
+  #expect(dummy.contains { $0.va == 2 << 20 && $0.offset == 0 && $0.size == 2 << 20 })
+  #expect(dummy.allSatisfy { $0.buffer == dummy[0].buffer })
+  // A second range of the client takes the same dummy; a buffer bound over part of one replaces it there.
+  try s.bind(c, vm: vm, buffer: 0, offset: 0, size: 4096, address: 0x7000_0000, flags: CSFBindFlags.sparse)
+  #expect((s.scheduler.link.maps[0] ?? []).contains { $0.va == 0x7000_0000 && $0.buffer == dummy[0].buffer && $0.offset == 0 })
+  let b = try s.createBuffer(c, size: 4096, flags: 0)
+  try s.bind(c, vm: vm, buffer: b.id, offset: 0, size: 4096, address: 2 << 20, flags: 0)
+  #expect(s.scheduler.link.mapped(vm: 0, va: 2 << 20))
+  // An unbind back to the dummy lets the buffer go once its handle has.
+  try s.destroyBuffer(c, b.id)
+  #expect(s.scheduler.link.freedBuffers.isEmpty)
+  try s.bind(c, vm: vm, buffer: 0, offset: 0, size: 4096, address: 2 << 20, flags: CSFBindFlags.sparse)
+  #expect(s.scheduler.link.freedBuffers == [b.key])
+  // A sparse bind names no buffer and no offset.
+  #expect(throws: CSFServiceError.invalid) { try s.bind(c, vm: vm, buffer: 1, offset: 0, size: 4096, address: 0x10000, flags: CSFBindFlags.sparse) }
+  #expect(throws: CSFServiceError.invalid) { try s.bind(c, vm: vm, buffer: 0, offset: 4096, size: 4096, address: 0x10000, flags: CSFBindFlags.sparse) }
+  #expect(throws: CSFServiceError.invalid) { try s.bind(c, vm: vm, buffer: 0, offset: 0, size: 4096, address: 0x10000, flags: 32) }
+  // The dummy goes with the context.
+  s.closeContext(c)
+  #expect(s.scheduler.link.freedBuffers.contains(dummy[0].buffer))
 }
 
 @Test func theVMsRangesAndTheClientsSizeFollowPanthor10() throws {

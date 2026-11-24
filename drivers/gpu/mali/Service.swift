@@ -90,6 +90,19 @@ public enum CSFBufferFlags {
   public static let cpuCached: UInt32 = 1
 }
 
+/// BIND's flags (panthor 10 section 10.4.3, 04 section 4.8.3).
+public enum CSFBindFlags {
+  public static let readOnly: UInt32 = 1
+  public static let noExec: UInt32 = 2
+  public static let uncached: UInt32 = 4
+  public static let cacheable: UInt32 = 8
+  /// The range is backed by the client's dummy (panthor 04 section 4.8.3's SPARSE): 2 MiB of the driver's own memory that every
+  /// such range of the client repeats, VA x at offset x mod 2 MiB. Reads give what it holds and writes land in it; buffer
+  /// and offset are 0, and the mapping is never executable.
+  public static let sparse: UInt32 = 16
+  public static let all: UInt32 = 31
+}
+
 public struct CSFMapFlags: Equatable, Sendable {
   public var readOnly: Bool
   public var noExec: Bool
@@ -286,7 +299,12 @@ public struct CSFService<Backend: CSFBackend> {
     var syncs: [Sync] = []
     var nextSync: UInt32 = 1
     var lost = false
+    /// The backend's key of the client's dummy (`CSFBindFlags.sparse`), made at its first sparse bind.
+    var dummy: Int?
   }
+
+  /// The dummy's size: what every sparse range of a client repeats (panthor 04 section 4.8.3).
+  public static var dummySize: UInt64 { 2 << 20 }
 
   struct Submission {
     var id: Int
@@ -353,6 +371,8 @@ public struct CSFService<Backend: CSFBackend> {
     for h in 0..<Self.maxVMs where contexts[c]!.vms[h] != nil { try? destroyVM(c, UInt32(h + 1)) }
     for b in contexts[c]!.buffers { try? destroyBuffer(c, b.id) }
     for s in contexts[c]!.syncs { scheduler.link.closeCounter(s.counter) }
+    // Every VM's mappings, the dummy's among them, went with its handle.
+    if let d = contexts[c]!.dummy { scheduler.link.freeBuffer(d) }
     contexts[c] = nil
     reap()
   }
@@ -472,14 +492,21 @@ public struct CSFService<Backend: CSFBackend> {
   // MARK: Binds
 
   /// 10.4.3's synchronous MAP: page multiples, inside the user range, the
-  /// buffer holds the range; it replaces what overlaps, splitting.
+  /// buffer holds the range; it replaces what overlaps, splitting. With
+  /// `CSFBindFlags.sparse`, the range is the client's dummy instead (04
+  /// section 4.8.3), buffer and offset 0.
   public mutating func bind(
     _ c: Int, vm handle: UInt32, buffer id: UInt32, offset: UInt64, size: UInt64, address: UInt64, flags: UInt32
   ) throws(CSFServiceError) {
     let vm = try vmID(c, handle)
     if scheduler.deviceLost { throw .lost }
-    guard flags & ~0b1111 == 0 else { throw .invalid }
+    guard flags & ~CSFBindFlags.all == 0 else { throw .invalid }
     do { try vms[vm].layout.validateBind(va: address, size: size) } catch { throw .invalid }
+    if flags & CSFBindFlags.sparse != 0 {
+      guard id == 0, offset == 0 else { throw .invalid }
+      try bindDummy(c, vm: vm, address: address, size: size, flags: flags)
+      return
+    }
     guard offset & (gpuPageSize - 1) == 0 else { throw .invalid }
     guard let i = bufferIndex(c, id), !contexts[c]!.buffers[i].closed else { throw .invalid }
     let b = contexts[c]!.buffers[i]
@@ -493,6 +520,32 @@ public struct CSFService<Backend: CSFBackend> {
     vms[vm].bindings.append(Binding(va: address, size: size, buffer: id, offset: offset, flags: f))
     vms[vm].bindings.sort { $0.va < $1.va }
     contexts[c]!.buffers[bufferIndex(c, id)!].refs += 1
+  }
+
+  /// A SPARSE MAP (04 section 4.8.3): the range backed by the client's dummy, made zeroed at the first, VA x at dummy offset
+  /// x mod 2 MiB, a mapping for each 2 MiB window it crosses; never executable. Buffer and offset are 0.
+  mutating func bindDummy(_ c: Int, vm: Int, address: UInt64, size: UInt64, flags: UInt32) throws(CSFServiceError) {
+    let window = Self.dummySize
+    if contexts[c]!.dummy == nil {
+      guard let key = scheduler.link.allocateBuffer(size: window, cpuCached: false) else { throw .noMemory }
+      contexts[c]!.dummy = key
+    }
+    let dummy = contexts[c]!.dummy!
+    let f = CSFMapFlags(readOnly: flags & CSFBindFlags.readOnly != 0, noExec: true, uncached: flags & CSFBindFlags.uncached != 0,
+                        cacheable: flags & CSFBindFlags.cacheable != 0 && flags & CSFBindFlags.uncached == 0)
+    dropBindings(vm: vm, lo: address, hi: address + size)
+    var va = address
+    let end = address + size
+    while va < end {
+      let next = min((va / window + 1) * window, end)
+      guard scheduler.link.map(vm: vm, buffer: dummy, offset: va % window, size: next - va, va: va, flags: f) else {
+        dropBindings(vm: vm, lo: address, hi: va)
+        throw .noMemory
+      }
+      vms[vm].bindings.append(Binding(va: va, size: next - va, buffer: 0, offset: va % window, flags: f))
+      va = next
+    }
+    vms[vm].bindings.sort { $0.va < $1.va }
   }
 
   /// 10.4.3's UNMAP: whatever is mapped in the range goes.

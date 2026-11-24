@@ -240,7 +240,12 @@ public enum GPUCSFIPC {
     /// Map `size` bytes of the buffer from `offset` at `address` of the VM,
     /// replacing what was mapped there (all multiples of 4 KiB, inside the
     /// client's addresses). `flags`: bit 0 read-only for the GPU, bit 1 not
-    /// executable, bit 2 the GPU doesn't cache it.
+    /// executable, bit 2 the GPU doesn't cache it, bit 3 it caches it
+    /// (write-back), bit 4 sparse: the range is backed by the client's
+    /// dummy instead, 2 MiB of the driver's that every sparse range of
+    /// the client repeats (address x at x mod 2 MiB), which reads what
+    /// was last written through any of them and is never executable;
+    /// `buffer` and `offset` are 0.
     func bind(vm: UInt32, buffer: UInt32, offset: UInt64, size: UInt64, address: UInt64, flags: UInt32)
       throws(GPUError)
     func unbind(vm: UInt32, address: UInt64, size: UInt64) throws(GPUError)

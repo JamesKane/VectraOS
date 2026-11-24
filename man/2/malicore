@@ -4,6 +4,7 @@ names malicore MaliCore BufferDescriptor ImageLayout ImageLayoutKind TexelFormat
 names BlendShaderSpec LogicOperation BlendState BlendEquation BlendFactor BlendOperation BlendDescriptor BlendEquationEncoder BlendRefusal FixedFunctionBlend
 names DrawPassRequest PassDraw BindingHandle RenderPass RenderPassImage IndexSource IndexSize IndirectArguments FramePreload TimestampStream
 names ZSDescriptorState StencilFaceWords ZSTarget DepthFormat PixelOperations DrawViewport DrawPipelineState ExtraColourTarget
+names ScissorArray ViewportTable
 src graphics/mali/lib/BlendShaderSpec.swift graphics/mali/lib/BlendPlan.swift graphics/mali/lib/PipelineState.swift graphics/mali/lib/Images.swift graphics/mali/lib/QueryStreams.swift graphics/mali/lib/Blend.swift graphics/mali/lib/RenderPassDraws.swift graphics/mali/lib/DrawState.swift graphics/mali/lib/RenderPass.swift
 keys mali gpu image texture sampler descriptor heap blend alpha layout u-interleaved linear plane resource table render pass draw
 lang swift
@@ -59,9 +60,9 @@ A `TexelFormat` is the 22-bit format word of valhall 05: the component order, th
 The table of the colour formats (the 8, 16 and 32-bit families, rgb10a2, rg11b10f, rgb9e5), the depth and stencil planes (Z16, Z32, Z24X8 and S8 in order GRBA), ETC2, EAC and BC blocks, and ASTC 2D blocks (a plane of type 4 with the block's codes and the decode-wide bit) is TexelFormats.swift; `CompressedFeatures` reads TEXTURE_FEATURES[0].
 The formats are `rgba8`, `rgba8srgb`, `bgra8`, `bgra8srgb` (the same index with order BGRA, so the bytes in memory are B, G, R, A) and `r8` (order RGB1: it reads (R, 0, 0, 1)).
 An `ImageLayout` is the memory of an image: the levels packed in order each 64-byte aligned, the layers a whole array stride apart, the plane rounded up to 4096 bytes; the elements of a compressed level are blocks, and a volume's level has a surface for each slice (the depth halved with the level).
-The layout is `linear` (row-major, the row stride a multiple of 64) or `uInterleaved`: 16 by 16 texel tiles in row-major order, the texels of a tile in the order of the u-curve (the bits `y3, x3^y3, y2, x2^y2, y1, x1^y1, y0, x0^y0` from the most significant), the row stride the bytes from one row of tiles to the next.
+The layout is `linear` (row-major, the row stride a multiple of 64) or `uInterleaved`: 16 by 16 texel tiles in row-major order, the texels of a tile in the order of the u-curve (the bits `y3, x3^y3, y2, x2^y2, y1, x1^y1, y0, x0^y0` from the most significant), the row stride the bytes from one row of tiles to the next; or `interleaved64K` (the 64 KiB layout, clump ordering 8, a render target's block format 8): tiles of 64 KiB of elements in row-major order (`tile64K`: 256 x 256 elements of 1 byte down to 64 x 64 of 16), the 16 x 16-element blocks of a tile stored in row-major order, the elements of a block in the u-curve's order (`offset64K`), the row stride the bytes of a row of tiles, and every level whole tiles.
 `texelOffset` is the address arithmetic; `upload` and `download` copy a packed row-major array of texels into and out of the layout.
-AFBC, AFRC, the 64 KiB interleaved layout, block-compressed and YUV formats are not made.
+AFBC, AFRC, block-linear and YUV formats are not made.
 
 ## Descriptors
 
@@ -112,6 +113,7 @@ The target is cleared at the start of the pass; a pass that loads the target fro
 ## Pipeline state
 
 A `PassDraw` has a `DrawPipelineState`, whose default is the colour-only opaque triangle list: the primitive mode (`DrawMode`: points, lines, line strip, triangles, triangle strip, triangle fan, with the minimum vertices each makes), primitive restart (all ones of the index type), culling and winding (the draw flags' cull bits, set for the triangle modes only), the line width or point size in `PRIMITIVE_SIZE`, a viewport (`DrawViewport`: the vertex shader's window transform in its FAU block, and the viewport rectangle register, truncated, clamped to the target and ordered as valhall 06.7.2 has it) and a scissor, and a `ZSDescriptorState`.
+A draw whose vertex shader writes ViewportIndex has all of its pipeline's `viewports` and `scissors`: its vertex FAU block holds the address of a `ViewportTable` (16 entries of 32 bytes, each viewport's scale and offset, which the shader reads by the index), and it is cut by the first scissor. `DrawPipelineState.scissorProbe` makes it a probe of the scissor array instead (valhall 06.2: the primitive flags' bit 21, and the scissor register the address and length of a `ScissorArray`, 256 boxes in the scissor box's format, box k viewport k's rectangle cut by scissor k, the viewport registers the rectangle and depth range around every viewport's). `ScissorArray.outside` is a box nothing of a target is in.
 `ZSDescriptorState` is a depth/stencil descriptor with the test on (valhall 06.8): the depth function and write, the stencil functions, operations, masks and references of both faces, the bias factors and clamp, and depth clip or clamp.
 A draw with one has a descriptor of its own.
 A `DrawPassRequest` may have a `ZSTarget`: the depth format (`DepthFormat`: 16-bit or 32-bit float, in the tile as D16 or D32), the planes the pass stores (linear, each with its address and strides; a plane not stored has no record, so no write), the clears the tile starts from, and a stencil plane (S8); the parameters block's word 12 and the 64-byte extension after it carry them, and the framebuffer group is 64 bytes longer.
@@ -129,7 +131,8 @@ valhallbackend(2), shadercompiler(2), mali(3), gpu-test(8)
 
 # BUGS
 
-The linear and u-interleaved layouts are made, the u-interleaved only for formats the CPU reads through `upload` and `download`; no AFBC, AFRC, 64 KiB, block-linear or YUV planes, no multisampled descriptors, no ASTC 3D planes, and no sample corner or crop dimensions.
+On the G720 every scissor array the probe makes (8 or 16-byte boxes, 64 or 4096-byte aligned, lengths 0, 1, 2 and 255) raises DATA_INVALID_FAULT (data 0x10c) and the draw is lost; bit 21 with a box in the register cuts as the box does without it.
+The linear and u-interleaved layouts are made, the u-interleaved only for formats the CPU reads through `upload` and `download`; no AFBC, AFRC, block-linear or YUV planes, no multisampled descriptors, no ASTC 3D planes, and no sample corner or crop dimensions.
 Whether the render target descriptor's sRGB bit is also set for an sRGB colour target is not established: the tile buffer is taken to hold the encoded bytes, and the bit to encode again on writeback, so it is left clear.
 The border colour is stored as the caller gives it; whether it is before or after the texture's swizzle is not established.
 The constant of the first fixed-function target is the only one the hardware reads (the other descriptors' are ignored): the recipe's caller gives every descriptor the same constant, and a target whose constant differs needs a blend shader.

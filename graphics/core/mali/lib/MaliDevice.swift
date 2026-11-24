@@ -74,6 +74,8 @@ final class Region {
   /// CPU only reads), and whether the CPU's cache may then hold lines the GPU has since changed or the CPU has dirtied.
   let cached: Bool
   var touched = false
+  /// A sparse resource's flags: the region is an address range whose pages `bindSparse` maps (its buffer a `SparseRange`).
+  var sparse = SparseFlags()
   init(buffer: any MaliBuffer, address: UInt64, size: Int) {
     self.buffer = buffer
     self.address = address
@@ -92,6 +94,8 @@ final class ImageRecord {
   let planeAt: Int?
   /// The image's planes: one for a colour format, and one for each aspect of a depth or stencil format (`layout` is the first).
   var planes: [AspectPlane] = []
+  /// Where `planeAt` is: the image's own region, or (a sparse image, whose region has no pages of its own) a region of its own.
+  var planeRegion: Region?
   init(region: Region, descriptor: ImageDescriptor, rowStride: Int, layout: ImageLayout, planeAt: Int?) {
     self.region = region
     self.descriptor = descriptor
@@ -246,6 +250,15 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     for i in 0..<16 { out.append(unsafe t.chunk.buffer.pointer.load(fromByteOffset: 4 * i, as: UInt32.self)) }
     return out
   }
+  /// Probes of the scissor array (valhall 06 section 6.2 leaves open what its length field counts and what an index past it does):
+  /// the field's value for every draw with one, and the box (min x, min y, max x, max y) of the 256 entries past the pipeline's count.
+  public var probeScissorArrayLength: Int?
+  public var probeScissorArrayFill: (Int, Int, Int, Int)?
+  /// `DrawPipelineState.scissorProbe` for every draw. More than one viewport stays off (`multiViewport` false, `maxViewports` 1): a
+  /// vertex shader that writes ViewportIndex takes its transform from the draw's table by the index (valhall 14 section 14.3.7), but
+  /// the scissor array that would cut each primitive by its viewport's scissor (06 section 6.2, inferred) raised DATA_INVALID_FAULT
+  /// on the G720 in every form these probes make, and its enable bit changed nothing (D174).
+  public var probeScissorMode = 0
   /// Whether the memory of occlusion query sets made from now on is mapped cacheable for the GPU.
   public var probeQueryCacheable = true
   var queryReadbackRegion: Region?
@@ -349,6 +362,7 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     enableMultisampling()
     enableLayers()
     enableMultiview()
+    enableSparse()
   }
 
   /// Multisampling (valhall 08 section 8.3, 07 section 7.9): 2, 4, 8 and 16 samples, the patterns Vulkan's standard locations
@@ -396,7 +410,7 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     if let g = computeGroup { transport.destroyGroup(g) }
     for r in retired { release(r.regions) }
     for r in memories.all { release([r]) }
-    for i in images.all { release([i.region]) }
+    for i in images.all { release([i.region] + (i.planeRegion.map { [$0] } ?? [])) }
     for r in textureArrays { if let r { release([r]) } }
     for r in storageArrays { if let r { release([r]) } }
     transport.destroySync(timeline)
@@ -411,8 +425,8 @@ public final class MaliDevice: GPUDevice, GPUQueue {
 
   /// The next address of the VM for `size` bytes, a page-aligned run; inside one 4 GiB window when `window`
   /// (workgroup memory is addressed by a 32-bit offset from its base).
-  func takeAddress(_ size: Int, window: Bool = false) throws(GPUError) -> UInt64 {
-    var at = (nextAddress + 4095) & ~4095
+  func takeAddress(_ size: Int, window: Bool = false, alignment: UInt64 = 4096) throws(GPUError) -> UInt64 {
+    var at = (nextAddress + alignment - 1) & ~(alignment - 1)
     if window && at >> 32 != (at + UInt64(size) - 1) >> 32 { at = ((at >> 32) + 1) << 32 }
     guard userRange == 0 || at + UInt64(size) <= userRange else { throw .outOfMemory("the GPU's address space") }
     nextAddress = at + UInt64(size)
@@ -456,6 +470,8 @@ public final class MaliDevice: GPUDevice, GPUQueue {
       // Dirty lines the CPU holds must not be written back over what another buffer puts in these pages.
       if r.cached { r.buffer.cleanInvalidate() }
       transport.unbind(vm: vm, address: r.address, size: r.size)
+      // A sparse resource's range has no buffer of its own: its pages are memory's, which the unbind let go of.
+      if r.buffer is SparseRange { continue }
       transport.destroyBuffer(r.buffer)
     }
   }
@@ -530,7 +546,7 @@ public final class MaliDevice: GPUDevice, GPUQueue {
 
   public func destroy(_ image: GPUImage) {
     guard let record = images.remove(image.handle) else { return }
-    retire([record.region])
+    retire([record.region] + (record.planeRegion.map { [$0] } ?? []))
   }
 
   // MARK: The heap (MaliCore's textures land here)
@@ -578,6 +594,7 @@ public final class MaliDevice: GPUDevice, GPUQueue {
       depthStencilFormat: d.depthStencilFormat, blend: d.effectiveBlends[0], formats: d.colorFormats, blends: d.effectiveBlends,
       constants: d.blendConstants, dynamic: d.dynamic, srgb: srgb, logicOp: d.logicOp.map { PipelineMapping.logic($0) },
       fragmentCalls: false, multisample: d.multisample)
+    state.viewportCount = Int(d.viewportCount)
     state.fragmentCalls = PipelineMapping.mayNeedBlendShader(state)
     let blend = PipelineMapping.blendTargets(state, constants: d.blendConstants)[0].descriptor
     let fragment = try compile(d.fragment, blendShaders: state.fragmentCalls)

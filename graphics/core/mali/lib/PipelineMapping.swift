@@ -32,12 +32,17 @@ struct GraphicsState {
   var fragmentCalls: Bool
   /// The samples, the sample mask, alpha to coverage and one, and sample shading.
   var multisample = MultisampleState()
+  /// The viewports and scissors the pipeline draws with (a primitive takes the one its ViewportIndex names).
+  var viewportCount = 1
 }
 
 /// The state a pass's commands set, as the draws after them see it.
 struct DynamicValues {
   var viewport: DrawViewport?
   var scissor: ScissorBox?
+  /// Every viewport and scissor set (the first is `viewport` and `scissor` too); nil: the whole target.
+  var viewports: [DrawViewport?] = []
+  var scissors: [ScissorBox?] = []
   var constants = BlendConstants()
   var frontReference: UInt32 = 0
   var backReference: UInt32 = 0
@@ -236,6 +241,11 @@ enum PipelineMapping {
     }
     s.viewport = dyn.viewport
     s.scissor = dyn.scissor
+    // All of them, for a vertex shader that writes ViewportIndex (RenderPassDraws' scissor array).
+    for k in 0..<max(state.viewportCount, 1) {
+      s.viewports.append(k == 0 ? dyn.viewport : k < dyn.viewports.count ? dyn.viewports[k] : nil)
+      s.scissors.append(k == 0 ? dyn.scissor : k < dyn.scissors.count ? dyn.scissors[k] : nil)
+    }
     // The sample mask (flags 1, 6.9.2), sample shading (binary on this hardware: any fraction above 0 shades every sample, 6.9.4)
     // and alpha to coverage (the hardware's own mapping, 6.9.4).
     let ms = state.multisample

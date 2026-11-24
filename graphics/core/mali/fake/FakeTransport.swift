@@ -76,7 +76,55 @@ public final class FakeTransport: MaliTransport {
     if gpuCacheable { cacheableBound.append(address) }
   }
 
-  public func unbind(vm: UInt32, address: UInt64, size: Int) { bound.removeAll { $0.address == address } }
+  /// Parts of buffers mapped at addresses (`bind(offset:)`) and the dummy's ranges (`bindDummy`): where, which buffer, from where in
+  /// it, how many bytes. A later map of a range replaces what was there.
+  public var ranges: [(address: UInt64, buffer: FakeBuffer, offset: Int, size: Int)] = []
+  /// The client's dummy: 2 MiB, which every dummy range repeats (VA x at x mod 2 MiB).
+  public lazy var dummy = FakeBuffer(size: 2 << 20)
+  /// Every call that changed `ranges`, in order: a buffer's part ("map"), the dummy ("dummy") or nothing ("unmap").
+  public var rangeCalls: [(kind: String, address: UInt64, size: Int)] = []
+
+  func cut(_ address: UInt64, _ size: Int) {
+    let end = address + UInt64(size)
+    var kept: [(address: UInt64, buffer: FakeBuffer, offset: Int, size: Int)] = []
+    for r in ranges {
+      let rEnd = r.address + UInt64(r.size)
+      if rEnd <= address || r.address >= end {
+        kept.append(r)
+        continue
+      }
+      if r.address < address { kept.append((r.address, r.buffer, r.offset, Int(address - r.address))) }
+      if end < rEnd { kept.append((end, r.buffer, r.offset + Int(end - r.address), Int(rEnd - end))) }
+    }
+    ranges = kept
+  }
+
+  public func bind(vm: UInt32, buffer: any MaliBuffer, offset: Int, size: Int, address: UInt64, gpuCacheable: Bool) throws(GPUError) {
+    cut(address, size)
+    ranges.append((address, buffer as! FakeBuffer, offset, size))
+    rangeCalls.append(("map", address, size))
+  }
+
+  public func bindDummy(vm: UInt32, address: UInt64, size: Int, gpuCacheable: Bool) throws(GPUError) {
+    cut(address, size)
+    let window: UInt64 = 2 << 20
+    var va = address
+    let end = address + UInt64(size)
+    while va < end {
+      let next = min((va / window + 1) * window, end)
+      ranges.append((va, dummy, Int(va % window), Int(next - va)))
+      va = next
+    }
+    rangeCalls.append(("dummy", address, size))
+  }
+
+  public func unbind(vm: UInt32, address: UInt64, size: Int) {
+    bound.removeAll { $0.address == address }
+    if ranges.contains(where: { $0.address < address + UInt64(size) && address < $0.address + UInt64($0.size) }) {
+      cut(address, size)
+      rangeCalls.append(("unmap", address, size))
+    }
+  }
 
   public func createGroup(vm: UInt32, ringSizes: [UInt32]) throws(GPUError) -> UInt32 {
     nextID += 1

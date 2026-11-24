@@ -5,6 +5,7 @@
 // `unit` bytes (1, 2, 4, 8 or 16), in slices and layers; workgroup z names a slice of one job (the table). A source unit
 // stride of 0 repeats one unit (a fill, a clear's texel). With `samples` above 1, each destination byte is the mean of that
 // many source bytes `sampleStride` apart, rounded to nearest (a colour resolve).
+// A side that is an image in the 64 KiB layout (a sparse image's) is addressed by element through its tiles (`place`).
 #version 460
 #extension GL_EXT_buffer_reference : require
 #extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
@@ -34,11 +35,39 @@ struct Job {
   uint firstZ;
   uint samples;
   uint sampleStride;
-  uint pad0;
-  uint pad1;
+  uint srcTile;
+  uint dstTile;
+  uint srcOrigin;
+  uint dstOrigin;
 };
 layout(buffer_reference, std430, buffer_reference_align = 8) readonly buffer Params { U32 table; uint count; uint pad; Job jobs[]; };
 layout(push_constant) uniform Root { Params params; } root;
+
+// A plane in the 64 KiB layout (valhall 05 section 5.7.2): `tile` (0 for a linear plane) has bit 31 set, the tile's width and
+// height in elements as log2 in bits 4:0 and 12:8, and the element's bytes as log2 in bits 20:16. The element (ex, ey) of a slice
+// is in its tile (row-major), its 16 x 16 block of the tile (row-major), and at the u-curve's place in the block.
+uint tiled(uint tile, uint ex, uint ey, uint rowStride) {
+  uint wl = tile & 31u;
+  uint hl = (tile >> 8) & 31u;
+  uint sl = (tile >> 16) & 31u;
+  uint ix = ex & ((1u << wl) - 1u);
+  uint iy = ey & ((1u << hl) - 1u);
+  uint block = (iy >> 4) * ((1u << wl) >> 4) + (ix >> 4);
+  uint x = ix & 15u;
+  uint y = iy & 15u;
+  uint t = x ^ y;
+  uint u = ((y & 8u) << 4) | ((t & 8u) << 3) | ((y & 4u) << 3) | ((t & 4u) << 2) | ((y & 2u) << 2) | ((t & 2u) << 1) | ((y & 1u) << 1)
+    | (t & 1u);
+  return (ey >> hl) * rowStride + (ex >> wl) * 65536u + ((block * 256u + u) << sl);
+}
+
+// Byte `xb` of row `y` of a job's side: rows `rowStride` apart, or (a tiled plane) from the element `origin` names (x in bits 15:0,
+// y in 31:16), the byte within its element kept.
+uint place(uint tile, uint origin, uint xb, uint y, uint rowStride) {
+  if (tile == 0u) return y * rowStride + xb;
+  uint sl = (tile >> 16) & 31u;
+  return tiled(tile, (origin & 0xFFFFu) + (xb >> sl), (origin >> 16) + y, rowStride) + (xb & ((1u << sl) - 1u));
+}
 
 void main() {
   uint z = gl_WorkGroupID.z;
@@ -52,10 +81,10 @@ void main() {
   uint layer = local / slices;
   uint slice = local - layer * slices;
   uint unit = root.params.jobs[j].unit;
-  uint s = layer * root.params.jobs[j].srcLayerStride + slice * root.params.jobs[j].srcSliceStride + y * root.params.jobs[j].srcRowStride
-    + x * root.params.jobs[j].srcUnitStride;
-  uint d = layer * root.params.jobs[j].dstLayerStride + slice * root.params.jobs[j].dstSliceStride + y * root.params.jobs[j].dstRowStride
-    + x * unit;
+  uint s = layer * root.params.jobs[j].srcLayerStride + slice * root.params.jobs[j].srcSliceStride
+    + place(root.params.jobs[j].srcTile, root.params.jobs[j].srcOrigin, x * root.params.jobs[j].srcUnitStride, y, root.params.jobs[j].srcRowStride);
+  uint d = layer * root.params.jobs[j].dstLayerStride + slice * root.params.jobs[j].dstSliceStride
+    + place(root.params.jobs[j].dstTile, root.params.jobs[j].dstOrigin, x * unit, y, root.params.jobs[j].dstRowStride);
   U8 src = root.params.jobs[j].src;
   U8 dst = root.params.jobs[j].dst;
   uint samples = root.params.jobs[j].samples;

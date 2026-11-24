@@ -80,7 +80,12 @@ Protocol `todhchai.gpu.csf.Context`, version 3, of library `GPUCSFIPC`, its mess
   Map `size` bytes of the buffer from `offset` at `address` of the VM,
   replacing what was mapped there (all multiples of 4 KiB, inside the
   client's addresses). `flags`: bit 0 read-only for the GPU, bit 1 not
-  executable, bit 2 the GPU doesn't cache it.
+  executable, bit 2 the GPU doesn't cache it, bit 3 it caches it
+  (write-back), bit 4 sparse: the range is backed by the client's
+  dummy instead, 2 MiB of the driver's that every sparse range of
+  the client repeats (address x at x mod 2 MiB), which reads what
+  was last written through any of them and is never executable;
+  `buffer` and `offset` are 0.
 : `createHeap`
   A tiler heap in `vm` (the VM's pool of heap contexts is made with
   the first): `initialChunks` chunks of `chunkSize` bytes (a multiple

@@ -238,11 +238,14 @@ extension MaliDevice {
       throw .unsupported("a render target of \(d.format)")
     }
     reclaim()
+    if !d.sparse.isEmpty, let e = sparseImageError(d) { throw e }
+    // Linear, but for a sparse image used partly bound: the 64 KiB layout, whose tiles are its blocks (valhall 05 section 5.7.3).
+    let kind: ImageLayoutKind = d.sparse.contains(.residency) ? .interleaved64K : .linear
     var planes: [AspectPlane] = []
     var offset = 0
     for aspect in singleAspects(d.format.aspects) {
       guard let texel = d.format.texelFormat(aspect: aspect) else { throw .unsupported("an image of \(d.format)") }
-      let layout = ImageLayout(format: texel, kind: .linear, width: Int(d.width), height: Int(d.height),
+      let layout = ImageLayout(format: texel, kind: kind, width: Int(d.width), height: Int(d.height),
                                depth: d.dimension == .d3 ? Int(d.depth) : 1, levels: Int(d.mipLevels), layers: Int(d.layers), samples: Int(d.samples))
       planes.append(AspectPlane(aspect: aspect, layout: layout, offset: offset, texel: texel))
       offset += layout.arrayStride * layout.layers
@@ -254,6 +257,7 @@ extension MaliDevice {
     // An image the GPU draws into and the CPU only reads (a target copied out of) is mapped cached by the CPU, and maintained
     // (syncCached).
     let arrayBytes = sampled ? layout.levels.count * layout.layers * PlaneDescriptor.size : 0
+    if !d.sparse.isEmpty { return try makeSparseImage(d, planes: planes, bytes: offset, planeBytes: arrayBytes) }
     let readOnlyByCPU = !sampled && !d.usage.contains(.copyDestination) && !d.usage.contains(.storage)
       && !d.usage.contains(.scanout)
     // A storage image's memory is cacheable for the GPU, where its atomics work (MaliDevice.makeRegion).
@@ -331,7 +335,7 @@ extension MaliDevice {
     var region: Region?
     var surfaces: UInt64
     if whole, let at = planeAt {
-      surfaces = record.region.address + UInt64(at)
+      surfaces = (record.planeRegion ?? record.region).address + UInt64(at)
     } else {
       let planes = viewLayout.planes(base: record.region.address + UInt64(plane.offset), levels: Int(view.baseMip)..<Int(view.baseMip + view.mipCount),
                                      layers: layerRange)
@@ -353,7 +357,7 @@ extension MaliDevice {
     let td = TextureDescriptor(
       dimension: descriptorDimension(view.dimension), format: texel, width: level.width,
       height: view.dimension == .d1 || view.dimension == .d1Array ? 1 : level.height, swizzle: swizzleWord(view, aspect: aspect),
-      layout: .linear, levels: Int(view.mipCount), layers: cubes ? Int(view.layerCount) / 6 : Int(view.dimension == .d3 ? 1 : view.layerCount),
+      layout: plane.layout.kind, levels: Int(view.mipCount), layers: cubes ? Int(view.layerCount) / 6 : Int(view.dimension == .d3 ? 1 : view.layerCount),
       depth: view.dimension == .d3 ? level.depth : 1, surfaces: surfaces)
     do throws(DescriptorError) { return (try td.words(), region) } catch {
       if let region { release([region]) }

@@ -347,6 +347,9 @@ extension Selector {
     case IRBuiltin.instanceIndex: try selectInstanceIndex(i)
     case IRBuiltin.viewportScale: loc[i.result] = .fau(gfau.viewportWord + 2 * comp)
     case IRBuiltin.viewportOffset: loc[i.result] = .fau(gfau.viewportWord + 2 * comp + 1)
+    case IRBuiltin.viewportTable:
+      guard gfau.viewportTableWord >= 0 else { throw BackendError.invalidIR("the viewport table with no FAU slot") }
+      loc[i.result] = .ptr(PtrVal(base: .binding(gfau.viewportTableWord / 2), offset: 0))
     case IRBuiltin.fragCoord, IRBuiltin.frontFacing: try selectFragmentBuiltin(i)
     default: try selectStageBuiltin(i)
     }

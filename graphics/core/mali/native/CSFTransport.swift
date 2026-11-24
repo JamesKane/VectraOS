@@ -95,6 +95,23 @@ public final class CSFTransport: MaliTransport {
     }
   }
 
+  public func bind(vm: UInt32, buffer: any MaliBuffer, offset: Int, size: Int, address: UInt64, gpuCacheable: Bool) throws(GPUError) {
+    do throws(CSFClientError) {
+      try context.bind(vm: vm, buffer: handle(buffer).buffer, offset: UInt64(offset), size: UInt64(size), address: address,
+                       flags: gpuCacheable ? 8 : 0)
+    } catch {
+      throw Self.core(error, "bind")
+    }
+  }
+
+  public func bindDummy(vm: UInt32, address: UInt64, size: Int, gpuCacheable: Bool) throws(GPUError) {
+    do throws(CSFClientError) {
+      try context.bindDummy(vm: vm, size: UInt64(size), address: address, flags: gpuCacheable ? 8 : 0)
+    } catch {
+      throw Self.core(error, "bind (sparse)")
+    }
+  }
+
   public func unbind(vm: UInt32, address: UInt64, size: Int) { try? context.unbind(vm: vm, address: address, size: UInt64(size)) }
 
   public func createGroup(vm: UInt32, ringSizes: [UInt32]) throws(GPUError) -> UInt32 {
