@@ -17,14 +17,20 @@ import Vulkan
   let handle: VkBufferView
 }
 
-/// A buffer, its memory and the texel-buffer views made of it.
+/// A buffer, its memory and the texel-buffer views made of it. A sparse buffer has no memory of its own: its pages are bound
+/// by `bindSparse` (Sparse.swift), and `sparse` is what binds to it need.
 @safe final class BufferRecord {
   let buffer: VkBuffer
-  let memory: VkDeviceMemory
+  let memory: VkDeviceMemory?
+  /// The memory type `memory` is of (a sparse bind of it into a resource needs the resource to take that type).
+  let memoryType: UInt32
+  var sparse: VkMemoryRequirements?
   var views: [CachedBufferView] = []
-  init(buffer: VkBuffer, memory: VkDeviceMemory) {
+  init(buffer: VkBuffer, memory: VkDeviceMemory?, memoryType: UInt32 = 0, sparse: VkMemoryRequirements? = nil) {
     unsafe self.buffer = unsafe buffer
     unsafe self.memory = unsafe memory
+    self.memoryType = memoryType
+    self.sparse = sparse
   }
   @safe func destroy(_ c: VulkanCommands, _ device: VkDevice) {
     for v in views { unsafe c.vkDestroyBufferView!(device, v.handle, nil) }
@@ -43,14 +49,18 @@ import Vulkan
 /// mip level, layer and aspect).
 @safe final class ImageRecord {
   let image: VkImage
-  let memory: VkDeviceMemory
+  /// nil for a sparse image, whose pages `bindSparse` binds.
+  let memory: VkDeviceMemory?
   let descriptor: ImageDescriptor
+  /// A sparse image's requirements: its opaque size, the page, and the memory types binds may use.
+  var sparse: VkMemoryRequirements?
   var layout = VK_IMAGE_LAYOUT_UNDEFINED
   var views: [CachedView] = []
-  init(image: VkImage, memory: VkDeviceMemory, descriptor: ImageDescriptor) {
+  init(image: VkImage, memory: VkDeviceMemory?, descriptor: ImageDescriptor, sparse: VkMemoryRequirements? = nil) {
     unsafe self.image = unsafe image
     unsafe self.memory = unsafe memory
     self.descriptor = descriptor
+    self.sparse = sparse
   }
   @safe func destroy(_ c: VulkanCommands, _ device: VkDevice) {
     for v in views { unsafe c.vkDestroyImageView!(device, v.handle, nil) }
@@ -281,7 +291,7 @@ extension VulkanDevice {
     unsafe addressInfo.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO
     unsafe addressInfo.buffer = unsafe buffer
     let address = unsafe c.vkGetBufferDeviceAddress!(device, &addressInfo)
-    let handle = buffers.insert(unsafe BufferRecord(buffer: buffer!, memory: memory!))
+    let handle = buffers.insert(unsafe BufferRecord(buffer: buffer!, memory: memory!, memoryType: type))
     return unsafe GPUMemory(handle: handle, address: address, pointer: pointer, size: bytes, intent: intent)
   }
 
@@ -292,7 +302,7 @@ extension VulkanDevice {
 
   /// A new handle to `memory`'s VMO, for another process (VK_FUCHSIA_external_memory); nil where the driver can't.
   public func exportHandle(_ memory: GPUMemory) -> UInt32? {
-    guard let record = buffers[memory.handle],
+    guard let record = buffers[memory.handle], unsafe record.memory != nil,
       let export = unsafe vk.commands.vkGetMemoryZirconHandleFUCHSIA
     else { return nil }
     var info = unsafe VkMemoryGetZirconHandleInfoFUCHSIA()
@@ -314,7 +324,7 @@ extension VulkanDevice {
     if let e = d.check(limits: limits) { throw e }
     var info = unsafe VkImageCreateInfo()
     unsafe info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO
-    var flags: UInt32 = 0
+    var flags: UInt32 = d.sparse.vkImageFlags
     if d.dimension == .cube { flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT.rawValue }
     // Views of other formats (of a class) and the 2D array views of a cube's layers.
     if !d.format.isCompressed && !d.format.isDepthStencil { flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT.rawValue }
@@ -339,6 +349,11 @@ extension VulkanDevice {
     unsafe try vkCheck(c.vkCreateImage!(device, &info, nil, &image), "vkCreateImage")
     var needs = VkMemoryRequirements()
     unsafe c.vkGetImageMemoryRequirements!(device, image, &needs)
+    // A sparse image has no memory until its pages are bound.
+    if !d.sparse.isEmpty {
+      let handle = images.insert(unsafe ImageRecord(image: image!, memory: nil, descriptor: d, sparse: needs))
+      return GPUImage(handle: handle, descriptor: d)
+    }
     guard let type = memoryType(needs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT.rawValue) else {
       unsafe c.vkDestroyImage!(device, image, nil)
       throw .unsupported("no device-local memory for an image")

@@ -107,8 +107,8 @@ extension VulkanDevice {
     unsafe tessellation.patchControlPoints = descriptor.patchControlPoints
     var viewport = unsafe VkPipelineViewportStateCreateInfo()
     unsafe viewport.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO
-    unsafe viewport.viewportCount = 1
-    unsafe viewport.scissorCount = 1
+    unsafe viewport.viewportCount = descriptor.viewportCount
+    unsafe viewport.scissorCount = descriptor.viewportCount
 
     let r = descriptor.rasterization
     var raster = unsafe VkPipelineRasterizationStateCreateInfo()

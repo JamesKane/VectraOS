@@ -20,6 +20,15 @@ final class FakeQueue: GPUQueue {
     device.submitted.append((list, wait, signal))
     device.reached = signal
   }
+  func bindSparse(_ bindings: SparseBindings, wait: UInt64, signal: UInt64) throws(GPUError) {
+    if let e = bindings.validate(limits: device.limits) { throw e }
+    for b in bindings.buffers where b.offset % FakeDevice.page != 0 || b.size % FakeDevice.page != 0 {
+      throw .invalid("a sparse bind off the buffer's pages")
+    }
+    if let e = device.rule.accept(wait: wait, signal: signal) { throw e }
+    device.bound.append((bindings, wait, signal))
+    device.reached = signal
+  }
 }
 
 final class FakeDevice: GPUDevice {
@@ -38,6 +47,9 @@ final class FakeDevice: GPUDevice {
   var storageTexelBuffers: [UInt32: BufferView] = [:]
   var imported: [UInt32] = []
   var queue: FakeQueue!
+  var bound: [(bindings: SparseBindings, wait: UInt64, signal: UInt64)] = []
+  /// The page of the fake's sparse resources.
+  static let page = 65536
 
   /// A device with today's features and the four formats the core had, or with `features` where given.
   convenience init(features: DeviceFeatures? = nil) {
@@ -93,6 +105,14 @@ final class FakeDevice: GPUDevice {
     l.heapStorageTexelBuffers = 8
     l.maxTexelBufferElements = 65536
     l.subgroupSize = 32
+    l.maxViewports = 16
+    l.maxViewportWidth = 4096
+    l.maxViewportHeight = 4096
+    l.viewportBoundsMin = -8192
+    l.viewportBoundsMax = 8191
+    l.sparseAddressSpaceSize = 1 << 40
+    l.sparse.residencyStandard2DBlockShape = true
+    l.sparse.residencyNonResidentStrict = true
     l.formatTable = []
     for f in PixelFormat.all { l.setFormat(f, capabilities(of: f)) }
     return l
@@ -192,6 +212,18 @@ final class FakeDevice: GPUDevice {
     f.customBorderColor = true
     f.uniformTexelBuffers = true
     f.storageTexelBuffers = true
+    f.multiViewport = true
+    f.shaderOutputViewportIndex = true
+    f.sparseBinding = true
+    f.sparseResidencyBuffer = true
+    f.sparseResidencyImage2D = true
+    f.sparseResidencyImage3D = true
+    f.sparseResidency2Samples = true
+    f.sparseResidency4Samples = true
+    f.sparseResidency8Samples = true
+    f.sparseResidency16Samples = true
+    f.shaderResourceResidency = true
+    f.sparseResidencyAliased = true
     return f
   }
 
@@ -249,6 +281,16 @@ final class FakeDevice: GPUDevice {
   }
 
   func free(_ memory: GPUMemory) { release(memory.handle) }
+
+  func makeSparseBuffer(bytes: Int, flags: SparseFlags) throws(GPUError) -> GPUMemory {
+    if let e = sparseBufferError(bytes: bytes, flags: flags, limits: limits) { throw e }
+    return unsafe GPUMemory(handle: handle(), address: 0x1_0000_0000, pointer: nil, size: bytes, intent: .device, sparse: flags)
+  }
+
+  func sparseRequirements(_ buffer: GPUMemory) throws(GPUError) -> SparseMemoryRequirements {
+    guard !buffer.sparse.isEmpty else { throw .invalid("not a sparse buffer") }
+    return SparseMemoryRequirements(size: (buffer.size + Self.page - 1) / Self.page * Self.page, pageBytes: Self.page)
+  }
 
   func makeImage(_ d: ImageDescriptor) throws(GPUError) -> GPUImage {
     if let e = d.check(limits: limits) { throw e }

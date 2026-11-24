@@ -5,6 +5,7 @@ names Loinnir.submit Loinnir.wait Loinnir.frame Loinnir.present Loinnir.clear Lo
 names LoinnirError GPUContext GPUContext.core GPUContext.name GPUContext.backend GPUContext.canSample
 src graphics/loinnir/lib/Loinnir.swift graphics/loinnir/lib/Commands.swift graphics/loinnir/lib/Resources.swift
 src graphics/loinnir/lib/GPUContext.swift graphics/loinnir/native/Present.swift
+src graphics/venus/driver/Driver.swift graphics/venus/driver/Context.swift
 keys gpu vulkan venus graphics render draw texture shader pipeline timeline
 lang swift
 
@@ -43,6 +44,7 @@ It is written on the core (gpucore(2)) and on nothing under it, and a backend of
 
 A GPU whose driver host offers the `csf` capset gets the native Mali driver, which draws and computes on the GPU's own command streams; its sampled textures, sRGB targets and alpha blending are the core's (gpucore(2)).
 Any other gets Vulkan: our loader with the Venus client driver linked in, whose commands go through the GPU class to the display driver's `gpu` service (virtio-gpu(3)), and the host's renderer runs them on the host's GPU.
+The Venus client driver offers Vulkan 1.3, the device extensions it implements itself (`VK_FUCHSIA_external_memory`, natively), and the renderer's own device extensions that it forwards, each where the renderer's device offers it and the renderer's protocol carries it (the capset's extension mask): `VK_EXT_custom_border_color`. Any other extension is refused at `vkCreateDevice`. `vkQueueBindSparse` goes in order with the queue's submissions, without waiting for a reply; its semaphores are the renderer's, so a wait on one is ordered as on the host.
 A program reaches the GPU through `/dev`, which it mounts from devmgr (`mount /dev devmgr/dev`); without one, a call fails with `.vulkan`.
 `gpu.gpu.name` and `gpu.gpu.backend` say which one it is.
 On the dev machine, Loinnir uses the host's Vulkan, or ours over Venus and vtest when `TODHCHAI_VULKAN_LIBRARY` names `libtdvulkan.so`.

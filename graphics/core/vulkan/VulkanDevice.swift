@@ -68,6 +68,8 @@ public enum VulkanDeviceChoice {
   @safe let pipelineLayout: VkPipelineLayout
   @safe let timeline: VkSemaphore
   var rule = TimelineRule()
+  /// The value the last sparse bind signals: a submission after it waits for it (Sparse.swift).
+  var sparseBound: UInt64 = 0
 
   var buffers = Slots<BufferRecord>()
   var images = Slots<ImageRecord>()
@@ -205,7 +207,8 @@ public enum VulkanDeviceChoice {
     let texelOK = unsafe texelBuffers && have.f12.descriptorBindingUniformTexelBufferUpdateAfterBind != 0
       && have.f12.descriptorBindingStorageTexelBufferUpdateAfterBind != 0 && have.f12.shaderUniformTexelBufferArrayNonUniformIndexing != 0
       && have.f12.shaderStorageTexelBufferArrayNonUniformIndexing != 0
-    var enabled = have.enabled(storageOK: storageOK, texelOK: texelOK)
+    let sparseQueue = familyProps[graphics].queueFlags & VK_QUEUE_SPARSE_BINDING_BIT.rawValue != 0
+    var enabled = have.enabled(storageOK: storageOK, texelOK: texelOK, sparseQueue: sparseQueue)
 
     // The device, with the features the core uses and the ones the device has of those it names.
     var dev: VkDevice?

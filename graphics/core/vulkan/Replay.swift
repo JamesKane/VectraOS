@@ -47,6 +47,8 @@ extension VulkanDevice: GPUQueue {
     // Only a list that replayed moves the timeline's rule: a refused one leaves the value for the next.
     _ = rule.accept(wait: wait, signal: signal)
 
+    // A sparse bind isn't ordered with command buffers but through the timeline: the list waits for the last one.
+    let wait = max(wait, sparseBound)
     var waitValue = wait
     var signalValue = signal
     var semaphore: VkSemaphore? = timeline
@@ -143,6 +145,12 @@ extension VulkanDevice: GPUQueue {
       case .setScissor(let x, let y, let w, let h):
         var s = VkRect2D(offset: VkOffset2D(x: x, y: y), extent: VkExtent2D(width: w, height: h))
         unsafe c.vkCmdSetScissor!(cb, 0, 1, &s)
+      case .setViewports(let first, let viewports):
+        var vs = viewports.map { VkViewport(x: $0.x, y: $0.y, width: $0.width, height: $0.height, minDepth: $0.minDepth, maxDepth: $0.maxDepth) }
+        unsafe c.vkCmdSetViewport!(cb, first, UInt32(vs.count), &vs)
+      case .setScissors(let first, let scissors):
+        var rs = scissors.map { VkRect2D(offset: VkOffset2D(x: $0.x, y: $0.y), extent: VkExtent2D(width: $0.width, height: $0.height)) }
+        unsafe c.vkCmdSetScissor!(cb, first, UInt32(rs.count), &rs)
       case .draw(let p, let root, let vertices, let instances, let firstVertex, let firstInstance):
         try bindGraphics(p, root: root, cb, &state)
         unsafe c.vkCmdDraw!(cb, vertices, instances, firstVertex, firstInstance)
@@ -443,10 +451,14 @@ extension VulkanDevice: GPUQueue {
         }
       }
     }
-    var viewport = VkViewport(x: 0, y: 0, width: Float(info.width), height: Float(info.height), minDepth: 0, maxDepth: 1)
-    var scissor = VkRect2D(offset: VkOffset2D(x: 0, y: 0), extent: VkExtent2D(width: UInt32(info.width), height: UInt32(info.height)))
-    unsafe c.vkCmdSetViewport!(cb, 0, 1, &viewport)
-    unsafe c.vkCmdSetScissor!(cb, 0, 1, &scissor)
+    // Every viewport and scissor the device has starts as the whole of the first attachment.
+    let count = Int(max(limits.maxViewports, 1))
+    var viewports = [VkViewport](repeating: VkViewport(x: 0, y: 0, width: Float(info.width), height: Float(info.height), minDepth: 0,
+                                                       maxDepth: 1), count: count)
+    var scissors = [VkRect2D](repeating: VkRect2D(offset: VkOffset2D(x: 0, y: 0),
+                                                  extent: VkExtent2D(width: UInt32(info.width), height: UInt32(info.height))), count: count)
+    unsafe c.vkCmdSetViewport!(cb, 0, UInt32(count), &viewports)
+    unsafe c.vkCmdSetScissor!(cb, 0, UInt32(count), &scissors)
     state.boundGraphics = 0
   }
 

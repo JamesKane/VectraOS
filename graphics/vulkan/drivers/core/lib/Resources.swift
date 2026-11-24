@@ -2,7 +2,8 @@
 
 // Memory, buffers, images, views and samplers (D174 step 5, part 3). A `VkBuffer` is its memory plus an offset; a
 // `VkImage` is a core image made at `vkCreateImage`, and binding memory to it records nothing; a view or a sampler
-// that the heap reaches takes its slot when it is made.
+// that the heap reaches takes its slot when it is made. A sparse buffer is the core's sparse buffer, made with the
+// `VkBuffer`, and a sparse image the core's sparse image; their pages are bound by `vkQueueBindSparse` (Sync.swift).
 
 import GPUCore
 import TDVulkan
@@ -69,26 +70,57 @@ final class BufferObject: CoreObject {
   let usage: UInt32
   var memory: MemoryObject?
   var offset: UInt64 = 0
+  /// A sparse buffer's own range of addresses (the core's sparse buffer), and the device that made it.
+  var sparse: GPUMemory?
+  var device: DeviceObject?
   init(size: UInt64, usage: UInt32) {
     self.size = size
     self.usage = usage
   }
 
-  /// The buffer's bytes' GPU address, once memory is bound.
-  var address: UInt64? { memory.map { $0.gpu.address + offset } }
+  deinit {
+    if let sparse, let device { device.gpu.free(sparse) }
+  }
+
+  /// The buffer's bytes' GPU address, once memory is bound (a sparse buffer's from the start).
+  var address: UInt64? { place.map { $0.memory.address + UInt64($0.offset) } }
   /// The core's memory for the buffer, and where in it the buffer starts.
-  var place: (memory: GPUMemory, offset: Int)? { memory.map { ($0.gpu, Int(offset)) } }
+  var place: (memory: GPUMemory, offset: Int)? {
+    if let sparse { return (sparse, 0) }
+    return memory.map { ($0.gpu, Int(offset)) }
+  }
+}
+
+/// The core's sparse flags for Vulkan's create flags (the three sparse bits), or nil for none.
+func sparseFlags(_ flags: UInt32, binding: UInt32, residency: UInt32, aliased: UInt32) -> SparseFlags? {
+  guard flags & (binding | residency | aliased) != 0 else { return nil }
+  var f = SparseFlags()
+  if flags & binding != 0 { f = f | .binding }
+  if flags & residency != 0 { f = f | .residency }
+  if flags & aliased != 0 { f = f | .aliased }
+  return f
 }
 
 func core_vkCreateBuffer(_ device: VkDevice?, _ pCreateInfo: UnsafePointer<VkBufferCreateInfo>?,
                          _ pAllocator: UnsafePointer<VkAllocationCallbacks>?, _ pBuffer: UnsafeMutablePointer<VkBuffer?>?) -> VkResult
 {
-  guard let _ = unsafe Handle.get(device, DeviceObject.self), let info = unsafe pCreateInfo, let pBuffer = unsafe pBuffer else {
+  guard let d = unsafe Handle.get(device, DeviceObject.self), let info = unsafe pCreateInfo, let pBuffer = unsafe pBuffer else {
     return VK_ERROR_INITIALIZATION_FAILED
   }
-  // Sparse buffers and buffers with their own address capture aren't there.
-  if unsafe info.pointee.flags != 0 { return VK_ERROR_FEATURE_NOT_PRESENT }
-  unsafe pBuffer.pointee = Handle.make(BufferObject(size: unsafe info.pointee.size, usage: unsafe info.pointee.usage))
+  let flags = unsafe info.pointee.flags
+  let binding = VK_BUFFER_CREATE_SPARSE_BINDING_BIT.rawValue
+  let residency = VK_BUFFER_CREATE_SPARSE_RESIDENCY_BIT.rawValue
+  let aliased = VK_BUFFER_CREATE_SPARSE_ALIASED_BIT.rawValue
+  // Buffers with their own address capture, or protected ones, aren't there.
+  if flags & ~(binding | residency | aliased) != 0 { return VK_ERROR_FEATURE_NOT_PRESENT }
+  let buffer = BufferObject(size: unsafe info.pointee.size, usage: unsafe info.pointee.usage)
+  if let sparse = sparseFlags(flags, binding: binding, residency: residency, aliased: aliased) {
+    do throws(GPUError) {
+      buffer.sparse = try d.gpu.makeSparseBuffer(bytes: Int(buffer.size), flags: sparse)
+      buffer.device = d
+    } catch { return vkResult(error) }
+  }
+  unsafe pBuffer.pointee = Handle.make(buffer)
   return VK_SUCCESS
 }
 
@@ -97,7 +129,13 @@ func core_vkDestroyBuffer(_ device: VkDevice?, _ buffer: VkBuffer?, _ pAllocator
 }
 
 func bufferRequirements(_ b: BufferObject) -> VkMemoryRequirements {
-  VkMemoryRequirements(size: (b.size + 63) & ~63, alignment: 64, memoryTypeBits: MemoryTypes.allBits)
+  // A sparse buffer: the core's page, and the device's own memory, which its pages are bound from.
+  if let sparse = b.sparse, let d = b.device, let need = try? d.gpu.sparseRequirements(sparse) {
+    let page = UInt64(max(need.pageBytes, 1))
+    return VkMemoryRequirements(size: (UInt64(need.size) + page - 1) / page * page, alignment: page,
+                                memoryTypeBits: 1 << MemoryTypes.device)
+  }
+  return VkMemoryRequirements(size: (b.size + 63) & ~63, alignment: 64, memoryTypeBits: MemoryTypes.allBits)
 }
 
 func core_vkGetBufferMemoryRequirements(_ device: VkDevice?, _ buffer: VkBuffer?,
@@ -118,6 +156,8 @@ func bindBuffer(_ buffer: VkBuffer?, _ memory: VkDeviceMemory?, _ offset: UInt64
   guard let b = unsafe Handle.get(buffer, BufferObject.self), let m = unsafe Handle.get(memory, MemoryObject.self) else {
     return VK_ERROR_INITIALIZATION_FAILED
   }
+  // A sparse buffer's pages are bound by the queue, never here.
+  if b.sparse != nil { return VK_ERROR_INITIALIZATION_FAILED }
   if offset + b.size > UInt64(m.gpu.size) { return VK_ERROR_OUT_OF_DEVICE_MEMORY }
   b.memory = m
   b.offset = offset
@@ -265,11 +305,15 @@ func core_vkCreateImage(_ device: VkDevice?, _ pCreateInfo: UnsafePointer<VkImag
     return VK_ERROR_INITIALIZATION_FAILED
   }
   let c = unsafe info.pointee
-  let known = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT.rawValue | VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT.rawValue
+  let binding = VK_IMAGE_CREATE_SPARSE_BINDING_BIT.rawValue
+  let residency = VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT.rawValue
+  let aliased = VK_IMAGE_CREATE_SPARSE_ALIASED_BIT.rawValue
+  let known = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT.rawValue | VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT.rawValue | binding | residency | aliased
   guard unsafe c.flags & ~known == 0 else {
-    say("unsupported: sparse, aliased or array-compatible images")
+    say("unsupported: aliased or array-compatible images")
     return VK_ERROR_FEATURE_NOT_PRESENT
   }
+  let sparse = unsafe sparseFlags(c.flags, binding: binding, residency: residency, aliased: aliased) ?? SparseFlags()
   guard let format = unsafe pixelFormat(c.format) else {
     say(unsafe "unsupported: an image of format \(c.format.rawValue)")
     return VK_ERROR_FORMAT_NOT_SUPPORTED
@@ -292,7 +336,7 @@ func core_vkCreateImage(_ device: VkDevice?, _ pCreateInfo: UnsafePointer<VkImag
   }
   let descriptor = unsafe ImageDescriptor(
     format: format, width: Int32(c.extent.width), height: Int32(c.extent.height), depth: depth, mipLevels: c.mipLevels,
-    layers: c.arrayLayers, samples: c.samples.rawValue, dimension: dimension, usage: usage)
+    layers: c.arrayLayers, samples: c.samples.rawValue, dimension: dimension, usage: usage, sparse: sparse)
   do throws(GPUError) {
     let image = try d.gpu.makeImage(descriptor)
     let mutable = unsafe c.flags & VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT.rawValue != 0
@@ -310,6 +354,12 @@ func core_vkDestroyImage(_ device: VkDevice?, _ image: VkImage?, _ pAllocator: U
 /// An image's memory is the device's: the requirements are nominal (every texel of every mip level and layer, in any
 /// type), and binding keeps nothing.
 func imageRequirements(_ i: ImageObject) -> VkMemoryRequirements {
+  // A sparse image: its opaque range in the core's pages, bound from the device's own memory.
+  if !i.image.descriptor.sparse.isEmpty, let need = try? i.device.gpu.sparseRequirements(i.image) {
+    let page = UInt64(max(need.pageBytes, 1))
+    return VkMemoryRequirements(size: (UInt64(need.size) + page - 1) / page * page, alignment: page,
+                                memoryTypeBits: 1 << MemoryTypes.device)
+  }
   var bytes: UInt64 = 0
   let d = i.image.descriptor
   for level in 0..<d.mipLevels { bytes += UInt64(d.byteSize(mip: level)) }
@@ -329,6 +379,71 @@ func core_vkGetImageMemoryRequirements2(_ device: VkDevice?, _ pInfo: UnsafePoin
 {
   guard let n = unsafe pInfo, let i = unsafe Handle.get(n.pointee.image, ImageObject.self) else { return }
   unsafe pMemoryRequirements?.pointee.memoryRequirements = imageRequirements(i)
+}
+
+// MARK: Sparse images' requirements
+
+/// Vulkan's sparse image format properties for the core's.
+func sparseFormatProperties(_ p: SparseImageFormatProperties) -> VkSparseImageFormatProperties {
+  var flags: UInt32 = 0
+  if p.singleMipTail { flags |= VK_SPARSE_IMAGE_FORMAT_SINGLE_MIPTAIL_BIT.rawValue }
+  if p.alignedMipSize { flags |= VK_SPARSE_IMAGE_FORMAT_ALIGNED_MIP_SIZE_BIT.rawValue }
+  if p.nonStandardBlockSize { flags |= VK_SPARSE_IMAGE_FORMAT_NONSTANDARD_BLOCK_SIZE_BIT.rawValue }
+  return VkSparseImageFormatProperties(aspectMask: vkAspectMask(p.aspects),
+                                       imageGranularity: VkExtent3D(width: p.blockShape.width, height: p.blockShape.height,
+                                                                    depth: p.blockShape.depth),
+                                       flags: flags)
+}
+
+/// Vulkan's aspect bits for the core's aspects.
+func vkAspectMask(_ a: ImageAspects) -> UInt32 {
+  var m: UInt32 = 0
+  if a.contains(.color) { m |= VK_IMAGE_ASPECT_COLOR_BIT.rawValue }
+  if a.contains(.depth) { m |= VK_IMAGE_ASPECT_DEPTH_BIT.rawValue }
+  if a.contains(.stencil) { m |= VK_IMAGE_ASPECT_STENCIL_BIT.rawValue }
+  return m
+}
+
+/// A sparse image's requirements, an aspect each: none for an image not made used partly bound.
+func sparseImageRequirements(_ i: ImageObject) -> [VkSparseImageMemoryRequirements] {
+  guard i.image.descriptor.sparse.contains(.residency), let all = try? i.device.gpu.sparseImageRequirements(i.image) else { return [] }
+  return all.map { r in
+    VkSparseImageMemoryRequirements(formatProperties: sparseFormatProperties(r.format), imageMipTailFirstLod: r.mipTailFirstLevel,
+                                    imageMipTailSize: VkDeviceSize(r.mipTailSize), imageMipTailOffset: VkDeviceSize(r.mipTailOffset),
+                                    imageMipTailStride: VkDeviceSize(r.mipTailStride))
+  }
+}
+
+func core_vkGetImageSparseMemoryRequirements(_ device: VkDevice?, _ image: VkImage?,
+                                             _ pSparseMemoryRequirementCount: UnsafeMutablePointer<UInt32>?,
+                                             _ pSparseMemoryRequirements: UnsafeMutablePointer<VkSparseImageMemoryRequirements>?)
+{
+  guard let i = unsafe Handle.get(image, ImageObject.self), let pCount = unsafe pSparseMemoryRequirementCount else { return }
+  let all = sparseImageRequirements(i)
+  guard let out = unsafe pSparseMemoryRequirements else {
+    unsafe pCount.pointee = UInt32(all.count)
+    return
+  }
+  let n = min(Int(unsafe pCount.pointee), all.count)
+  for k in 0..<n { unsafe out[k] = all[k] }
+  unsafe pCount.pointee = UInt32(n)
+}
+
+func core_vkGetImageSparseMemoryRequirements2(_ device: VkDevice?, _ pInfo: UnsafePointer<VkImageSparseMemoryRequirementsInfo2>?,
+                                              _ pSparseMemoryRequirementCount: UnsafeMutablePointer<UInt32>?,
+                                              _ pSparseMemoryRequirements: UnsafeMutablePointer<VkSparseImageMemoryRequirements2>?)
+{
+  guard let info = unsafe pInfo, let i = unsafe Handle.get(info.pointee.image, ImageObject.self),
+    let pCount = unsafe pSparseMemoryRequirementCount
+  else { return }
+  let all = sparseImageRequirements(i)
+  guard let out = unsafe pSparseMemoryRequirements else {
+    unsafe pCount.pointee = UInt32(all.count)
+    return
+  }
+  let n = min(Int(unsafe pCount.pointee), all.count)
+  for k in 0..<n { unsafe out[k].memoryRequirements = all[k] }
+  unsafe pCount.pointee = UInt32(n)
 }
 
 func core_vkBindImageMemory(_ device: VkDevice?, _ image: VkImage?, _ memory: VkDeviceMemory?, _ memoryOffset: VkDeviceSize) -> VkResult {

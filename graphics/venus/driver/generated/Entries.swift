@@ -67,11 +67,6 @@ func venus_vkGetPhysicalDeviceSparseImageFormatProperties(_ physicalDevice: VkPh
   _ = try? context.locked { () throws(VenusLost) in try unsafe context.call(Venus.vkGetPhysicalDeviceSparseImageFormatProperties_replySize(physicalDevice, format, type, samples, usage, tiling, pPropertyCount, pProperties), { e in unsafe Venus.vkGetPhysicalDeviceSparseImageFormatProperties(&e, reply: true, physicalDevice, format, type, samples, usage, tiling, pPropertyCount, pProperties) }, { (d: inout VenusDecoder) throws(VenusError) in try unsafe Venus.vkGetPhysicalDeviceSparseImageFormatProperties_reply(&d, physicalDevice, format, type, samples, usage, tiling, pPropertyCount, pProperties) }) }
 }
 
-func venus_vkQueueBindSparse(_ queue: VkQueue?, _ bindInfoCount: UInt32, _ pBindInfo: UnsafePointer<VkBindSparseInfo>?, _ fence: VkFence?) -> VkResult {
-  guard let context = unsafe VenusHandle.context(queue) else { return lostResult }
-  do { return try context.locked { () throws(VenusLost) -> VkResult in try unsafe context.call(Venus.vkQueueBindSparse_replySize(queue, bindInfoCount, pBindInfo, fence), { e in unsafe Venus.vkQueueBindSparse(&e, reply: true, queue, bindInfoCount, pBindInfo, fence) }, { (d: inout VenusDecoder) throws(VenusError) -> VkResult in try unsafe Venus.vkQueueBindSparse_reply(&d, queue, bindInfoCount, pBindInfo, fence) }) } } catch { return lostResult }
-}
-
 func venus_vkCreateSemaphore(_ device: VkDevice?, _ pCreateInfo: UnsafePointer<VkSemaphoreCreateInfo>?, _ pAllocator: UnsafePointer<VkAllocationCallbacks>?, _ pSemaphore: UnsafeMutablePointer<VkSemaphore?>?) -> VkResult {
   guard let context = unsafe VenusHandle.context(device) else { return lostResult }
   do {

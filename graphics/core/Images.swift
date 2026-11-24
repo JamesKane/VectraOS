@@ -50,8 +50,12 @@ public struct ImageDescriptor: Sendable, Equatable {
   public var samples: UInt32
   public var dimension: ImageDimension
   public var usage: ImageUsage
+  /// A sparse image (`SparseFlags`): made with no memory, its pages bound by the queue's `bindSparse`. Empty for an image the
+  /// device gives memory when it makes it.
+  public var sparse: SparseFlags
   public init(format: PixelFormat, width: Int32, height: Int32, depth: Int32 = 1, mipLevels: UInt32 = 1, layers: UInt32 = 1,
-              samples: UInt32 = 1, dimension: ImageDimension = .d2, usage: ImageUsage) {
+              samples: UInt32 = 1, dimension: ImageDimension = .d2, usage: ImageUsage, sparse: SparseFlags = SparseFlags()) {
+    self.sparse = sparse
     self.format = format
     self.width = width
     self.height = height

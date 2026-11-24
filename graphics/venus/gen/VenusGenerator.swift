@@ -21,12 +21,17 @@
 import VulkanGen
 import XMLReader
 
-/// What the Venus client driver speaks: core 1.0-1.3 and Venus's own
-/// commands. The 1.3.0 renderer knows vk.xml 1.4.334, so nothing past 1.3
-/// is needed yet.
+/// What the Venus client driver speaks: core 1.0-1.3, Venus's own
+/// commands, and the renderer's device extensions it forwards. The 1.3.0
+/// renderer knows vk.xml 1.4.334, so nothing past 1.3 is needed yet.
 public let venusSelection = VulkanSelection(
   maxVersion: "VK_VERSION_1_3",
-  extensions: ["VK_EXT_command_serialization", "VK_MESA_venus_protocol"] + venusClientExtensions)
+  extensions: ["VK_EXT_command_serialization", "VK_MESA_venus_protocol"] + venusRendererExtensions + venusClientExtensions)
+
+/// The renderer's device extensions the client driver forwards where the
+/// renderer offers them (Driver.swift's `forwardedExtensions`): their structs
+/// go on the wire in chains like core ones.
+public let venusRendererExtensions = ["VK_EXT_custom_border_color"]
 
 /// Extensions the client driver implements itself (M5j): their types are in
 /// the header, but never on the wire (the renderer doesn't know them; their
@@ -839,7 +844,7 @@ public struct VenusGenerator {
     "vkDestroyFence", "vkResetFences", "vkGetFenceStatus", "vkWaitForFences", "vkAllocateMemory", "vkFreeMemory",
     "vkMapMemory", "vkUnmapMemory", "vkFlushMappedMemoryRanges", "vkInvalidateMappedMemoryRanges",
     "vkAllocateCommandBuffers", "vkFreeCommandBuffers", "vkBeginCommandBuffer", "vkEndCommandBuffer",
-    "vkResetCommandBuffer", "vkGetMemoryZirconHandleFUCHSIA",
+    "vkResetCommandBuffer", "vkGetMemoryZirconHandleFUCHSIA", "vkQueueBindSparse",
   ]
 
   /// One generated entry point: a vkCmd records into its command buffer;

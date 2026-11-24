@@ -67,6 +67,11 @@ public enum VenusBlob {
   public let rendererWaits: Bool
   /// Whether its blobs' memory can be handed out as VMOs.
   public let canExportVMOs: Bool
+  /// The extensions the renderer's protocol carries (capset's
+  /// vk_extension_mask1: bit N % 32 of word N / 32 for extension number
+  /// N); bit 0 of word 0 clear means the mask isn't given, and every
+  /// extension is carried.
+  public let extensionMask: [UInt32]
   var nextObjectID: UInt64 = 1
   /// The reply stream's shared memory.
   var replyResource: UInt32
@@ -94,6 +99,9 @@ public enum VenusBlob {
     guard u32(0) == 1, u32(4) >= (1 << 22 | 1 << 12) else { throw VenusLost() }
     rendererVersion = u32(4)
     rendererWaits = u32(148) != 0
+    var mask: [UInt32] = []
+    for i in 0..<32 { mask.append(u32(20 + 4 * i)) }
+    extensionMask = mask
     canExportVMOs = transport.canExportVMOs
     let r = try unsafe transport.createSharedMemory(size: 1 << 20)
     replyResource = unsafe r.resource
@@ -101,6 +109,15 @@ public enum VenusBlob {
     replySize = 1 << 20
     cpuSync = try transport.createSync(0)
     ring = direct ? nil : try VenusRing(transport)
+  }
+
+  /// Whether the renderer's protocol carries extension number `n`.
+  public func rendererCarries(extension n: Int) -> Bool { Self.carries(extensionMask, extension: n) }
+
+  static func carries(_ mask: [UInt32], extension n: Int) -> Bool {
+    guard mask.count == 32, mask[0] & 1 != 0 else { return true }
+    guard n > 0, n / 32 < 32 else { return false }
+    return mask[n / 32] & (1 << UInt32(n % 32)) != 0
   }
 
   deinit {

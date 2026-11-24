@@ -11,10 +11,12 @@ names BlendingFactor BlendOp ColorMask ColorBlendAttachment LogicOp BlendConstan
 names SpecializationConstant AspectLoad DepthStencilAttachment RenderArea Offset3D Extent3D ImageCopyRegion ImageBlitRegion
 names BufferImageRegion ClearColor ClearAttachment ClearRect ImageDescriptor.check SamplerDescriptor.check PresentImage GPUDevice.makePresentImage
 names ComponentSwizzle ComponentMapping CustomBorderColor BufferView TexelBufferUse BufferView.check
-names GraphicsPipelineDescriptor.check ImageView.check
+names GraphicsPipelineDescriptor.check ImageView.check Viewport SparseFlags SparseProperties SparseMemoryRequirements
+names SparseImageFormatProperties SparseImageRequirements SparseBufferBind SparseImageOpaqueBind SparseImageBind SparseBindings
+names SparseBindings.validate GPUQueue.bindSparse GPUDevice.makeSparseBuffer GPUDevice.sparseRequirements
 names VulkanDevice VulkanDeviceChoice MaliDevice CSFTransport MaliTransport MaliBuffer MaliJob MaliGPUInfo
 src graphics/core/Types.swift graphics/core/Formats.swift graphics/core/Images.swift graphics/core/PipelineState.swift
-src graphics/core/Commands.swift graphics/core/Rules.swift graphics/core/Device.swift
+src graphics/core/Commands.swift graphics/core/Rules.swift graphics/core/Device.swift graphics/core/Sparse.swift graphics/core/vulkan/Sparse.swift
 src graphics/core/vulkan/VulkanDevice.swift graphics/core/vulkan/Resources.swift graphics/core/vulkan/Pipelines.swift
 src graphics/core/vulkan/Capabilities.swift graphics/core/vulkan/Mapping.swift
 src graphics/core/vulkan/Replay.swift graphics/core/mali/lib/Transport.swift graphics/core/mali/lib/MaliDevice.swift
@@ -58,6 +60,16 @@ protocol GPUDevice: AnyObject {
   func exportHandle(_ image: GPUImage) -> UInt32?
   func exportWindowHandle(_ image: GPUImage) -> (handle: UInt32, rowBytes: Int)?
   func timelineHandle() -> UInt32?
+  func makeSparseBuffer(bytes: Int,
+    flags: SparseFlags) throws(GPUError) -> GPUMemory
+  func sparseRequirements(_ buffer: GPUMemory)
+    throws(GPUError) -> SparseMemoryRequirements
+  func sparseRequirements(_ image: GPUImage)
+    throws(GPUError) -> SparseMemoryRequirements
+  func sparseImageRequirements(_ image: GPUImage)
+    throws(GPUError) -> [SparseImageRequirements]
+  func sparseImageFormats(_ format: PixelFormat, dimension: ImageDimension,
+    samples: UInt32, usage: ImageUsage) -> [SparseImageFormatProperties]
   func importHandle(_ vmo: UInt32, intent: MemoryIntent,
                     bytes: Int) throws(GPUError) -> GPUMemory
   func importHandle(_ vmo: UInt32,
@@ -67,6 +79,8 @@ protocol GPUDevice: AnyObject {
 protocol GPUQueue: AnyObject {
   func submit(_ list: GPUCommandList, wait: UInt64,
               signal: UInt64) throws(GPUError)
+  func bindSparse(_ bindings: SparseBindings, wait: UInt64,
+                  signal: UInt64) throws(GPUError)
 }
 struct GPUCommandList {
   mutating func beginRendering(_ info: RenderingInfo)
@@ -253,7 +267,10 @@ It has compute dispatches (direct and indirect), passes with dynamic rendering, 
 
 A pass is `beginRendering` with the attachments, each saying what happens to its contents at the pass's start (`load`, `clear` or `dontCare`) and end (`store` or `discard`), as a tiler needs before the pass begins; `endRendering`; and the draws between.
 `RenderingInfo` has the colour attachments, each a view, with an optional single-sample view to resolve into; an optional depth and stencil attachment with a load and a store for each aspect and its own clear value; a layer count; a view mask for multiview; and a render area.
-The viewport and scissor start as the whole of the first attachment.
+Every viewport and scissor starts as the whole of the first attachment, with depths 0 to 1.
+`setViewport` and `setScissor` set the first; `setViewports(first:)` sets a run of viewports, each a rectangle (a negative height flips it) with its depth range, and `setScissors(first:)` a run of scissors, one for each viewport.
+A pipeline draws with `viewportCount` of them (1 by default), and a primitive takes the one its ViewportIndex names; more than one is `multiViewport`, up to `maxViewports`.
+A viewport of no width or height, depths outside 0 to 1, a scissor before the origin, and none at all are `.invalid`; one past the device's count, size or bounds is `.unsupported`.
 
 The copies are: memory to memory; memory to an image and an image to memory, whole (mip level 0 of layer 0, rows tightly packed) or by regions, each with a mip level, layers, an offset, an extent, a buffer offset and row length; image to image (`copyImage`, between formats of one class); `blitImage`, which scales regions with a nearest or linear filter and flips where the corners are swapped; `resolveImage`, from a multisampled image into a single-sampled one of its format; `fill` and `update` of memory.
 A region lies inside its subresource, and where the format is compressed it starts on a block and ends on one or on the image's edge.
@@ -285,9 +302,22 @@ A list that breaks them is `.invalid`; a list that needs what the device can't d
 - pipeline state: `cullModes`, `rasterizerDiscard`, `independentBlend`, `dualSourceBlend`, `logicOps`, `fillModeNonSolid`, `wideLines`, `depthClamp`, `depthBias`, `depthBounds`, `geometryShader`, `tessellation`, `multiview`, `extendedTopologies`, `primitiveRestart`, `sampleShading`, `alphaToCoverage`, `alphaToOne`, `specializationConstants`, `dynamicState`, `multipleColorAttachments`;
 - commands: `copyImage`, `blitImage`, `resolveImage`, `resolveAttachments`, `depthStencilResolve`, `imageRegionCopies`, `fillBuffer`, `updateBuffer`, `clearImage`, `clearAttachments`, `drawIndirectCount`, `pipelineStatisticsQueries`, `importHandle`, `presentDirect`;
 - what shaders may do (SPIR-V's capabilities): `shaderFloat16`, `shaderInt8`, `shaderInt16`, `shaderInt64`, `shaderFloat64`, `subgroupOperations`, `shaderAtomic32`, `shaderAtomic64`, `shaderImageAtomics`, `shaderDerivatives`, the storage image formats, clip and cull distances, gather, minimum level of detail, draw parameters, demote, layer and viewport index, stencil export, sample-rate shading and float controls;
+- viewports: `multiViewport`, and `shaderOutputViewportIndex` (ViewportIndex from the vertex stage; `shaderViewportIndexLayer` is Layer from it);
+- sparse resources: `sparseBinding`, `sparseResidencyBuffer`, `sparseResidencyImage2D`, `sparseResidencyImage3D`, `sparseResidency2Samples` to `sparseResidency16Samples`, `sparseResidencyAliased`, `shaderResourceResidency`;
 - the ones the core had: `computeQueue`, `indirectDispatch`, `indirectDraw`, `indexedDraw`, `sampledImages`, `storageImages`, `timestampQueries`, `occlusionQueries`, `loadAttachments`, `multipleDrawsPerPass`.
 
-The limits are the heap's slots, `maxImageDimension` (and for 3D, `maxImageDimension3D`), `maxImageArrayLayers`, `maxSamples`, `maxAnisotropy`, `maxLineWidth`, `maxColorAttachments`, `maxMultiviewViews`, `maxPatchControlPoints`, `subgroupSize` and the timestamp period.
+The limits are the heap's slots, `maxImageDimension` (and for 3D, `maxImageDimension3D`), `maxImageArrayLayers`, `maxSamples`, `maxAnisotropy`, `maxLineWidth`, `maxColorAttachments`, `maxMultiviewViews`, `maxPatchControlPoints`, `subgroupSize`, the timestamp period, `maxViewports` with the largest viewport, the bounds its corners lie in and its sub-pixel bits, and `sparseAddressSpaceSize` with `sparse`, how the device lays out and reads sparse images (the standard block shapes, aligned mip sizes, and whether unbound pages read as zero).
+
+## Sparse resources
+
+A sparse buffer (`makeSparseBuffer`) is `.device` memory with an address and no pages, which a list uses like any other; a sparse image is one whose descriptor's `sparse` is not empty, made with no memory.
+Their pages are bound by the queue's `bindSparse`, which takes ranges of buffers (`SparseBufferBind`), ranges of an image's opaque bytes (`SparseImageOpaqueBind`, its metadata too where the device has any) and, for an image used partly bound, boxes of whole blocks of one level and layer (`SparseImageBind`), each to a range of ordinary memory or to nothing.
+`bindSparse` waits for `wait` and for everything submitted on the queue before it, and signals `signal` on the timeline, and the queue's later submissions run after it; `TimelineRule` holds its values as `submit`'s.
+A resource made with `.binding` is wholly bound before work uses it; with `.residency` (and the device's residency feature for the resource's kind and samples) work may use it partly bound, and what is unbound reads as zero where `sparse.residencyNonResidentStrict` says so, and drops writes; with `.aliased` a page may be bound at more than one place.
+`sparseRequirements` gives a resource's range in whole pages and the page every bind's offsets and sizes are a multiple of, in the resource and in the memory; `sparseImageRequirements` gives each aspect's block of texels and mip tail (the levels bound by bytes, not blocks); `sparseImageFormats` gives the blocks of a format, kind, sample count and usage before an image is made.
+`SparseBindings.validate` judges the binds' shape (a resource that isn't sparse, memory that is, a range past either, blocks past a level or of an image without residency are `.invalid`); a bind off the pages, or of memory of a kind the resource can't take, is the backend's to refuse.
+The shape is one every GPU with page tables has: a bind is a run of the memory's pages put at the resource's addresses, and a range bound to nothing is unmapped or mapped to a page of zeros.
+A device without them keeps the defaults, which refuse with `.unsupported`.
 
 ## The timeline
 
@@ -319,7 +349,9 @@ The pipeline state of the core (depth and stencil, rasterization, multisampling,
 A heap write of a view keeps a view of the image (a format, a range of mip levels and layers, a dimension: 1D, 1D array, 2D, array, cube, cube array or 3D, and the component mapping, one to one), made once and cached, and a sampler is the heap's own, one to one.
 A 1D image is a 1D Vulkan image, and a heap write of a `BufferView` makes a `VkBufferView` of the allocation's buffer at the offset, range and format, kept until the allocation is freed (the offset must be a multiple of the device's `minTexelBufferOffsetAlignment`, which a view made at another is refused for, `.unsupported`); every allocation can be a texel buffer.
 A sampler's own border colour is `VK_EXT_custom_border_color`'s, with no format named, taken where the host's Vulkan has the extension and both of its features; `customBorderColor` is set from them.
-Under Venus the host's extensions are Venus's driver's own and none of the renderer's (VK_EXT_custom_border_color is not among them), so the flag is false there, and the texel-buffer features the heap needs (update after bind and non-uniform indexing of the two kinds) and the 1D and mapped views are whatever the host reports.
+Under Venus the extension is the renderer's, which Venus's driver forwards where the host's device offers it and the renderer carries it (loinnir(2)); the texel-buffer features the heap needs (update after bind and non-uniform indexing of the two kinds) and the 1D and mapped views are whatever the host reports.
+More than one viewport is the device's `multiViewport` and `maxViewports`, and every one of them is set at the start of a pass; a pipeline's viewport state has its `viewportCount`.
+Sparse resources are the device's sparse features, where the queue the backend uses has `VK_QUEUE_SPARSE_BINDING_BIT`: a sparse buffer or image is made with the sparse flags and no memory, `bindSparse` is `vkQueueBindSparse` of the `VkDeviceMemory` behind the memory named (whose type the resource must take), waiting on the timeline semaphore for everything submitted before it, and the next submission waits for the bind; `shaderResourceResidency` is false.
 The queries are occlusion, timestamp and pipeline statistics, and `validate` judges a list against the device's limits before it is replayed.
 Everything the device lacks it refuses at the call that makes the image, the sampler or the pipeline, or at `submit`, with `.unsupported`.
 loinnir-test(8) prints which flags the device behind Venus reports, and draws, copies and judges each of these against a CPU reference.
@@ -366,6 +398,7 @@ The topologies are the triangle list, strip and fan, the line list and strip and
 A point is one pixel, and a line is its width wide (`wideLines`, up to 7.9921875), which the pipeline fixes or the pass sets (`DynamicStates.lineWidth`).
 Culling is front, back or both for the triangle topologies, whichever way the front face is wound (`cullModes`); a rasterizer-discard pipeline's draws are not run (`rasterizerDiscard`).
 The viewport and scissor are any box of the target: the viewport is the vertex stage's window transform and the hardware's viewport rectangle, the scissor the draw's scissor box, and a pass starts with the whole target for both.
+It has one viewport and scissor (`multiViewport` is false, `maxViewports` 1): `setViewports` and `setScissors` of the first take it, with the viewport's depth range, and more is `.unsupported`. It has no sparse resources: the sparse features are false, and a sparse buffer, a sparse image or a bind is `.unsupported`.
 A pass's depth and stencil attachment is a `depth16`, `depth32f` or `stencil8` image (`depth`, `stencil`: a plane of its own, linear, made only for the `depthStencilTarget` usage), cleared, kept or not cared about at the start and stored or discarded at the end.
 A pass that keeps a depth or stencil plane has a second pre-frame shader (valhall 08 section 8.2.1.1; Early ZS Always), run once for each tile before the draws: it fetches the plane at the pixel (each sample, where the pass is multisampled) and writes it as the fragment's depth, or gives it as the stencil reference with the test Always and every operation Replace, the tests late; the planes' preload bits are never set.
 The depth test has every compare op, the depth write, depth bias with its clamp (the constant factor is the API's, as the hardware has it) and depth clamp (`depthBias`, `depthClamp`); the stencil test has every operation, the compare and write masks and the reference of each face, the faces being the winding's, and the masks, reference and bias may be a pass's (`DynamicStates`, `dynamicState`).

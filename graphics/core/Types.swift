@@ -46,13 +46,18 @@ public enum MemoryIntent: Sendable {
   public let pointer: UnsafeMutableRawPointer?
   public let size: Int
   public let intent: MemoryIntent
+  /// A sparse buffer's flags (`makeSparseBuffer`): its address range is the device's, and its pages are whatever
+  /// `bindSparse` bound there. Empty for memory that is its own pages.
+  public let sparse: SparseFlags
 
-  @unsafe public init(handle: UInt64, address: UInt64, pointer: UnsafeMutableRawPointer?, size: Int, intent: MemoryIntent) {
+  @unsafe public init(handle: UInt64, address: UInt64, pointer: UnsafeMutableRawPointer?, size: Int, intent: MemoryIntent,
+                      sparse: SparseFlags = SparseFlags()) {
     self.handle = handle
     self.address = address
     unsafe self.pointer = unsafe pointer
     self.size = size
     self.intent = intent
+    self.sparse = sparse
   }
 
   public static func == (a: GPUMemory, b: GPUMemory) -> Bool { a.handle == b.handle && a.address == b.address }
@@ -200,6 +205,10 @@ public struct GraphicsPipelineDescriptor: Sendable, Equatable {
   public var specialization: [SpecializationConstant]
   /// Views of an attachment that a multiview pass draws to (`RenderingInfo.viewMask`); 0 for none.
   public var viewMask: UInt32
+  /// Viewports (and scissors) the pipeline draws with: a primitive takes the one its ViewportIndex names (the first where the
+  /// shaders write none). More than one needs `DeviceFeatures.multiViewport`. The viewports and scissors are always the pass's,
+  /// set by commands (`setViewports`, `setScissors`).
+  public var viewportCount: UInt32
 
   public init(vertex: [UInt8], fragment: [UInt8], colorFormats: [PixelFormat], blend: BlendMode = .alpha,
               topology: PrimitiveTopology = .triangleList, depthStencilFormat: PixelFormat? = nil,
@@ -208,7 +217,7 @@ public struct GraphicsPipelineDescriptor: Sendable, Equatable {
               logicOp: LogicOp? = nil, blendConstants: BlendConstants = BlendConstants(), dynamic: DynamicStates = DynamicStates(),
               primitiveRestart: Bool = false, patchControlPoints: UInt32 = 0, geometry: [UInt8]? = nil,
               tessellationControl: [UInt8]? = nil, tessellationEvaluation: [UInt8]? = nil,
-              specialization: [SpecializationConstant] = [], viewMask: UInt32 = 0) {
+              specialization: [SpecializationConstant] = [], viewMask: UInt32 = 0, viewportCount: UInt32 = 1) {
     self.vertex = vertex
     self.fragment = fragment
     self.colorFormats = colorFormats
@@ -229,6 +238,7 @@ public struct GraphicsPipelineDescriptor: Sendable, Equatable {
     self.tessellationEvaluation = tessellationEvaluation
     self.specialization = specialization
     self.viewMask = viewMask
+    self.viewportCount = viewportCount
   }
 
   /// The blend of each colour attachment: `attachmentBlends` (one entry stands for all), else `blend`'s on all.
@@ -439,7 +449,11 @@ public struct DeviceFeatures: Sendable, Equatable {
   public var shaderMinLod = false
   public var shaderDrawParameters = false
   public var shaderDemoteToHelperInvocation = false
+  /// Layer written by the vertex (or tessellation evaluation) stage, not only by a geometry stage.
   public var shaderViewportIndexLayer = false
+  /// ViewportIndex written by the vertex (or tessellation evaluation) stage, which picks the viewport and scissor a primitive
+  /// is drawn with (`multiViewport`).
+  public var shaderOutputViewportIndex = false
   public var shaderStencilExport = false
   public var shaderSampleRateShading = false
   public var shaderFloatControls = false
@@ -450,6 +464,29 @@ public struct DeviceFeatures: Sendable, Equatable {
   /// Storage texel buffers: `BufferView`s in the heap's storage-texel-buffer slots, read, written and (for the formats that
   /// say so) given atomics by a shader (`imageBuffer`).
   public var storageTexelBuffers = false
+
+  // Viewports.
+  /// More than one viewport and scissor: a pipeline's `viewportCount` above 1, and `setViewports` and `setScissors` past the
+  /// first (`DeviceLimits.maxViewports`).
+  public var multiViewport = false
+
+  // Sparse resources (Sparse.swift).
+  /// Sparse buffers and images whose pages are bound by the queue's `bindSparse` (`SparseFlags.binding`), wholly bound before use.
+  public var sparseBinding = false
+  /// Sparse buffers used while only partly bound (`SparseFlags.residency`).
+  public var sparseResidencyBuffer = false
+  /// Single-sampled 2D (and cube) images, and 3D images, used while only partly bound, bound by blocks of texels.
+  public var sparseResidencyImage2D = false
+  public var sparseResidencyImage3D = false
+  /// 2D images of 2, 4, 8 and 16 samples used while only partly bound.
+  public var sparseResidency2Samples = false
+  public var sparseResidency4Samples = false
+  public var sparseResidency8Samples = false
+  public var sparseResidency16Samples = false
+  /// Memory bound at more than one place, of one sparse resource or of several (`SparseFlags.aliased`).
+  public var sparseResidencyAliased = false
+  /// Shaders that ask whether what they read was bound (SPIR-V's `SparseResidency`).
+  public var shaderResourceResidency = false
   public init() {}
 }
 
@@ -484,6 +521,19 @@ public struct DeviceLimits: Sendable, Equatable {
   public var subgroupSize: UInt32 = 0
   /// One timestamp tick, in picoseconds; 0 where there are no timestamps.
   public var timestampPeriodPicoseconds: UInt64 = 0
+  /// Viewports and scissors a pass has (1 where `multiViewport` is false), the largest viewport, and the range its corners
+  /// must lie in. 0 for the size and the range: not said, and not judged.
+  public var maxViewports: UInt32 = 1
+  public var maxViewportWidth: UInt32 = 0
+  public var maxViewportHeight: UInt32 = 0
+  public var viewportBoundsMin: Float = 0
+  public var viewportBoundsMax: Float = 0
+  /// Bits of a viewport's corners kept below the pixel.
+  public var viewportSubPixelBits: UInt32 = 0
+  /// Bytes of address space every sparse resource together may take (0: no sparse resources), and how the device
+  /// lays out and reads what is bound.
+  public var sparseAddressSpaceSize: UInt64 = 0
+  public var sparse = SparseProperties()
   /// What the device does with each format it lists; read with `formats(_:)`.
   public var formatTable: [FormatEntry] = []
   public init() {}

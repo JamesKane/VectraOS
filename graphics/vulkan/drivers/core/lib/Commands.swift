@@ -157,14 +157,7 @@ final class CommandPoolObject: CoreObject {
   /// pipeline leaves to commands.
   func sendState(_ p: PipelineObject) {
     guard inPass else { return }
-    if let v = p.viewport ?? state.viewport, sent.viewport == nil || sent.viewport! != v {
-      list.setViewport(x: v.0, y: v.1, width: v.2, height: v.3)
-      sent.viewport = v
-    }
-    if let s = p.scissor ?? state.scissor, sent.scissor == nil || sent.scissor! != s {
-      list.setScissor(x: s.0, y: s.1, width: s.2, height: s.3)
-      sent.scissor = s
-    }
+    sendViewports(p)
     let d = p.dynamic
     if d.contains(.blendConstants), let k = state.blendConstants, sent.blendConstants != k {
       list.setBlendConstants(k)
@@ -191,6 +184,63 @@ final class CommandPoolObject: CoreObject {
     if d.contains(.stencilWriteMask) {
       sendStencil(state.stencilWriteMask, &sent.stencilWriteMask) { list.setStencilWriteMask($0, $1) }
     }
+  }
+
+  /// The pipeline's viewports and scissors (its own, or the buffer's where they are dynamic), each sent where it differs from
+  /// what the core has. A pipeline of one viewport whose depths are 0 to 1 sends the single viewport and scissor commands, so a
+  /// device sees what it always has; otherwise runs of `setViewports` and `setScissors` from the first that changed.
+  func sendViewports(_ p: PipelineObject) {
+    let count = Int(max(p.viewportCount, 1))
+    func want<T>(_ fixed: [T]?, _ dynamic: [T?], _ i: Int) -> T? {
+      if let fixed { return i < fixed.count ? fixed[i] : nil }
+      return i < dynamic.count ? dynamic[i] : nil
+    }
+    while sent.viewports.count < count { sent.viewports.append(nil) }
+    while sent.scissors.count < count { sent.scissors.append(nil) }
+    var run: [Viewport] = []
+    var runStart = 0
+    func flushViewports() {
+      guard !run.isEmpty else { return }
+      let v = run[0]
+      if count == 1 && runStart == 0 && run.count == 1 && v.minDepth == 0 && v.maxDepth == 1 {
+        list.setViewport(x: v.x, y: v.y, width: v.width, height: v.height)
+      } else {
+        list.setViewports(first: UInt32(runStart), run)
+      }
+      run = []
+    }
+    for i in 0..<count {
+      if let v = want(p.viewports, state.viewports, i), sent.viewports[i] != v {
+        if run.isEmpty { runStart = i }
+        run.append(v)
+        sent.viewports[i] = v
+      } else {
+        flushViewports()
+      }
+    }
+    flushViewports()
+    var rects: [RenderArea] = []
+    var rectStart = 0
+    func flushScissors() {
+      guard !rects.isEmpty else { return }
+      if count == 1 && rectStart == 0 && rects.count == 1 {
+        let r = rects[0]
+        list.setScissor(x: r.x, y: r.y, width: r.width, height: r.height)
+      } else {
+        list.setScissors(first: UInt32(rectStart), rects)
+      }
+      rects = []
+    }
+    for i in 0..<count {
+      if let r = want(p.scissors, state.scissors, i), sent.scissors[i] != r {
+        if rects.isEmpty { rectStart = i }
+        rects.append(r)
+        sent.scissors[i] = r
+      } else {
+        flushScissors()
+      }
+    }
+    flushScissors()
   }
 
   /// A stencil value for each face: sent for both at once where they are the same.
@@ -250,8 +300,9 @@ struct StencilValues: Equatable {
 
 /// The state a pass's commands set.
 struct DynamicValues {
-  var viewport: (Float, Float, Float, Float)?
-  var scissor: (Int32, Int32, UInt32, UInt32)?
+  /// Each viewport and scissor by its index, nil where none was set.
+  var viewports: [Viewport?] = []
+  var scissors: [RenderArea?] = []
   var blendConstants: BlendConstants?
   var depthBias: (Float, Float, Float)?
   var depthBounds: (Float, Float)?
@@ -433,22 +484,36 @@ func core_vkCmdSetViewport(_ commandBuffer: VkCommandBuffer?, _ firstViewport: U
                            _ pViewports: UnsafePointer<VkViewport>?)
 {
   guard let b = unsafe Handle.get(commandBuffer, CommandBufferObject.self), let v = unsafe pViewports else { return }
-  if firstViewport != 0 || viewportCount != 1 {
-    b.fail(VK_ERROR_FEATURE_NOT_PRESENT, "more than one viewport")
+  let end = Int(firstViewport) + Int(viewportCount)
+  if end > 1 && !b.device.gpu.limits.features.multiViewport || end > Int(max(b.device.gpu.limits.maxViewports, 1)) {
+    b.fail(VK_ERROR_FEATURE_NOT_PRESENT, "more viewports than the device has")
     return
   }
-  b.state.viewport = unsafe (v[0].x, v[0].y, v[0].width, v[0].height)
+  while b.state.viewports.count < end { b.state.viewports.append(nil) }
+  for k in 0..<Int(viewportCount) { b.state.viewports[Int(firstViewport) + k] = unsafe viewport(v[k]) }
+}
+
+/// The core's viewport for Vulkan's.
+func viewport(_ v: VkViewport) -> Viewport {
+  Viewport(x: v.x, y: v.y, width: v.width, height: v.height, minDepth: v.minDepth, maxDepth: v.maxDepth)
+}
+
+/// The core's rectangle for Vulkan's.
+func renderArea(_ r: VkRect2D) -> RenderArea {
+  RenderArea(x: r.offset.x, y: r.offset.y, width: r.extent.width, height: r.extent.height)
 }
 
 func core_vkCmdSetScissor(_ commandBuffer: VkCommandBuffer?, _ firstScissor: UInt32, _ scissorCount: UInt32,
                           _ pScissors: UnsafePointer<VkRect2D>?)
 {
   guard let b = unsafe Handle.get(commandBuffer, CommandBufferObject.self), let s = unsafe pScissors else { return }
-  if firstScissor != 0 || scissorCount != 1 {
-    b.fail(VK_ERROR_FEATURE_NOT_PRESENT, "more than one scissor")
+  let end = Int(firstScissor) + Int(scissorCount)
+  if end > 1 && !b.device.gpu.limits.features.multiViewport || end > Int(max(b.device.gpu.limits.maxViewports, 1)) {
+    b.fail(VK_ERROR_FEATURE_NOT_PRESENT, "more scissors than the device has")
     return
   }
-  b.state.scissor = unsafe (s[0].offset.x, s[0].offset.y, s[0].extent.width, s[0].extent.height)
+  while b.state.scissors.count < end { b.state.scissors.append(nil) }
+  for k in 0..<Int(scissorCount) { b.state.scissors[Int(firstScissor) + k] = unsafe renderArea(s[k]) }
 }
 
 func core_vkCmdSetBlendConstants(_ commandBuffer: VkCommandBuffer?, _ blendConstants: UnsafePointer<Float>?) {

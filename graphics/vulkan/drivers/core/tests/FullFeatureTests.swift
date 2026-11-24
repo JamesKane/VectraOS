@@ -139,6 +139,10 @@ struct Pieces {
   var renderingColors: [VkFormat] = []
   var depthFormat: VkFormat = VK_FORMAT_UNDEFINED
   var viewMask: UInt32 = 0
+  /// The viewport state's counts, and its viewports and scissors (read where they aren't dynamic).
+  var viewportCount: UInt32 = 1
+  var viewports: [VkViewport] = []
+  var scissors: [VkRect2D] = []
   var stages: [VkShaderStageFlagBits] = [VK_SHADER_STAGE_VERTEX_BIT, VK_SHADER_STAGE_FRAGMENT_BIT]
 
   init() {
@@ -166,8 +170,10 @@ func buildPipeline(_ vk: VK, _ layout: VkPipelineLayout?, _ pass: VkRenderPass?,
   vertex.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO
   var viewportState = VkPipelineViewportStateCreateInfo()
   viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO
-  viewportState.viewportCount = 1
-  viewportState.scissorCount = 1
+  viewportState.viewportCount = p.viewportCount
+  viewportState.scissorCount = p.viewportCount
+  if !p.viewports.isEmpty { viewportState.pViewports = leak(p.viewports) }
+  if !p.scissors.isEmpty { viewportState.pScissors = leak(p.scissors) }
   var dynamic = VkPipelineDynamicStateCreateInfo()
   dynamic.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO
   dynamic.dynamicStateCount = UInt32(p.dynamic.count)
