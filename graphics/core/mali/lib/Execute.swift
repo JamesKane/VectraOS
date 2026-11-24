@@ -251,17 +251,27 @@ extension MaliDevice {
       case .setScissor(let x, let y, let w, let h):
         guard target != nil else { throw .invalid("a scissor outside a pass") }
         dyn.scissor = PipelineMapping.scissorBox(x: Int(x), y: Int(y), width: Int(w), height: Int(h), targetWidth: planSize.width, targetHeight: planSize.height)
-      // One viewport and scissor (`multiViewport` is false): the first, with its depth range.
+      // Viewports and scissors from `first`, each with its depth range: the first is the draw's own, the rest the scissor array's
+      // (RenderPassDraws) for a vertex shader that picks one.
       case .setViewports(let first, let vs):
         guard target != nil else { throw .invalid("a viewport outside a pass") }
-        guard first == 0, vs.count == 1 else { throw .unsupported("more than one viewport") }
-        dyn.viewport = DrawViewport(x: vs[0].x, y: vs[0].y, width: vs[0].width, height: vs[0].height, minDepth: vs[0].minDepth,
-                                    maxDepth: vs[0].maxDepth)
+        for (k, v) in vs.enumerated() {
+          let at = Int(first) + k
+          let viewport = DrawViewport(x: v.x, y: v.y, width: v.width, height: v.height, minDepth: v.minDepth, maxDepth: v.maxDepth)
+          while dyn.viewports.count <= at { dyn.viewports.append(nil) }
+          dyn.viewports[at] = viewport
+          if at == 0 { dyn.viewport = viewport }
+        }
       case .setScissors(let first, let rs):
         guard target != nil else { throw .invalid("a scissor outside a pass") }
-        guard first == 0, rs.count == 1 else { throw .unsupported("more than one scissor") }
-        dyn.scissor = PipelineMapping.scissorBox(x: Int(rs[0].x), y: Int(rs[0].y), width: Int(rs[0].width), height: Int(rs[0].height),
-                                                 targetWidth: planSize.width, targetHeight: planSize.height)
+        for (k, r) in rs.enumerated() {
+          let at = Int(first) + k
+          let box = PipelineMapping.scissorBox(x: Int(r.x), y: Int(r.y), width: Int(r.width), height: Int(r.height),
+                                               targetWidth: planSize.width, targetHeight: planSize.height)
+          while dyn.scissors.count <= at { dyn.scissors.append(nil) }
+          dyn.scissors[at] = box
+          if at == 0 { dyn.scissor = box }
+        }
       case .setBlendConstants(let k): dyn.constants = k
       case .setStencilReference(let faces, let v):
         if faces.rawValue & 1 != 0 { dyn.frontReference = v }
@@ -435,6 +445,9 @@ extension MaliDevice {
     if state.raster.rasterizerDiscard { return }
     _ = record
     var pipelineState = PipelineMapping.drawState(state, dyn, width: planSize.width, height: planSize.height)
+    pipelineState.scissorArrayLength = probeScissorArrayLength
+    pipelineState.scissorProbe = probeScissorMode
+    pipelineState.scissorArrayFill = probeScissorArrayFill.map { ScissorBox(minX: $0.0, minY: $0.1, maxX: $0.2, maxY: $0.3) }
     // Too few vertices for the topology makes no primitive.
     if indirect == nil && vertices < pipelineState.minimumVertices { return }
     // The blend of each target with the constants in force (09 section 9.7.1): a target the blender can't do has a blend shader, which
@@ -768,6 +781,7 @@ extension MaliDevice {
                                 rowStride: at.rowStride)
       t.surfaceStride = at.surfaceStride
       t.layerStride = at.layerStride
+      t.blockFormat = image.layout.kind.blockFormat
       if pass.samples > 1 {
         t.msaa = 3
         if let v = pass.resolves.first(where: { $0.of == i }) {
@@ -776,6 +790,7 @@ extension MaliDevice {
                                           rowStride: r.rowStride)
           resolve.surfaceStride = r.surfaceStride
           resolve.layerStride = r.layerStride
+          resolve.blockFormat = v.image.layout.kind.blockFormat
           if i < pass.stores.count && pass.stores[i] {
             request.resolves.append((i, resolve))
           } else {
@@ -787,6 +802,7 @@ extension MaliDevice {
       targets.append(t)
     }
     request.colourMSAA = targets[0].msaa
+    request.colourBlockFormat = targets[0].blockFormat
     request.colourAddress = targets[0].address
     request.rowStride = targets[0].rowStride
     request.colourSurfaceStride = targets[0].surfaceStride

@@ -56,6 +56,11 @@ extension Selector {
         word += 1
       }
       word = (word + 1) / 2 * 2
+      // The draw's viewports, for a shader that writes ViewportIndex (Prep.viewportTransform): a 64-bit address in a slot of its own.
+      if usedBuiltins[IRBuiltin.viewportTable] {
+        gfau.viewportTableWord = word
+        word += 2
+      }
       for v in m.inputs where v.location >= 16 {
         throw BackendError.unsupported("vertex attribute location \(v.location) (table 0 holds sixteen)")
       }

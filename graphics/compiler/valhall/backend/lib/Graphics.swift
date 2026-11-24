@@ -185,9 +185,16 @@ extension Prep {
     var f = m.functions[m.entry]
     // Each view's position (a multiview shader has one a view).
     for position in positions {
+    // A shader that writes ViewportIndex takes the transform of the viewport it names (14 section 14.3.7): from the draw's table
+    // (`IRBuiltin.viewportTable`), entry `index & 15`, so no index reads past it.
+    var viewportOut = -1
+    for (n, o) in m.outputs.enumerated() where o.builtin == Int(BuiltInId.viewportIndex) && o.view == m.outputs[position].view {
+      viewportOut = n
+    }
     for b in 0..<f.blocks.count {
       var comp = [Int](repeating: -1, count: 4)
       var last = -1
+      var index = -1
       for (k, id) in f.blocks[b].insts.enumerated() where f.insts[id].op == .stageOut && f.insts[id].imm == position {
         let c = f.insts[id].imm2
         guard c >= 0 && c < 4 else { throw BackendError.invalidIR("a position output that is not scalar") }
@@ -196,6 +203,15 @@ extension Prep {
       }
       if last < 0 { continue }
       for c in 0..<4 where comp[c] < 0 { throw BackendError.invalidIR("a position component is not published") }
+      if viewportOut >= 0 {
+        for (k, id) in f.blocks[b].insts.enumerated() where f.insts[id].op == .stageOut && f.insts[id].imm == viewportOut {
+          index = f.insts[id].args[0]
+          last = max(last, k)
+        }
+        guard index >= 0 else {
+          throw BackendError.unsupported("a ViewportIndex not written where the position is (the transform needs both)")
+        }
+      }
       // The new instructions and the four stores go where the last store was, so every operand is defined by then.
       var made: [Int] = []
       func emit(_ i: Inst) -> ValueID {
@@ -210,16 +226,34 @@ extension Prep {
       let rw = emit(Inst(.fdiv, .f32, [one, w]))
       let low = emit(Inst(.fmax, .f32, [rw, nbig]))
       let r = emit(Inst(.fmin, .f32, [low, big]))
+      var entry = -1
+      if index >= 0 {
+        let table = emit(Inst(.builtin, .ptr(.global), [], imm: IRBuiltin.viewportTable, imm2: -1))
+        let masked = emit(Inst(.and, .i32, [index, f.constant(.i32, 15)]))
+        let scaled = emit(Inst(.shl, .i32, [masked, f.constant(.i32, 5)]))
+        let wide = emit(Inst(.zext, .i64, [scaled]))
+        entry = emit(Inst(.ptradd, .ptr(.global), [table, wide]))
+      }
       var moved: [ValueID] = []
       for c in 0..<3 {
         let v = f.insts[comp[c]].args[0]
         let t = emit(Inst(.fmul, .f32, [v, r]))
-        let scale = emit(Inst(.builtin, .f32, [], imm: IRBuiltin.viewportScale, imm2: c))
-        let offset = emit(Inst(.builtin, .f32, [], imm: IRBuiltin.viewportOffset, imm2: c))
+        let scale: ValueID
+        let offset: ValueID
+        if entry >= 0 {
+          let ps = emit(Inst(.ptradd, .ptr(.global), [entry, f.constant(.i64, UInt64(4 * c))]))
+          scale = emit(Inst(.load, .f32, [ps], imm: 4))
+          let po = emit(Inst(.ptradd, .ptr(.global), [entry, f.constant(.i64, UInt64(16 + 4 * c))]))
+          offset = emit(Inst(.load, .f32, [po], imm: 4))
+        } else {
+          scale = emit(Inst(.builtin, .f32, [], imm: IRBuiltin.viewportScale, imm2: c))
+          offset = emit(Inst(.builtin, .f32, [], imm: IRBuiltin.viewportOffset, imm2: c))
+        }
         moved.append(emit(Inst(.fma, .f32, [t, scale, offset])))
       }
       for c in 0..<3 { f.insts[comp[c]].args[0] = moved[c] }
       f.insts[comp[3]].args[0] = r
+      // The new instructions and the position's stores go where the last of the stores (and the index's) was.
       var list: [Int] = []
       for (k, id) in f.blocks[b].insts.enumerated() {
         if comp.contains(id) {
@@ -230,6 +264,10 @@ extension Prep {
           continue
         }
         list.append(id)
+        if k == last {
+          list.append(contentsOf: made)
+          list.append(contentsOf: comp)
+        }
       }
       f.blocks[b].insts = list
     }

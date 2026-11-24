@@ -42,6 +42,11 @@ final class KernelRunner {
         mem.map(b.address, size: b.buffer.size)
         mem.write(b.address, bytes: Array(UnsafeRawBufferPointer(start: b.buffer.pointer, count: b.buffer.size)))
       }
+      // A sparse resource's ranges: its pages, at its own addresses (aliases of their buffers' own mappings).
+      for r in transport.ranges {
+        mem.map(r.address, size: r.size)
+        mem.write(r.address, bytes: Array(UnsafeRawBufferPointer(start: r.buffer.pointer + r.offset, count: r.size)))
+      }
       let block = cs.layout.block(
         address: { _, _ in 0 }, size: { _, _ in 0 }, push: [UInt32(truncatingIfNeeded: root), UInt32(truncatingIfNeeded: root >> 32)],
         workgroups: (grid.x, grid.y, grid.z), imageHandle: { _, b in DescriptorHeap.handle(index: b == 1 ? 0 : 2) },
@@ -76,6 +81,11 @@ final class KernelRunner {
       for b in transport.bound {
         let bytes = mem.read(b.address, count: b.buffer.size)
         for (n, v) in bytes.enumerated() { b.buffer.pointer.storeBytes(of: v, toByteOffset: n, as: UInt8.self) }
+      }
+      // What the kernel wrote through a sparse resource lands in the pages bound there.
+      for r in transport.ranges {
+        let bytes = mem.read(r.address, count: r.size)
+        for (n, v) in bytes.enumerated() { r.buffer.pointer.storeBytes(of: v, toByteOffset: r.offset + n, as: UInt8.self) }
       }
     } catch {
       Issue.record("the \(k) kernel failed on the interpreter: \(error)")

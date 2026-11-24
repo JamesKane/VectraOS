@@ -56,8 +56,8 @@ struct Blit {
   uint samplerIndex;
   uint format;
   uint kind;
-  uint pad0;
-  uint pad1;
+  uint srcTile;
+  uint dstTile;
 };
 layout(buffer_reference, std430, buffer_reference_align = 8) readonly buffer Params { U32 table; uint count; uint pad; Blit jobs[]; };
 layout(push_constant) uniform Root { Params params; } root;
@@ -181,6 +181,28 @@ uvec4 encode(uint format, vec4 f, uvec4 u) {
   return out_;
 }
 
+// A plane in the 64 KiB layout (valhall 05 section 5.7.2; copy.comp's `tiled`): `tile` 0 for a linear plane, else bit 31, the
+// tile's width and height in elements as log2 in bits 4:0 and 12:8, the element's bytes as log2 in bits 20:16.
+uint tiled(uint tile, uint ex, uint ey, uint rowStride) {
+  uint wl = tile & 31u;
+  uint hl = (tile >> 8) & 31u;
+  uint sl = (tile >> 16) & 31u;
+  uint ix = ex & ((1u << wl) - 1u);
+  uint iy = ey & ((1u << hl) - 1u);
+  uint block = (iy >> 4) * ((1u << wl) >> 4) + (ix >> 4);
+  uint x = ix & 15u;
+  uint y = iy & 15u;
+  uint t = x ^ y;
+  uint u = ((y & 8u) << 4) | ((t & 8u) << 3) | ((y & 4u) << 3) | ((t & 4u) << 2) | ((y & 2u) << 2) | ((t & 2u) << 1) | ((y & 1u) << 1)
+    | (t & 1u);
+  return (ey >> hl) * rowStride + (ex >> wl) * 65536u + ((block * 256u + u) << sl);
+}
+
+// Texel (x, y) of a slice: rows `rowStride` apart, or through the tiles.
+uint place(uint tile, uint x, uint y, uint rowStride, uint bytes) {
+  return tile == 0u ? y * rowStride + x * bytes : tiled(tile, x, y, rowStride);
+}
+
 void main() {
   uint z = gl_WorkGroupID.z;
   uint j = root.params.table.v[z];
@@ -229,7 +251,7 @@ void main() {
   uvec4 texel = encode(root.params.jobs[j].format, f, q);
   uint bytes = root.params.jobs[j].bytes;
   uint o = layer * root.params.jobs[j].dstLayerStride + (root.params.jobs[j].dz + slice) * root.params.jobs[j].dstSliceStride
-    + (root.params.jobs[j].dy + y) * root.params.jobs[j].dstRowStride + (root.params.jobs[j].dx + x) * bytes;
+    + place(root.params.jobs[j].dstTile, root.params.jobs[j].dx + x, root.params.jobs[j].dy + y, root.params.jobs[j].dstRowStride, bytes);
   U8 dst = root.params.jobs[j].dst;
   if (bytes == 16u) {
     U128(dst).v[o >> 4] = texel;

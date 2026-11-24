@@ -177,6 +177,9 @@ public struct RenderTargetDescriptor: Equatable, Sendable {
   public var dithering: Bool
   /// How the tile's samples reach memory (8.3.2): 0 sample 0, 1 the average, 3 every sample to its surface (`surfaceStride` apart).
   public var msaa: UInt32 = 0
+  /// The block format (8.4.3): 2 linear, 8 the 64 KiB interleaved layout (05 section 5.7; the row stride is then the bytes of a row
+  /// of tiles).
+  public var blockFormat: UInt32 = 2
 
   public init(format: ColourFormat, internalBufferOffset: Int = 0, address: UInt64, rowStride: Int, surfaceStride: Int,
               clearWord: UInt32, cleanTileWrite: Bool = true, dithering: Bool = true) {
@@ -191,7 +194,7 @@ public struct RenderTargetDescriptor: Equatable, Sendable {
   }
 
   /// 16 words. Word 0: writeback mode 0 (compatibility) `[3:0]`, internal buffer offset shr 4 `[15:4]`, internal
-  /// format `[31:26]`. Word 1: write enable `[0]`, writeback format `[7:3]`, block format Linear (2) `[11:8]`,
+  /// format `[31:26]`. Word 1: write enable `[0]`, writeback format `[7:3]`, block format `[11:8]` (`blockFormat`),
   /// MSAA single (0) `[13:12]`, dithering `[15]`, swizzle `[27:16]`, clean tile write `[31]`. Words 8 and 9: the
   /// base. Word 10: row stride `[26:0]` and the high five bits of the surface stride `[31:27]`. Word 11: the
   /// surface stride's low 32 bits. Words 12 to 15: the clear words. The rest is zero.
@@ -205,8 +208,8 @@ public struct RenderTargetDescriptor: Equatable, Sendable {
     guard address & 63 == 0 else { throw .misaligned }
     var w = [UInt32](repeating: 0, count: 16)
     w[0] = UInt32(internalBufferOffset >> 4) << 4 | ColourFormat.internalFormat << 26
-    guard msaa == 0 || msaa == 1 || msaa == 3 else { throw .outOfRange }
-    w[1] = 1 | ColourFormat.writebackFormat << 3 | 2 << 8 | msaa << 12 | (dithering ? 1 << 15 : 0) | format.swizzle << 16
+    guard msaa == 0 || msaa == 1 || msaa == 3, blockFormat == 2 || blockFormat == 8 else { throw .outOfRange }
+    w[1] = 1 | ColourFormat.writebackFormat << 3 | blockFormat << 8 | msaa << 12 | (dithering ? 1 << 15 : 0) | format.swizzle << 16
       | (cleanTileWrite ? 1 << 31 : 0)
     w[8] = UInt32(truncatingIfNeeded: address)
     w[9] = UInt32(truncatingIfNeeded: address >> 32)

@@ -95,6 +95,12 @@ public protocol MaliTransport: AnyObject {
   /// Map the whole buffer at `address` of the VM.
   /// `gpuCacheable`: the GPU maps the buffer cacheable (shader atomics and occlusion counts work in its caches).
   func bind(vm: UInt32, buffer: any MaliBuffer, address: UInt64, gpuCacheable: Bool) throws(GPUError)
+  /// Map `size` bytes of the buffer from `offset` at `address` of the VM (multiples of the GPU page), replacing what is mapped
+  /// there: a sparse resource's pages (valhall 02 section 2.9.4's MAP).
+  func bind(vm: UInt32, buffer: any MaliBuffer, offset: Int, size: Int, address: UInt64, gpuCacheable: Bool) throws(GPUError)
+  /// Back `size` bytes at `address` with the client's dummy (panthor 04 section 4.8.3's SPARSE MAP), replacing what is mapped
+  /// there: 2 MiB of the driver's that every such range repeats, so reads give what was last written through any of them.
+  func bindDummy(vm: UInt32, address: UInt64, size: Int, gpuCacheable: Bool) throws(GPUError)
   func unbind(vm: UInt32, address: UInt64, size: Int)
 
   /// A group over `vm` with one queue per ring size.
@@ -127,6 +133,12 @@ public protocol MaliTransport: AnyObject {
 }
 
 extension MaliTransport {
+  public func bind(vm: UInt32, buffer: any MaliBuffer, offset: Int, size: Int, address: UInt64, gpuCacheable: Bool) throws(GPUError) {
+    throw .unsupported("binding part of a buffer")
+  }
+  public func bindDummy(vm: UInt32, address: UInt64, size: Int, gpuCacheable: Bool) throws(GPUError) {
+    throw .unsupported("sparse binding")
+  }
   public func importBuffer(vmo: UInt32, size: Int) throws(GPUError) -> any MaliBuffer { throw .unsupported("importing memory") }
   public func syncHandle(_ sync: UInt32) -> UInt32? { nil }
 }

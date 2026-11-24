@@ -189,6 +189,33 @@ private func at(_ inp: FragmentInput, _ lane: Int, _ loc: Int = 0) -> [Float] {
     #expect(throws: BackendError.self) { _ = try compileShader("bothlayerviewport") }
   }
 
+  @Test func aViewportIndexPicksTheTransformOfItsViewportFromTheTable() throws {
+    // gl_ViewportIndex = VertexIndex & 1: even lanes take viewport 0, odd lanes viewport 1 (valhall 14 section 14.3.7).
+    let c = try compileShader("viewport")
+    let v = try #require(c.vertex)
+    #expect(v.layout.viewportTableWord >= 0 && v.layout.viewportTableWord % 2 == 0)
+    let table: UInt64 = 0x7000_0000
+    let transforms = [ViewportTransform(scale: (1, 1, 1), offset: (0, 0, 0)), ViewportTransform(scale: (2, 3, 0.5), offset: (100, 200, 0.25))]
+    var bytes: [UInt8] = []
+    for w in ViewportTable.words(transforms) { for k in 0..<4 { bytes.append(UInt8(truncatingIfNeeded: w >> UInt32(8 * k))) } }
+    let block = v.layout.block(viewport: ViewportTransform(width: 1, height: 1), viewportTable: table)
+    var fau: [UInt32] = []
+    for w in block {
+      fau.append(UInt32(truncatingIfNeeded: w))
+      fau.append(UInt32(truncatingIfNeeded: w >> 32))
+    }
+    let r = try HostRun.vertex(instructions: c.instructions, fau: fau, varyingBytes: Int(v.varyingBytes), memory: [(table, bytes)])
+    for lane in 0..<16 {
+      let t = transforms[lane & 1]
+      let x = Float(bitPattern: r.positions[lane][0]), y = Float(bitPattern: r.positions[lane][1])
+      let z = Float(bitPattern: r.positions[lane][2])
+      #expect(abs(x - (Float(lane) * 0.01 * t.scale.x + t.offset.x)) < 1e-4, "x of lane \(lane): \(x)")
+      #expect(y == t.offset.y && z == t.offset.z, "y and z of lane \(lane): \(y), \(z)")
+    }
+    // A shader that writes no ViewportIndex reads its one viewport from the FAU.
+    #expect(try #require(compileShader("vertexbuiltins").vertex).layout.viewportTableWord < 0)
+  }
+
   @Test func aShaderWithoutThemKeepsTheBasicRecord() throws {
     let v = try #require(try compileShader("vertexbuiltins").vertex)
     #expect(!v.extendedRecord && !v.storesPointSize)

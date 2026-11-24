@@ -3,7 +3,8 @@
 // Copies, blits, clears, fills and resolves (gpucore(2), D174's amendment) run on the GPU, as compute jobs in order with the
 // list's passes and dispatches: the CPU neither waits for the GPU before one nor touches a pixel. The hardware has no copy
 // engine; the reference's copies are "a compute job or a draw" (valhall 05 section 5.11.10.1, R1.4), copies are compute or
-// fragment work for ordering (02 section 2.4), and every image here is linear in GPU memory (no AFBC), so:
+// fragment work for ordering (02 section 2.4), and every image here is linear in GPU memory (no AFBC) but a sparse image used partly
+// bound, which is in the 64 KiB layout (05 section 5.7: the kernels address its elements through its tiles, `tileWord`), so:
 //
 // - copies of buffers and images, fills, updates, clears and colour resolves are MaliShaders' `copy` kernel, which moves rows of
 //   1 to 16-byte units through memory accesses (as R1.4 has the reference read a buffer of any row length into an image's
@@ -81,8 +82,14 @@ struct CopyJob: Equatable {
   var dstLayerStride = 0
   var samples = 1
   var sampleStride = 0
+  /// A side in the 64 KiB layout (`MaliDevice.tileWord`, 0 for a linear one), and the element its address's rows start at (x in bits
+  /// 15:0, y in 31:16): its address is then its slice's start.
+  var srcTile: UInt32 = 0
+  var dstTile: UInt32 = 0
+  var srcOrigin: UInt32 = 0
+  var dstOrigin: UInt32 = 0
 
-  static let words = 20
+  static let words = 22
 }
 
 /// One job of the `blitRaw` and `blit` kernels: a destination rectangle of a level (`dx`, `dy`, `dz` its lesser corner, `w`,
@@ -119,6 +126,9 @@ struct BlitJob: Equatable {
   var sampler = 0
   var format: UInt32 = 0
   var kind: UInt32 = 0
+  /// A side in the 64 KiB layout (`MaliDevice.tileWord`, 0 for a linear one).
+  var srcTile: UInt32 = 0
+  var dstTile: UInt32 = 0
 
   static let words = 34
 }
@@ -139,6 +149,25 @@ extension MaliDevice {
   /// The GPU address of a texel of a plane: its block's first byte (`z` a slice of a volume, or a sample plane).
   func texelAddress(_ r: ImageRecord, _ p: AspectPlane, mip: Int, layer: Int, x: Int = 0, y: Int = 0, z: Int = 0) -> UInt64 {
     r.region.address + UInt64(p.offset + p.layout.texelOffset(x: x, y: y, level: mip, layer: layer, z: z))
+  }
+
+  /// A plane's addressing for the kernels (copy.comp's `tiled`): 0 for a linear plane; for one in the 64 KiB layout (a sparse image's,
+  /// valhall 05 section 5.7.2), bit 31, the tile's width and height in elements as log2 (bits 4:0 and 12:8) and the element's bytes
+  /// as log2 (bits 20:16).
+  static func tileWord(_ p: AspectPlane) -> UInt32 {
+    guard p.layout.kind == .interleaved64K, let t = ImageLayout.tile64K(bytes: p.texel.bytesPerTexel) else { return 0 }
+    return 1 << 31 | UInt32(t.width.trailingZeroBitCount) | UInt32(t.height.trailingZeroBitCount) << 8
+      | UInt32(p.texel.bytesPerTexel.trailingZeroBitCount) << 16
+  }
+
+  /// Where a copy's rows of a plane start: the texel's address (a linear plane), or, for one in the 64 KiB layout, its slice's start,
+  /// with the plane's tile word and the element the rows start at (x in bits 15:0, y in 31:16).
+  func side(_ r: ImageRecord, _ p: AspectPlane, mip: Int, layer: Int, x: Int = 0, y: Int = 0, z: Int = 0)
+    -> (address: UInt64, tile: UInt32, origin: UInt32)
+  {
+    let tile = Self.tileWord(p)
+    if tile == 0 { return (texelAddress(r, p, mip: mip, layer: layer, x: x, y: y, z: z), 0, 0) }
+    return (texelAddress(r, p, mip: mip, layer: layer, z: z), tile, UInt32(x / p.texel.blockWidth) | UInt32(y / p.texel.blockHeight) << 16)
   }
 
   /// The largest of 16, 8, 4, 2 and 1 bytes that divides every value: the unit a copy moves at once.
@@ -235,7 +264,8 @@ extension MaliDevice {
         UInt32(truncatingIfNeeded: j.src), UInt32(truncatingIfNeeded: j.src >> 32), UInt32(truncatingIfNeeded: j.dst),
         UInt32(truncatingIfNeeded: j.dst >> 32), UInt32(j.unit), UInt32(j.srcUnitStride), UInt32(j.rowUnits), UInt32(j.rows),
         UInt32(j.srcRowStride), UInt32(j.dstRowStride), UInt32(j.srcSliceStride), UInt32(j.dstSliceStride), UInt32(j.slices),
-        UInt32(j.srcLayerStride), UInt32(j.dstLayerStride), UInt32(z), UInt32(j.samples), UInt32(j.sampleStride), 0, 0,
+        UInt32(j.srcLayerStride), UInt32(j.dstLayerStride), UInt32(z), UInt32(j.samples), UInt32(j.sampleStride), j.srcTile, j.dstTile,
+        j.srcOrigin, j.dstOrigin,
       ]
       for _ in 0..<(j.slices * j.layers) { table.append(UInt32(n)) }
       z += j.slices * j.layers
@@ -323,14 +353,22 @@ extension MaliDevice {
         let depth = Int(r.imageExtent.depth)
         let mip = Int(r.subresource.mip)
         let level = p.layout.levels[mip]
-        let image = texelAddress(i, p, mip: mip, layer: Int(r.subresource.baseLayer), x: Int(r.imageOffset.x), y: Int(r.imageOffset.y),
-                                 z: Int(r.imageOffset.z))
+        let at = side(i, p, mip: mip, layer: Int(r.subresource.baseLayer), x: Int(r.imageOffset.x), y: Int(r.imageOffset.y),
+                      z: Int(r.imageOffset.z))
+        let image = at.address
         let buffer = m.address + UInt64(r.bufferOffset)
         let unit = Self.unit([Int(truncatingIfNeeded: image & 15), Int(truncatingIfNeeded: buffer & 15), across * bytes, rowStride, sliceStride,
                               level.rowStride, level.surfaceStride, p.layout.arrayStride], atMost: min(bytes, 16))
         var j = CopyJob(src: toImage ? buffer : image, dst: toImage ? image : buffer, unit: unit, srcUnitStride: unit,
                         rowUnits: across * bytes / unit, rows: down)
         j.slices = depth
+        if toImage {
+          j.dstTile = at.tile
+          j.dstOrigin = at.origin
+        } else {
+          j.srcTile = at.tile
+          j.srcOrigin = at.origin
+        }
         j.layers = Int(r.subresource.layerCount)
         let imageStrides = (level.rowStride, level.surfaceStride, p.layout.arrayStride)
         let bufferStrides = (rowStride, sliceStride, depth * sliceStride)
@@ -358,14 +396,16 @@ extension MaliDevice {
         let down = (Int(r.extent.height) + bh - 1) / bh
         let smip = Int(r.srcSubresource.mip), dmip = Int(r.dstSubresource.mip)
         let sl = sp.layout.levels[smip], dl = dp.layout.levels[dmip]
-        let src = texelAddress(a, sp, mip: smip, layer: Int(r.srcSubresource.baseLayer), x: Int(r.srcOffset.x), y: Int(r.srcOffset.y),
-                               z: Int(r.srcOffset.z))
-        let dst = texelAddress(b, dp, mip: dmip, layer: Int(r.dstSubresource.baseLayer), x: Int(r.dstOffset.x), y: Int(r.dstOffset.y),
-                               z: Int(r.dstOffset.z))
+        let s = side(a, sp, mip: smip, layer: Int(r.srcSubresource.baseLayer), x: Int(r.srcOffset.x), y: Int(r.srcOffset.y),
+                     z: Int(r.srcOffset.z))
+        let d = side(b, dp, mip: dmip, layer: Int(r.dstSubresource.baseLayer), x: Int(r.dstOffset.x), y: Int(r.dstOffset.y),
+                     z: Int(r.dstOffset.z))
+        let src = s.address, dst = d.address
         let unit = Self.unit([Int(truncatingIfNeeded: src & 15), Int(truncatingIfNeeded: dst & 15), across * bytes, sl.rowStride, dl.rowStride],
                              atMost: min(bytes, 16))
         var j = CopyJob(src: src, dst: dst, unit: unit, srcUnitStride: unit, rowUnits: across * bytes / unit, rows: down,
                         srcRowStride: sl.rowStride, dstRowStride: dl.rowStride)
+        (j.srcTile, j.srcOrigin, j.dstTile, j.dstOrigin) = (s.tile, s.origin, d.tile, d.origin)
         if srcVolume || dstVolume {
           // The slices of the volume (or volumes), and the layers of the other image.
           j.slices = Int(srcVolume ? r.extent.depth : r.srcSubresource.layerCount)
@@ -397,9 +437,10 @@ extension MaliDevice {
     for r in regions {
       let smip = Int(r.srcSubresource.mip), dmip = Int(r.dstSubresource.mip)
       let sl = sp.layout.levels[smip], dl = dp.layout.levels[dmip]
+      let d = side(b, dp, mip: dmip, layer: Int(r.dstSubresource.baseLayer), x: Int(r.dstOffset.x), y: Int(r.dstOffset.y))
       var j = CopyJob(
         src: texelAddress(a, sp, mip: smip, layer: Int(r.srcSubresource.baseLayer), x: Int(r.srcOffset.x), y: Int(r.srcOffset.y)),
-        dst: texelAddress(b, dp, mip: dmip, layer: Int(r.dstSubresource.baseLayer), x: Int(r.dstOffset.x), y: Int(r.dstOffset.y)),
+        dst: d.address,
         unit: 1, srcUnitStride: 1, rowUnits: Int(r.extent.width) * bytes, rows: Int(r.extent.height), srcRowStride: sl.rowStride,
         dstRowStride: dl.rowStride)
       j.layers = Int(r.srcSubresource.layerCount)
@@ -407,6 +448,8 @@ extension MaliDevice {
       j.dstLayerStride = dp.layout.arrayStride
       j.samples = sl.samples
       j.sampleStride = sl.surfaceStride
+      j.dstTile = d.tile
+      j.dstOrigin = d.origin
       jobs.append(j)
     }
     return jobs
@@ -426,6 +469,7 @@ extension MaliDevice {
                         rows: (level.height + p.texel.blockHeight - 1) / p.texel.blockHeight, dstRowStride: level.rowStride)
         j.slices = level.depth * level.samples
         j.dstSliceStride = level.surfaceStride
+        j.dstTile = Self.tileWord(p)
         j.layers = Int(range.layerCount)
         j.dstLayerStride = p.layout.arrayStride
         jobs.append(j)
@@ -501,10 +545,12 @@ extension MaliDevice {
           sx: Float(r.srcMin.x), sy: Float(r.srcMin.y), sz: Float(r.srcMin.z), sw: Float(r.srcMax.x - r.srcMin.x),
           sh: Float(r.srcMax.y - r.srcMin.y), sd: Float(r.srcMax.z - r.srcMin.z), flips: flips, srcWidth: sl.width, srcHeight: sl.height,
           srcDepth: sl.depth)
+        j.dstTile = Self.tileWord(dp)
         if aspect != .color || (sf == df && filter == .nearest) || !TexelCodec.handles(df) {
           j.src = texelAddress(a, sp, mip: smip, layer: Int(r.srcSubresource.baseLayer))
           j.srcRowStride = sl.rowStride
           j.srcSliceStride = sl.surfaceStride
+          j.srcTile = Self.tileWord(sp)
           j.srcLayerStride = sp.layout.arrayStride
           raw.append(j)
           continue
@@ -612,7 +658,7 @@ extension MaliDevice {
         UInt32(j.dstRowStride), UInt32(j.dstSliceStride), UInt32(j.dstLayerStride), UInt32(j.dx), UInt32(j.dy), UInt32(j.dz), UInt32(j.w),
         UInt32(j.h), UInt32(j.d), j.sx.bitPattern, j.sy.bitPattern, j.sz.bitPattern, j.sw.bitPattern, j.sh.bitPattern, j.sd.bitPattern,
         j.flips, UInt32(j.srcWidth), UInt32(j.srcHeight), UInt32(j.srcDepth), UInt32(z), UInt32(kernel == .blit ? n : 0),
-        UInt32(j.sampler), j.format, j.kind, 0, 0,
+        UInt32(j.sampler), j.format, j.kind, j.srcTile, j.dstTile,
       ]
       for _ in 0..<span { table.append(UInt32(words.count / BlitJob.words - 1)) }
       z += span

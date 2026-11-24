@@ -69,6 +69,26 @@ public struct ViewportTransform: Equatable, Sendable {
   }
 }
 
+/// The viewports a vertex shader that writes ViewportIndex picks its transform from (valhall 14 section 14.3.7: the transform is the
+/// shader's, so it reads the one the index names; `GraphicsFauLayout.viewportTableWord` holds the address): `entries` of 32 bytes,
+/// the scale's x, y and z, a word, then the offset's x, y and z and a word. The shader reads entry `index & (entries - 1)`.
+public enum ViewportTable {
+  public static let entries = 16
+  public static let entryBytes = 32
+  public static let bytes = entries * entryBytes
+
+  /// The table's words: each transform in its entry, the rest the last one's.
+  public static func words(_ transforms: [ViewportTransform]) -> [UInt32] {
+    var w: [UInt32] = []
+    for k in 0..<entries {
+      guard let t = k < transforms.count ? transforms[k] : transforms.last else { return [UInt32](repeating: 0, count: bytes / 4) }
+      w += [t.scale.x.bitPattern, t.scale.y.bitPattern, t.scale.z.bitPattern, 0, t.offset.x.bitPattern, t.offset.y.bitPattern,
+            t.offset.z.bitPattern, 0]
+    }
+    return w
+  }
+}
+
 /// A (set, binding) of an image or a sampler and the FAU word its element 0's heap handle is in.
 public struct ImageBinding: Equatable, Sendable {
   public var set: Int
@@ -92,6 +112,9 @@ public struct GraphicsFauLayout: Equatable, Sendable {
   /// built-ins and InstanceIndex (r61 counts from zero); -1 for none.
   public var baseVertexWord = -1
   public var baseInstanceWord = -1
+  /// The first of two words holding the address of the draw's viewports (`ViewportTable`), for a vertex shader that writes ViewportIndex and
+  /// transforms its position by the viewport it names (valhall 14 section 14.3.7); -1 for none.
+  public var viewportTableWord = -1
   /// The first of four words, the blend constants (red, green, blue, alpha, as floats) a blend shader reads (09 section 9.9.5: the
   /// fragment FAU's slots 0 and 1); -1 for none. A fragment shader that may call a blend shader reserves them.
   public var blendConstantWord = -1
@@ -116,7 +139,7 @@ public struct GraphicsFauLayout: Equatable, Sendable {
   public func block(
     viewport: ViewportTransform? = nil, nonPerspectiveMask: UInt32 = 0, push: [UInt32] = [],
     images: [(set: Int, binding: Int, handle: UInt32)] = [], dummySampler: UInt32 = 0, baseVertex: Int32 = 0,
-    baseInstance: Int32 = 0, blendConstants: [Float] = []
+    baseInstance: Int32 = 0, blendConstants: [Float] = [], viewportTable: UInt64 = 0
   ) -> [UInt64] {
     var w = [UInt32](repeating: 0, count: slots * 2)
     if viewportWord >= 0, let v = viewport {
@@ -130,6 +153,10 @@ public struct GraphicsFauLayout: Equatable, Sendable {
     if nonPerspectiveWord >= 0 { w[nonPerspectiveWord] = nonPerspectiveMask }
     if baseVertexWord >= 0 { w[baseVertexWord] = UInt32(bitPattern: baseVertex) }
     if baseInstanceWord >= 0 { w[baseInstanceWord] = UInt32(bitPattern: baseInstance) }
+    if viewportTableWord >= 0 {
+      w[viewportTableWord] = UInt32(truncatingIfNeeded: viewportTable)
+      w[viewportTableWord + 1] = UInt32(truncatingIfNeeded: viewportTable >> 32)
+    }
     if blendConstantWord >= 0 {
       for i in 0..<4 { w[blendConstantWord + i] = i < blendConstants.count ? blendConstants[i].bitPattern : 0 }
     }

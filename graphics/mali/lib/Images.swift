@@ -111,9 +111,20 @@ public enum ImageLayoutKind: Equatable, Sendable {
   case linear
   /// 16 by 16 texel tiles in row-major order, the u-curve inside a tile (clump ordering 1).
   case uInterleaved
+  /// 64 KiB tiles of elements in row-major order, 16 by 16-element blocks stored linearly inside a tile and the u-curve inside a
+  /// block (05 section 5.7; clump ordering 8): the layout whose tiles a sparse image binds one at a time.
+  case interleaved64K
 
   /// The plane descriptor's clump ordering (03 section 3.9.2).
-  public var clumpOrdering: UInt32 { self == .linear ? 2 : 1 }
+  public var clumpOrdering: UInt32 {
+    switch self {
+    case .linear: 2
+    case .uInterleaved: 1
+    case .interleaved64K: 8
+    }
+  }
+  /// The render target's block format (08 section 8.4.3), for the two layouts a pass writes.
+  public var blockFormat: UInt32 { self == .interleaved64K ? 8 : 2 }
   /// Texel interleave (03 section 3.8.2): 1 for every layout but plain linear.
   public var texelInterleave: UInt32 { self == .linear ? 0 : 1 }
 }
@@ -140,6 +151,30 @@ public struct LevelLayout: Equatable, Sendable {
 public struct ImageLayout: Equatable, Sendable {
   public static let tileTexels = 16
   public static let alignment = 64
+  /// The bytes of a 64 KiB tile (05 section 5.7.1).
+  public static let tileBytes64K = 65536
+
+  /// A 64 KiB tile's width and height in elements for an element of `bytes` (05 section 5.7.1): 256 x 256 for 1 byte down to 64 x 64
+  /// for 16, nil for a size the layout doesn't take.
+  public static func tile64K(bytes: Int) -> (width: Int, height: Int)? {
+    switch bytes {
+    case 1: (256, 256)
+    case 2: (256, 128)
+    case 4: (128, 128)
+    case 8: (128, 64)
+    case 16: (64, 64)
+    default: nil
+    }
+  }
+
+  /// The offset of element `(x, y)` from its slice's start in the 64 KiB layout (05 section 5.7.2): its tile's row and column, its
+  /// 16 x 16 block in the tile (the blocks in rows of `tile width / 16`), and the u-curve in the block.
+  public static func offset64K(x: Int, y: Int, bytes s: Int, rowStride: Int) -> Int {
+    let tile = tile64K(bytes: s) ?? (64, 64)
+    let ix = x % tile.width, iy = y % tile.height
+    let block = (iy / 16) * (tile.width / 16) + ix / 16
+    return (y / tile.height) * rowStride + (x / tile.width) * tileBytes64K + block * 256 * s + uCurve(x: ix % 16, y: iy % 16) * s
+  }
 
   public var format: TexelFormat
   public var kind: ImageLayoutKind
@@ -191,6 +226,11 @@ public struct ImageLayout: Equatable, Sendable {
         let ny = (eh + t - 1) / t
         row = alignUp(nx * t * t * s, ImageLayout.alignment)
         surface = alignUp(row * ny, ImageLayout.alignment)
+      case .interleaved64K:
+        // 05 section 5.7.2: whole tiles, so every level starts on a tile and the layer stride is whole tiles too (5.7.3).
+        let tile = ImageLayout.tile64K(bytes: s) ?? (64, 64)
+        row = (ew + tile.width - 1) / tile.width * ImageLayout.tileBytes64K
+        surface = row * ((eh + tile.height - 1) / tile.height)
       }
       offset = alignUp(offset, ImageLayout.alignment)
       levels.append(LevelLayout(width: w, height: h, offset: offset, rowStride: row, surfaceStride: surface, depth: d, samples: samples))
@@ -226,6 +266,8 @@ public struct ImageLayout: Equatable, Sendable {
       let t = ImageLayout.tileTexels
       let tileBytes = t * t * s
       return base + (y / t) * l.rowStride + (x / t) * tileBytes + ImageLayout.uCurve(x: x % t, y: y % t) * s
+    case .interleaved64K:
+      return base + ImageLayout.offset64K(x: x / format.blockWidth, y: y / format.blockHeight, bytes: s, rowStride: l.rowStride)
     }
   }
 

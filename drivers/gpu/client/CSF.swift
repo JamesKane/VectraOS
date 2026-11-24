@@ -205,6 +205,16 @@ public final class CSFContext: @unchecked Sendable {
     }
   }
 
+  /// Back the range with the client's dummy (the bind's sparse flag, 16): 2 MiB of the driver's that every such range of the
+  /// client repeats, which reads what was last written through any of them.
+  public func bindDummy(vm: UInt32, size: UInt64, address: UInt64, flags: UInt32 = 0) throws(CSFClientError) {
+    try io.withLock { () throws(CSFClientError) in
+      do throws(IPCError<GPUCSFIPC.GPUError>) {
+        try client.bind(vm: vm, buffer: 0, offset: 0, size: size, address: address, flags: flags | 16)
+      } catch { throw CSFClientError.of(error) }
+    }
+  }
+
   public func unbind(vm: UInt32, address: UInt64, size: UInt64) throws(CSFClientError) {
     try io.withLock { () throws(CSFClientError) in
       do throws(IPCError<GPUCSFIPC.GPUError>) { try client.unbind(vm: vm, address: address, size: size) } catch {

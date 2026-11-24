@@ -692,11 +692,80 @@ resources wait on the clean-room answers (below).
   own buffer, which aliases a sparse and a non-sparse resource: undefined in Vulkan without `sparseResidencyAliased`. On
   brimstone's NVIDIA it passed once and then read, twice, what the other buffer had written last. The case now reaches the
   memory only through the sparse buffer, and shows the binding by moving pages between two binds.
-- **Left open.** The Mali halves of more than one viewport (the scissor array is unconfirmed) and of sparse resources wait on
-  the clean-room answers; `shaderResourceResidency` waits on the lowering carrying the sparse image operations; the layer has
+- **Left open.** The Mali halves (built since: "Mali viewports and sparse resources, as built"; more than one viewport stays off
+  there); `shaderResourceResidency` waits on the lowering carrying the sparse image operations; the layer has
   no `vkGetDevice*MemoryRequirements` (1.3), the sparse one among them. A fence given to the Venus driver's
   `vkQueueBindSparse` is reached at the queue's next sync, which Vulkan doesn't order after the bind; the core orders binds by
   its timeline semaphore, which is exact.
+
+## Mali viewports and sparse resources, as built (2026-11-23)
+
+The Mali halves of "Elsewhere", built from the clean room's answers to V1 and S1 to S5 (valhall 02 §2.9.4, 05 §5.7 and §5.7.3,
+06 §6.2 and §6.6.1, 14 §14.3.3 and §14.3.7, 16 §16.8.6, 12b §12b.5.5; panthor 04 §4.8.3).
+
+- **Sparse resources: on, as the reference reports them** (16 §16.8.6). `sparseBinding`, `sparseResidencyBuffer`,
+  `sparseResidencyImage2D` and `sparseResidencyImage3D` true; 2 to 16 samples, aliased and `shaderResourceResidency` false;
+  `residencyStandard2DBlockShape` true, the multisample and 3D shapes, aligned mip size and non-resident strict false;
+  `sparseAddressSpaceSize` the user VA range the driver reports.
+- **The driver's sparse MAP** (panthor 04 §4.8.3). The `csf` capset's `bind` takes flag 16: the range is backed by the client's
+  dummy, 2 MiB of the driver's made zeroed at the first such bind and freed with the context, mapped at VA x from offset x mod
+  2 MiB (a mapping a 2 MiB window, never executable, buffer and offset 0). A bind of a buffer over it replaces it as any bind
+  does; an unbind of the range (UNMAP) unmaps it. No protocol change beyond the flag.
+- **The backend** (graphics/core/mali/lib/Sparse.swift). A sparse buffer or image is a range of the VM reserved at creation and
+  never moved, aligned to 2 MiB from 2 MiB on (02 §2.9.4); with residency it is mapped to the dummy over its whole range at
+  creation, bound only as a whole it stays unmapped until bound; destruction UNMAPs it. A bind of memory maps that range of the
+  memory's pages (the transport's new `bind(offset:size:)`), a bind to nothing maps the dummy (`bindDummy`), never unmaps. The
+  bind granularity is 4 KiB for buffers and binding-only images, 64 KiB (a tile) for residency images. `bindSparse` runs as a
+  submission does in this backend, which runs one at a time: it waits for everything submitted before it (so for `wait`), makes
+  the maps (synchronous, each under the driver's lock-region update), and raises the timeline to `signal`, also when a map was
+  refused.
+- **Residency images are in the 64 KiB layout** (05 §5.7, §5.7.3), the first images this backend lays out other than linearly:
+  `ImageLayoutKind.interleaved64K` (clump ordering 8, texel interleave set, a render target's block format 8), tiles of
+  256 x 256 elements of 1 byte down to 64 x 64 of 16, 16 x 16 blocks row-major inside a tile, the u-curve inside a block, every
+  level whole tiles. A block is a tile (one slice deep for 3D, flagged non-standard), and the mip tail is the last level of each
+  layer (the reference's rule; a one-level image is all tail). Eligible: 2D, cube or 3D, one sample, one aspect, an uncompressed
+  texel of 1 to 16 bytes; sampled, storage, copies and colour target (rgba8, bgra8, bgra8srgb), not depth or stencil targets,
+  not compressed formats (03 §3.8.5 leaves block views of a compressed 64 KiB image open). Binding-only images stay linear. Plane
+  descriptors of a sparse image live in a region of their own (its range has no pages until bound).
+- **Transfers reach the tiles.** The `copy`, `blitRaw` and `blit` kernels take a tile word for each side (0 linear; else the
+  tile's width and height and the element's size as log2): the element (x, y) is addressed through its tile, block and u-curve
+  place (05 §5.7.2), the units of a row never wider than an element. A sampled source is the texture unit's, whose descriptor
+  names the layout.
+- **The VM's addresses are used again.** The backend took addresses in order and never gave them back, and the driver keeps a
+  VM's page tables (at most 1024 table pages, 2 GiB of addresses at 4 KiB); with the new cases loinnir-test's samplers case
+  crossed 2 GiB (a bind of 6 MiB at 0x7edbd000 refused, `noMemory`). A region released (after the work that used it) now gives
+  its range back, merged with its neighbours, and a new one takes the first range given back that fits before new addresses.
+- **More than one viewport: off, as measured.** Built as the inference says: a vertex shader that writes ViewportIndex takes
+  its transform from a table of the draw's viewports by the index (`IRBuiltin.viewportTable`, a FAU slot holding the address;
+  entry `index & 15`, so no index reads past it; 14 §14.3.7), stores the index in the attributes' byte 2 (extended record), and
+  the draw sets primitive flags bit 21 with the scissor register the array's address in [55:0] and length in [63:56], 256
+  8-byte boxes in the scissor box's format, box k viewport k's rectangle cut by scissor k, the viewport registers the
+  rectangle and depth range around every viewport's. On the board (Sky1 G720, arch 12.8.7) every draw with the array raised
+  `CS FAULT DATA_INVALID_FAULT data 0x0000010c` on the tiler queue (CS 0; CS 1 then exception 0x0f), its info a different
+  value each time (0x1e722730, 0x1eced730, 0x1f2b8f30, 0x1f883970, 0x1fe4e730, 0x20419730, 0x209e4728, ...: never 4 KiB
+  aligned, so not the array's address), and drew nothing, not even the pass's clear; the forms tried: 8-byte boxes 64-byte
+  aligned with length 2, 1, 0 and 255, 16-byte elements (a box and 8 zero bytes), and the array 4096-byte aligned. With bit 21
+  set and an ordinary box in the register there was no fault, and the draw was cut exactly as without bit 21 (the scene's 64
+  pixels of box 0 for both instances' primitives, none of box 1: the byte the shader wrote picked nothing). What was measured
+  fits the register being read as a box whatever bit 21 says (an address in it is a box whose maximum is below its minimum),
+  but that is our reading, not a finding. So the inference did not hold: `multiViewport` and `shaderOutputViewportIndex` stay
+  false and `maxViewports` 1; the shader's indexed transform stays (a shader that writes ViewportIndex still compiles, cut by
+  the first scissor), and the array is a probe (`DrawPipelineState.scissorProbe`, `MaliDevice.probeScissorMode`) for when the
+  question comes back. The box format of the array was the board's measurement of an inference, not a spec fact. Question
+  for the dirty room: 06 §6.2 and 14 §14.3.7 leave open what arch 12 needs, beyond primitive flags bit 21 and the scissor
+  register, for the scissor array (another enable, a firmware or GPU_FEATURES gate, a different register, or no array at all on
+  arch 12), and what CS fault DATA_INVALID_FAULT with exception data 0x10c names on the tiler queue.
+- **Checks.** Host: MaliTests (the sparse bind: the dummy repeated every 2 MiB, replaced by a buffer and back, refused shapes,
+  freed with the context); GPUCoreMaliTests' MaliElsewhere (the reported features, block shapes and refusals; a sparse buffer
+  mapped to the dummy at creation, bound, filled and copied through on the interpreter, rebound, freed and unmapped; a
+  rgba32uint residency image's layout, requirements, mip tail, plane and texture descriptors, block binds and their refusals,
+  and rows copied into and out of two bound tiles at the addresses 05 §5.7.2 gives); ValhallBackendTests (ViewportIndex picks
+  its viewport's transform from the table, run on the interpreter). Board: loinnir-test's sparse buffer, sparse image (now of
+  two levels, level 1 the tail) and a new sparse image drawn into (one block bound, cleared and drawn into by a pass, copied
+  out) pass exactly; the two viewports cases skip on Mali (the new "viewports at the most": the device's viewports up to 16,
+  each its own transform and scissor, and an index past the count). Board-test passed (2026-11-23): loinnir-test 113 core
+  cases passed, 2 skipped (the two viewports cases); brimstone (`vx test --changed amd64 arm64`, boot-venus on its NVIDIA) passed
+  with the viewports cases run there.
 
 ## The amendment, where it stands (2026-11-21, end of day; main f8d3c683; Mali present 2026-11-23)
 
@@ -731,7 +800,7 @@ Open, in order:
 - **Multisampling and resolve,** alpha to coverage and one, sample shading, depth/stencil load by a pre-frame shader and `clearAttachments`: done (2026-11-23, "Mali multisampling, clears in a pass and kept depth, as built"); polygon modes stay off, as the hardware and the reference have none. Layers and depth and stencil resolves: done (2026-11-23, "Mali layers and depth resolves, as built"). Multiview: done (2026-11-23, "Mali multiview, as built").
 - **Copies and blits as GPU passes:** done (2026-11-23, "Mali transfers on the GPU, as built"): every copy, blit, clear, fill, update and resolve is a compute kernel of the backend's, in order with the passes, with no CPU wait or pixel touched.
 - **Elsewhere:** done for the core, Venus and the Vulkan layer (2026-11-23, "Elsewhere, as built"): custom border colours
-  under Venus, more than one viewport, sparse resources. Open on Mali, waiting on the clean-room answers:
-  - multiple viewports (the scissor array is unconfirmed);
-  - sparse resources (binding a VMO's pages into the GPU's VM at page granularity, unbound ranges unmapped or a zero page).
+  under Venus, more than one viewport, sparse resources. On Mali (2026-11-23, "Mali viewports and sparse resources, as built"):
+  sparse resources done; more than one viewport off, the scissor array having faulted on the board in every form tried (a
+  question back to the dirty room).
 - **Step 7:** the CTS as a report. And the vkmark port, which now has a surface to present to.

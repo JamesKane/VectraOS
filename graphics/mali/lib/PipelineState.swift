@@ -239,6 +239,20 @@ public struct DrawPipelineState: Equatable, Sendable {
   /// The viewport (nil: the whole target) and the scissor (nil: the whole target).
   public var viewport: DrawViewport?
   public var scissor: ScissorBox?
+  /// A draw whose vertex shader writes ViewportIndex: every viewport and scissor of the pipeline's count (a nil entry: the whole
+  /// target). The shader transforms its position by the viewport the index names (valhall 14 section 14.3.7) and the scissor array
+  /// (06 section 6.2) cuts it by that viewport's rectangle and scissor.
+  public var viewports: [DrawViewport?] = []
+  public var scissors: [ScissorBox?] = []
+  /// Probes of the scissor array (06 section 6.2 leaves its length field and what an index past it does open): the length field
+  /// instead of the count, and the box of the entries past the count instead of the first's.
+  public var scissorArrayLength: Int?
+  public var scissorArrayFill: ScissorBox?
+  /// A probe of the scissor array (06 section 6.2), for a draw whose vertex shader writes ViewportIndex: 0 none (the first viewport's
+  /// scissor box, no enable bit); 1 the enable bit with that box in the register; 2 the array as inferred (8-byte boxes, 64-byte
+  /// aligned); 3 16-byte elements (a box and 8 zero bytes); 4 the array 4096-byte aligned. On the G720 every array raised
+  /// DATA_INVALID_FAULT and the enable bit changed nothing (D174), so none is the default.
+  public var scissorProbe = 0
   /// The sample mask word of flags 1 (all ones: every sample).
   public var sampleMask: UInt32 = 0xFFFF
   /// Shade each sample separately (flags 0 `[11]`, 6.9.4): sample shading, in a pass of more than one sample.

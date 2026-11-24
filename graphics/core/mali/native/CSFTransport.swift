@@ -91,7 +91,24 @@ public final class CSFTransport: MaliTransport {
     do throws(CSFClientError) {
       try context.bind(vm: vm, buffer: b.buffer, size: UInt64(b.size), address: address, flags: gpuCacheable ? 8 : 0)
     } catch {
-      throw Self.core(error, "bind")
+      throw Self.core(error, "bind of \(b.size) bytes at 0x" + String(address, radix: 16))
+    }
+  }
+
+  public func bind(vm: UInt32, buffer: any MaliBuffer, offset: Int, size: Int, address: UInt64, gpuCacheable: Bool) throws(GPUError) {
+    do throws(CSFClientError) {
+      try context.bind(vm: vm, buffer: handle(buffer).buffer, offset: UInt64(offset), size: UInt64(size), address: address,
+                       flags: gpuCacheable ? 8 : 0)
+    } catch {
+      throw Self.core(error, "bind of \(size) bytes at 0x" + String(address, radix: 16))
+    }
+  }
+
+  public func bindDummy(vm: UInt32, address: UInt64, size: Int, gpuCacheable: Bool) throws(GPUError) {
+    do throws(CSFClientError) {
+      try context.bindDummy(vm: vm, size: UInt64(size), address: address, flags: gpuCacheable ? 8 : 0)
+    } catch {
+      throw Self.core(error, "bind (sparse)")
     }
   }
 

@@ -107,6 +107,8 @@ public struct ExtraColourTarget: Sendable {
   public var surfaceStride: Int?
   /// Bytes from one layer to the next, for a pass of layers.
   public var layerStride = 0
+  /// Its block format (08 section 8.4.3): 2 linear, 8 the 64 KiB interleaved layout.
+  public var blockFormat: UInt32 = 2
   public init(format: ColourFormat, address: UInt64, clear: [Float], rowStride: Int? = nil) {
     self.format = format
     self.address = address
@@ -212,6 +214,8 @@ public struct DrawPassRequest: Sendable {
   public var finishLastContextOnly = false
   /// The first colour target's writeback (08 section 8.3.2) and the distance between its sample surfaces.
   public var colourMSAA: UInt32 = 0
+  /// The first colour target's block format (08 section 8.4.3): 2 linear, 8 the 64 KiB interleaved layout.
+  public var colourBlockFormat: UInt32 = 2
   public var colourSurfaceStride: Int?
   /// Single-sample images the pass resolves colour targets into as it ends: a render-target descriptor each after the targets,
   /// in writeback mode Average (8.3.2), at the internal buffer offset of the target `of` (the tile's samples are written twice:
@@ -385,10 +389,17 @@ extension RenderPass {
     var blendAt: [Int] = []
     var vfauAt: [Int] = []
     var ffauAt: [Int] = []
+    // A draw whose vertex shader writes ViewportIndex: its viewports' transforms (ViewportTable) and its scissor array (06 section 6.2),
+    // 256 boxes, so whatever byte the shader writes names one in memory.
+    var viewportsAt: [Int] = []
+    var scissorsAt: [Int] = []
     for d in r.draws {
       blendAt.append(place(BlendDescriptor.size * targetCount, 64))
       vfauAt.append(place(8 * max(d.vertexShader.layout.slots, 1), 8))
       ffauAt.append(place(8 * d.fragmentShader.layout.slots, 8))
+      viewportsAt.append(d.vertexShader.layout.viewportTableWord >= 0 ? place(ViewportTable.bytes, 16) : -1)
+      scissorsAt.append(d.vertexShader.storesViewportIndex && d.state.scissorProbe >= 2
+        ? place(ScissorArray.entries * (d.state.scissorProbe == 3 ? 16 : 8), d.state.scissorProbe == 4 ? 4096 : 64) : -1)
     }
     // The first pre-frame shader (08 section 8.10): the three frame shaders' draw descriptors (the other two never run),
     // its blend descriptor, push words, resource table (its own heap), program descriptor and code.
@@ -429,6 +440,7 @@ extension RenderPass {
       clearWord: ColourFormat.packedClear(
         red: r.clear[0], green: r.clear[1], blue: r.clear[2], alpha: r.clear[3], srgb: r.format.isSRGB))
     renderTarget.msaa = r.colourMSAA
+    renderTarget.blockFormat = r.colourBlockFormat
     let rtAt = fbdAt + FramebufferParameters.size + (zsExtension ? ZSTarget.size : 0)
     var framebuffer = FramebufferParameters(
       width: r.width, height: r.height, sampleCountLog2: UInt32(log2Floor(UInt64(r.samples))), samplePattern: pattern,
@@ -585,12 +597,18 @@ extension RenderPass {
         let vp = d.state.viewport
         s.viewport = Viewport(
           rectangle: vp?.box(width: r.width, height: r.height) ?? whole, minDepth: vp?.minDepth ?? 0, maxDepth: vp?.maxDepth ?? 1)
+        if scissorsAt[n] >= 0 {
+          // A probe of the scissor array: the register names it; the viewport registers hold every viewport's rectangle and depth range.
+          let a = ScissorArray(state: d.state, width: r.width, height: r.height)
+          s.scissorArray = va(scissorsAt[n]) | UInt64(a.lengthField & 0xFF) << 56
+          s.viewport = a.viewport
+        }
         s.depthStencil = va(zsState(d) != nil ? drawZSDAt[n] : zsdAt)
         s.tilerFlags = PrimitiveFlags(
           mode: d.state.mode, indexType: d.indices?.size.rawValue ?? 0, lowDepthCull: d.state.depthStencil?.depthClip ?? true,
           highDepthCull: d.state.depthStencil?.depthClip ?? true, primitiveRestart: d.state.primitiveRestart,
           positionFIFOFormat: d.vertexShader.extendedRecord ? 2 : 1, viewMask: r.viewMask, secondaryShader: s.varySize > 0,
-          layerIndex: d.vertexShader.writesLayer).word
+          layerIndex: d.vertexShader.writesLayer, scissorArray: scissorsAt[n] >= 0 || (d.vertexShader.storesViewportIndex && d.state.scissorProbe == 1)).word
         s.primitiveSize = d.state.primitiveSize.bitPattern
         // 6.10.3: a fragment of this draw may kill an earlier one only if the draw neither reads the destination nor can
         // discard.
@@ -826,6 +844,7 @@ extension RenderPass {
           surfaceStride: t.surfaceStride ?? t.rowStride.map { alignUp($0 * height, 64) } ?? layout.surfaceStride,
           clearWord: ColourFormat.packedClear(red: t.clear[0], green: t.clear[1], blue: t.clear[2], alpha: t.clear[3], srgb: t.format.isSRGB))
         extra.msaa = t.msaa
+        extra.blockFormat = t.blockFormat
         extra.address += UInt64(l * t.layerStride)
         m.store(words: try extra.words(), at: rtAt + g + 64 * (i + 1))
       }
@@ -838,6 +857,7 @@ extension RenderPass {
           surfaceStride: t.surfaceStride ?? t.rowStride.map { alignUp($0 * height, 64) } ?? layout.surfaceStride,
           clearWord: ColourFormat.packedClear(red: clear[0], green: clear[1], blue: clear[2], alpha: clear[3], srgb: t.format.isSRGB))
         resolve.msaa = 1
+        resolve.blockFormat = t.blockFormat
         resolve.address += UInt64(l * t.layerStride)
         m.store(words: try resolve.words(), at: rtAt + g + 64 * (targetCount + k))
       }
@@ -874,8 +894,17 @@ extension RenderPass {
       let fs = d.fragmentShader
       let vp = d.state.viewport ?? DrawViewport(x: 0, y: 0, width: Float(r.width), height: Float(r.height))
       let viewport = ViewportTransform(x: vp.x, y: vp.y, width: vp.width, height: vp.height, minDepth: vp.minDepth, maxDepth: vp.maxDepth)
-      let vblock = vs.layout.block(viewport: viewport, push: d.push)
+      let vblock = vs.layout.block(viewport: viewport, push: d.push, viewportTable: viewportsAt[n] >= 0 ? va(viewportsAt[n]) : 0)
       for (i, w) in vblock.enumerated() { m.store(w, at: vfauAt[n] + 8 * i) }
+      if viewportsAt[n] >= 0 {
+        var transforms: [ViewportTransform] = []
+        for k in 0..<max(d.state.viewports.count, 1) {
+          let v = (k < d.state.viewports.count ? d.state.viewports[k] : nil) ?? DrawViewport(x: 0, y: 0, width: Float(r.width), height: Float(r.height))
+          transforms.append(ViewportTransform(x: v.x, y: v.y, width: v.width, height: v.height, minDepth: v.minDepth, maxDepth: v.maxDepth))
+        }
+        m.store(words: ViewportTable.words(transforms), at: viewportsAt[n])
+      }
+      if scissorsAt[n] >= 0 { m.store(words: ScissorArray(state: d.state, width: r.width, height: r.height).words(stride: d.state.scissorProbe == 3 ? 16 : 8), at: scissorsAt[n]) }
       let handles = d.images.map { (set: $0.set, binding: $0.binding, handle: $0.handle) }
       let fblock = fs.layout.block(push: d.push, images: handles, dummySampler: d.dummySampler, blendConstants: d.blendConstants)
       for (i, w) in fblock.enumerated() { m.store(w, at: ffauAt[n] + 8 * i) }
