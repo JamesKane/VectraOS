@@ -504,7 +504,7 @@ The layer reports and maps everything the core expresses, from the device and no
 - **Commands:** copies, blits, resolves, region copies, clears, `clearAttachments`, fills, updates, counted indirect
   draws, pipeline-statistics queries, secondary buffers (their lists appended to the primary's), events (barriers) and
   image barriers.
-- **Left out** is what Vulkan has and the core has no word for: 1D and swizzled views, sparse resources, input
+- **Left out** (then; sparse resources and more than one viewport are in since "Elsewhere, as built") is what Vulkan has and the core has no word for: 1D and swizzled views, sparse resources, input
   attachments, adjacency topologies, the dynamic state beyond the core's, more than one viewport, texel buffers,
   `vkCmdCopyQueryPoolResults` and presentation. The lowering's ABI and its specialization folding are as they were; it
   lowers the geometry and tessellation stages as stages.
@@ -638,6 +638,59 @@ The amendment's open item "copies and blits as GPU passes". Every transfer comma
 - **Checks.** Host: GPUCoreMaliTests run the kernels on the interpreter over the fake transport's memory (KernelRunner.swift; the texture unit modelled for `blit`), so the existing byte-level resource tests judge the GPU path, and TransferTests add a list of every transfer between two passes (eight dispatches on the compute group, only the last step signalling, no buffer maintained), rows of 1 to 16-byte texels with row lengths and image heights into a level of two layers, depth24stencil8 cleared by ranges, both aspects copied and blitted flipped, ASTC blocks into a level, a resolve's rounding, a linear flipped blit into rgba16float; ShaderCompilerTests (the narrow types for storage). Board (board-test passed, 2026-11-23, loinnir-test 110 core cases passed, none skipped): every existing case that copies, clears or resolves now runs the kernels, and eight new ones are exact: a pass, a copy, a flipped blit and a second pass that keeps it in one submission (256 pixels), with an update, a fill and a copy of memory at odd offsets (96 bytes); 1, 4 and 8-byte texels with rows of 13 and slices of 5 into level 1 of two layers; a level of two layers onto another image and a block of a volume (384 texels); depth24stencil8 cleared by ranges and aspects, copied in, across and out, and blitted 2x flipped (64 texels each); ASTC 4x4 blocks at block offsets and into a level (20 blocks); a linear flipped blit into rgba16float (within 0.01), rgba8uint into rgba16uint (exact) and rgba8 into rgba8srgb (within 1); a clear of two levels of two layers (336 texels); a resolve of a region at offsets (the edge within 2).
 - **One expectation changed.** A depth24 clear's value is rounded to nearest in double precision: 0.75 is 12582911 (Vulkan's rounding of 12582911.25), where the CPU's float arithmetic had made 12582912, which the depth-image case had taken as its reference, and 1.0 had overflowed to 2^24.
 
+## Elsewhere, as built (2026-11-23): custom border colours under Venus, more than one viewport, sparse resources
+
+The amendment's open item "Elsewhere", done for the core, Venus and the Vulkan layer; the Mali halves of viewports and sparse
+resources wait on the clean-room answers (below).
+
+- **Custom border colours under Venus.** The Venus client driver forwards renderer device extensions it carries on the wire:
+  `VK_EXT_custom_border_color` (extension 288) is in the generated protocol (its sampler, feature and property structs in
+  their chains), offered by `vkEnumerateDeviceExtensionProperties` where the renderer's device offers it and the capset's
+  extension mask (`vk_extension_mask1`, offset 20) carries it, and forwarded by `vkCreateDevice`; any other is refused.
+  `GPUCoreVulkan` already asked for it where offered, so `customBorderColor` is now the host's. No other extension the core
+  wants is gated this way: viewports and sparse resources are core 1.0 features.
+- **Viewports.** `Viewport` (a rectangle and a depth range), `setViewports(first:)` and `setScissors(first:)`, a pipeline's
+  `viewportCount`, `DeviceFeatures.multiViewport` and `shaderOutputViewportIndex` (ViewportIndex from the vertex stage;
+  `shaderViewportIndexLayer` is now Layer from it alone), and `DeviceLimits.maxViewports` with the viewport size, bounds and
+  sub-pixel bits. Every viewport and scissor starts as the whole first attachment. The old `setViewport` and `setScissor`
+  stay, as the first. The compiler's front end already lowered ViewportIndex from the vertex stage (`storesViewportIndex`);
+  under Venus the SPIR-V reaches the host as written. The layer maps the pipeline's viewport count, static viewports with
+  their depths, and `vkCmdSetViewport`/`vkCmdSetScissor` of any first and count; a pass of one viewport at depths 0 to 1
+  still gets the old commands, so the Mali path sees no change.
+- **Sparse resources.** A sparse buffer (`makeSparseBuffer`: `.device` memory with an address and no pages, `GPUMemory.sparse`)
+  and a sparse image (`ImageDescriptor.sparse`), with `SparseFlags` `.binding`, `.residency` and `.aliased`; their
+  requirements (`sparseRequirements`: the range in whole pages and the page), `sparseImageRequirements` (block shape and mip
+  tail for each aspect) and `sparseImageFormats`; and `GPUQueue.bindSparse` of buffer ranges, opaque image ranges (metadata
+  too) and blocks of an image, each to a range of ordinary memory or to nothing. A bind waits for `wait` and for everything
+  submitted before it, signals `signal`, and the queue's later submissions run after it. The features are Vulkan's
+  (`sparseBinding`, the residency ones for buffers, 2D, 3D, 2 to 16 samples and aliasing, `shaderResourceResidency`) and the
+  properties `DeviceLimits.sparse` and `sparseAddressSpaceSize`. Shape rules are the core's (`SparseBindings.validate`); a bind
+  off the pages or of memory the resource can't take is the backend's. The design is what a GPU with its own page tables
+  does: a bind is a run of a memory's pages (a VMO's) mapped at the resource's addresses at page granularity, and a range bound
+  to nothing is unmapped or a page of zeros. `GPUCoreVulkan` enables the features where the queue it uses has
+  `VK_QUEUE_SPARSE_BINDING_BIT`, binds with `vkQueueBindSparse` on the timeline semaphore (waiting for the last value
+  submitted, and the next submission waiting for the bind: Vulkan doesn't order binds with command buffers otherwise), and
+  reports `shaderResourceResidency` false (the lowering doesn't carry OpImageSparse*). The Venus driver sends
+  `vkQueueBindSparse` in order with the queue's submissions, without a reply; its semaphores are the renderer's. The layer maps
+  sparse buffers and images, their requirements, `vkGetImageSparseMemoryRequirements(2)`,
+  `vkGetPhysicalDeviceSparseImageFormatProperties(2)` and `vkQueueBindSparse`.
+- **Mali.** Every flag stays false and `maxViewports` 1; `setViewports` and `setScissors` of the first take it (with the depth
+  range), more is `.unsupported`, and sparse buffers, images and binds are `.unsupported` through the defaults and the rules.
+- **Checks.** Host: GPUCoreTests (Viewports, SparseResources: the shapes `.invalid`, the lacks `.unsupported`, the fake's
+  binds on the timeline), VulkanCoreDriverTests (ElsewhereTests: the viewport commands and counts, the features, limits,
+  queue family bit, sparse requirements and binds), VenusTests (the custom border structs' bytes in a sampler chain and a
+  features chain) and VenusDriverTests (which extensions are forwarded, by offer and mask). loinnir-test, boot-venus on
+  brimstone (the host's NVIDIA GeForce RTX 5070 Ti), amd64 and arm64: `customBorderColor` true and its case exact; two viewports
+  by ViewportIndex, each cut by its scissor, 256 pixels exact; a sparse buffer of three 64 KiB pages with one unbound (reading
+  zero) and each page's word in the buffer and the memory behind it; a 256 x 256 rgba8 sparse image of 128 x 128 blocks, two
+  bound and sampled, 64 pixels exact and the unbound blocks zero. 47 core cases passed, 3 skipped (depth resolves and alpha
+  to one, as before).
+- **Left open.** The Mali halves of more than one viewport (the scissor array is unconfirmed) and of sparse resources wait on
+  the clean-room answers; `shaderResourceResidency` waits on the lowering carrying the sparse image operations; the layer has
+  no `vkGetDevice*MemoryRequirements` (1.3), the sparse one among them. A fence given to the Venus driver's
+  `vkQueueBindSparse` is reached at the queue's next sync, which Vulkan doesn't order after the bind; the core orders binds by
+  its timeline semaphore, which is exact.
+
 ## The amendment, where it stands (2026-11-21, end of day; main f8d3c683; Mali present 2026-11-23)
 
 Done:
@@ -670,8 +723,8 @@ Open, in order:
 - **Mali present:** done (2026-11-23, "Mali present, as built"): direct frames in rows padded to 64 bytes as valhall 05 §5.5.5 has them, the stride told to the window; import on; Radharc sampling every Mali window's image in place; the timeline as the acquire counter. The whole loop passes on the board's desktop (compose-test desktop, with vulkan-present and Loinnir's window under the desktop's Radharc).
 - **Multisampling and resolve,** alpha to coverage and one, sample shading, depth/stencil load by a pre-frame shader and `clearAttachments`: done (2026-11-23, "Mali multisampling, clears in a pass and kept depth, as built"); polygon modes stay off, as the hardware and the reference have none. Layers and depth and stencil resolves: done (2026-11-23, "Mali layers and depth resolves, as built"). Multiview: done (2026-11-23, "Mali multiview, as built").
 - **Copies and blits as GPU passes:** done (2026-11-23, "Mali transfers on the GPU, as built"): every copy, blit, clear, fill, update and resolve is a compute kernel of the backend's, in order with the passes, with no CPU wait or pixel touched.
-- **Elsewhere:**
-  - custom border colours under Venus (the Venus client forwards no device extensions);
+- **Elsewhere:** done for the core, Venus and the Vulkan layer (2026-11-23, "Elsewhere, as built"): custom border colours
+  under Venus, more than one viewport, sparse resources. Open on Mali, waiting on the clean-room answers:
   - multiple viewports (the scissor array is unconfirmed);
-  - sparse resources.
+  - sparse resources (binding a VMO's pages into the GPU's VM at page granularity, unbound ranges unmapped or a zero page).
 - **Step 7:** the CTS as a report. And the vkmark port, which now has a surface to present to.

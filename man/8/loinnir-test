@@ -20,7 +20,7 @@ Then it samples a texture from the heap by index over a 32 by 32 target, and che
 Its lines say `loinnir-test: ok: Loinnir drew a triangle on the core` once the first draws.
 
 On the Vulkan backend (Venus under QEMU, or a host's Vulkan) it goes on to the core's full feature set.
-It first prints the device's name, its limits, and the feature flags in groups (queues and draws, images, samplers, pipeline state, commands, shaders), each as the flags the device has, a slash, and the ones it lacks: `loinnir-test: features images: ... / ...`.
+It first prints the device's name, its limits, and the feature flags in groups (queues and draws, images, samplers, pipeline state, commands, shaders, viewports and sparse), each as the flags the device has, a slash, and the ones it lacks: `loinnir-test: features images: ... / ...`.
 Then it runs these cases, each of which prints `loinnir-test: ok: core: ...` and what it judged, or `loinnir-test: skip: core: ...` and why:
 
 - depth: four rectangles at different depths, drawn out of order with the depth test, and one whose depth crosses another's; each pixel against the nearest rectangle there (a pixel where two depths are within 0.005 is not judged);

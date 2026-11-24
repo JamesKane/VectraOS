@@ -149,6 +149,14 @@ final class CoreCases {
       ("demoteToHelperInvocation", f.shaderDemoteToHelperInvocation), ("viewportIndexLayer", f.shaderViewportIndexLayer),
       ("stencilExport", f.shaderStencilExport), ("sampleRateShading", f.shaderSampleRateShading),
       ("floatControls", f.shaderFloatControls)])
+    print("loinnir-test: limits: viewports \(l.maxViewports), sparse address space \(l.sparseAddressSpaceSize), unbound reads zero \(l.sparse.residencyNonResidentStrict)")
+    line("viewports and sparse", [
+      ("multiViewport", f.multiViewport), ("outputViewportIndex", f.shaderOutputViewportIndex), ("sparseBinding", f.sparseBinding),
+      ("residencyBuffer", f.sparseResidencyBuffer), ("residencyImage2D", f.sparseResidencyImage2D),
+      ("residencyImage3D", f.sparseResidencyImage3D), ("residency2Samples", f.sparseResidency2Samples),
+      ("residency4Samples", f.sparseResidency4Samples), ("residency8Samples", f.sparseResidency8Samples),
+      ("residency16Samples", f.sparseResidency16Samples), ("residencyAliased", f.sparseResidencyAliased),
+      ("resourceResidency", f.shaderResourceResidency)])
   }
 
   // MARK: Memory, images and passes
