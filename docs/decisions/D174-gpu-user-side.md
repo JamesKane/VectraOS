@@ -681,10 +681,14 @@ resources wait on the clean-room answers (below).
   queue family bit, sparse requirements and binds), VenusTests (the custom border structs' bytes in a sampler chain and a
   features chain) and VenusDriverTests (which extensions are forwarded, by offer and mask). loinnir-test, boot-venus on
   brimstone (the host's NVIDIA GeForce RTX 5070 Ti), amd64 and arm64: `customBorderColor` true and its case exact; two viewports
-  by ViewportIndex, each cut by its scissor, 256 pixels exact; a sparse buffer of three 64 KiB pages with one unbound (reading
-  zero) and each page's word in the buffer and the memory behind it; a 256 x 256 rgba8 sparse image of 128 x 128 blocks, two
+  by ViewportIndex, each cut by its scissor, 256 pixels exact; a sparse buffer of three 64 KiB pages, two bound and filled, then one unbound (reading zero) and its memory
+  bound at another page, which reads its word; a 256 x 256 rgba8 sparse image of 128 x 128 blocks, two
   bound and sampled, 64 pixels exact and the unbound blocks zero. 47 core cases passed, 3 skipped (depth resolves and alpha
   to one, as before).
+- **A first sparse buffer case was wrong.** It also filled and read the memory behind the sparse buffer through the memory's
+  own buffer, which aliases a sparse and a non-sparse resource: undefined in Vulkan without `sparseResidencyAliased`. On
+  brimstone's NVIDIA it passed once and then read, twice, what the other buffer had written last. The case now reaches the
+  memory only through the sparse buffer, and shows the binding by moving pages between two binds.
 - **Left open.** The Mali halves of more than one viewport (the scissor array is unconfirmed) and of sparse resources wait on
   the clean-room answers; `shaderResourceResidency` waits on the lowering carrying the sparse image operations; the layer has
   no `vkGetDevice*MemoryRequirements` (1.3), the sparse one among them. A fence given to the Venus driver's

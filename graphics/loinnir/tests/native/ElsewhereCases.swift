@@ -36,10 +36,11 @@ extension CoreCases {
     ok("viewports: two viewports picked by ViewportIndex, each cut by its own scissor, \(n) pixels exact")
   }
 
-  /// A sparse buffer of three pages: with residency, pages 0 and 2 bound (to the second and the first page of memory) and page 1
-  /// left unbound; without it, all three bound out of order. A fill of each bound page, a copy of the whole buffer out, and a copy
-  /// of the memory behind it: each page's word where it was bound, in the buffer and in the memory, and (where the device reads
-  /// unbound pages as zero) zeros in page 1.
+  /// A sparse buffer of three pages, its pages moved between binds: with residency, pages 0 and 2 bound (to the second and the
+  /// first page of memory) and page 1 left unbound, each bound page filled with its own word; then page 0 unbound and page 1
+  /// bound to the memory page 0 had, and the buffer copied out: page 1 reads page 0's word, page 2 its own, and (where the device
+  /// reads unbound pages as zero) page 0 zero. Without residency, all three bound and filled, then pages 0 and 2 swap their
+  /// memory pages. The memory is reached only through the sparse buffer: aliasing it through another buffer is undefined.
   func sparseBuffer() throws(GPUError) {
     guard f.sparseBinding else { return skip("sparse buffer", "no sparse binding") }
     let partly = f.sparseResidencyBuffer
@@ -49,42 +50,41 @@ extension CoreCases {
     guard page > 0, page % 4 == 0, page <= 1 << 20 else { return skip("sparse buffer", "a page of \(page) bytes") }
     let buffer = try d.makeSparseBuffer(bytes: 3 * page, flags: partly ? .binding | .residency : .binding)
     let memory = try d.allocate(.device, bytes: 3 * page)
+    func bind(_ p: Int, _ m: Int?) -> SparseBufferBind {
+      SparseBufferBind(buffer: buffer, offset: p * page, size: page, memory: m == nil ? nil : memory, memoryOffset: (m ?? 0) * page)
+    }
     // Buffer page -> memory page: 0 -> 1, 2 -> 0, and (bound only without residency) 1 -> 2.
-    var binds = [SparseBufferBind(buffer: buffer, offset: 0, size: page, memory: memory, memoryOffset: page),
-                 SparseBufferBind(buffer: buffer, offset: 2 * page, size: page, memory: memory, memoryOffset: 0)]
-    if !partly { binds.append(SparseBufferBind(buffer: buffer, offset: page, size: page, memory: memory, memoryOffset: 2 * page)) }
+    var first = [bind(0, 1), bind(2, 0)]
+    if !partly { first.append(bind(1, 2)) }
     timeline += 1
-    try d.graphicsQueue.bindSparse(SparseBindings(buffers: binds), wait: 0, signal: timeline)
+    try d.graphicsQueue.bindSparse(SparseBindings(buffers: first), wait: 0, signal: timeline)
     let words: [UInt32] = [0x1111_1111, 0x2222_2222, 0x3333_3333]
+    var fill = GPUCommandList()
+    for p in 0..<3 where p != 1 || !partly { fill.fill(buffer, offset: p * page, bytes: page, value: words[p]) }
+    try run(fill)
+    // The pages move: what each buffer page reads after, by the word it was filled with (nil: unbound).
+    let second = partly ? [bind(0, nil), bind(1, 1)] : [bind(0, 0), bind(2, 1)]
+    let want: [UInt32?] = partly ? [nil, words[0], words[2]] : [words[2], words[1], words[0]]
+    timeline += 1
+    try d.graphicsQueue.bindSparse(SparseBindings(buffers: second), wait: 0, signal: timeline)
     let out = try d.allocate(.readback, bytes: 3 * page)
-    let behind = try d.allocate(.readback, bytes: 3 * page)
-    var list = GPUCommandList()
-    list.fill(memory, bytes: 3 * page, value: 0xEEEE_EEEE)
-    list.barrier(from: .transfer, to: .transfer)
-    for p in 0..<3 where p != 1 || !partly { list.fill(buffer, offset: p * page, bytes: page, value: words[p]) }
-    list.barrier(from: .transfer, to: .transfer)
-    list.copy(buffer, to: out, bytes: 3 * page)
-    list.copy(memory, to: behind, bytes: 3 * page)
-    try run(list)
+    var copy = GPUCommandList()
+    copy.copy(buffer, to: out, bytes: 3 * page)
+    try run(copy)
     let strict = d.limits.sparse.residencyNonResidentStrict
     let o = unsafe out.pointer!.assumingMemoryBound(to: UInt32.self)
-    let b = unsafe behind.pointer!.assumingMemoryBound(to: UInt32.self)
     let perPage = page / 4
     for p in 0..<3 {
-      let memoryPage = p == 0 ? 1 : (p == 2 ? 0 : 2)
       for i in stride(from: 0, to: perPage, by: 61) {
         let got = unsafe o[p * perPage + i]
-        let there = unsafe b[memoryPage * perPage + i]
-        if p == 1 && partly {
-          if strict && got != 0 { fail("sparse buffer: unbound page 1 word \(i) reads \(got), not 0") }
-          if there != 0xEEEE_EEEE { fail("sparse buffer: memory page 2 changed to \(there) though nothing bound it") }
-          continue
+        if let w = want[p] {
+          if got != w { fail("sparse buffer: page \(p) word \(i) reads \(got), not \(w)") }
+        } else if strict && got != 0 {
+          fail("sparse buffer: unbound page \(p) word \(i) reads \(got), not 0")
         }
-        if got != words[p] { fail("sparse buffer: page \(p) word \(i) reads \(got), not \(words[p])") }
-        if there != words[p] { fail("sparse buffer: memory page \(memoryPage) word \(i) holds \(there), not page \(p)'s \(words[p])") }
       }
     }
-    ok("sparse buffer: 3 pages of \(page) bytes, \(partly ? "two bound, one left unbound\(strict ? " and reading zero" : "")" : "all bound out of order"), each page's word in the buffer and in the memory behind it")
+    ok("sparse buffer: 3 pages of \(page) bytes, \(partly ? "two bound and filled, then one unbound\(strict ? " (reading zero)" : "") and its memory bound at another" : "all bound and filled, then two swapping their memory"), each page's word where its memory went")
   }
 
   /// A sparse rgba8 image of four blocks used partly bound: its top-left and bottom-right blocks bound to two pages of memory and
