@@ -290,6 +290,13 @@ documentation only (provenance.md).
     multiview, depth and stencil loaded from an image (a frame shader that
     writes depth, 08.10), and the
     depth bounds test (06.8.5: none in the hardware). Dirty-room: none open on blend shaders.
+  - **A GL frame (D183, 2026-11-26):** loinnir-test's frame budgets at
+    800x600: a clear and one draw 158 us a round trip (295 before the steps
+    were chained on the GPU and the buffers came from an arena), two passes
+    277 (579), 100 draws 559, a 64x64 pass 102; the GPU's own part of the
+    first 121 us, of a 64x64 pass 64 us. The SCMI performance domain 0
+    (`gpu_core`) reads 1000, its top level; its limits are refused to this
+    agent. D183's "as built" has the breakdown.
   - **Not this branch's:** vulkan-test fails its swizzled-view case
     (`vkCreateImageView` refused by the core: a mapped view) and its input
     attachment case on the board, and so compose-test's check that
