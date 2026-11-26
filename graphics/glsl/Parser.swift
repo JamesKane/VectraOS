@@ -431,7 +431,9 @@ struct Parser {
       var e = try assignment()
       e = convertForInit(e, to: t, name: name)
       if storage == .constant {
-        if let val = e.value { v.value = val } else if !e.type.isError && !isConstantExpression(e) {
+        if e.type.isError {
+          v.value = [Scalar](repeating: .f(0), count: prog.flatCount(t))
+        } else if let val = e.value { v.value = val } else if !e.type.isError && !isConstantExpression(e) {
           diags.error(e.at, "'\(name.text)': a const variable's initializer must be a constant expression")
         }
       } else if global && !e.type.isError && !isConstantExpression(e) {

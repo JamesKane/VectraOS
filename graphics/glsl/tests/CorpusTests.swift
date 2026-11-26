@@ -92,4 +92,24 @@ private func dump() -> [(name: String, stage: GLSLStage, source: String)] {
     #expect(fragmentsLinked.count == fs.count, "fragment shaders with no partner: \(fs.map { $0.0 }.filter { !fragmentsLinked.contains($0) })")
     #expect(vertexLinked.count == vs.count, "vertex shaders with no partner: \(vs.map { $0.0 }.filter { !vertexLinked.contains($0) })")
   }
+
+  /// No source makes the compiler or the link trap: each shader cut short at forty places, each byte flipped at some,
+  /// compiles to a log; every vertex shader with every fragment shader links or says why.
+  @Test(.enabled(if: !listDirectory(dumpDirectory).isEmpty)) func malformedSourcesGiveLogsNotTraps() throws {
+    var compiled: [GLSLShader] = []
+    for s in dump() {
+      let bytes = Array(s.source.utf8)
+      let step = max(1, bytes.count / (getenv("GLSL_FUZZ").map { Int(String(cString: $0)) ?? 40 } ?? 40))
+      for cut in stride(from: 0, to: bytes.count, by: step) {
+        _ = compile(source: Array(bytes[..<cut]), stage: s.stage)
+        var flipped = bytes
+        flipped[cut] = [UInt8(ascii: "("), UInt8(ascii: "}"), UInt8(ascii: "."), UInt8(ascii: "#"), UInt8(ascii: "1")][cut % 5]
+        _ = compile(source: flipped, stage: s.stage)
+      }
+      if case .success(let c) = compile(source: bytes, stage: s.stage) { compiled.append(c) }
+    }
+    for v in compiled where v.stage == .vertex {
+      for f in compiled where f.stage == .fragment { _ = try? link(vertex: v, fragment: f, attributeBindings: []) }
+    }
+  }
 }
