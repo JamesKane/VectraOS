@@ -129,7 +129,7 @@ public struct GLSLProgram: Sendable {
   ///   +16 float depthRangeNear   gl_DepthRange.near, .far and .diff (glDepthRangef's)
   ///   +20 float depthRangeFar
   ///   +24 float depthRangeDiff
-  /// -1 when there are none (clip control .vulkan and no gl_DepthRange).
+  /// Always 0: the block always begins with them (the program's own uniforms from offset 32).
   public var driverBlockOffset: Int
   /// The highest sampler binding plus one (bindings 1 to this less one are combined image samplers).
   public var samplerBindings: Int

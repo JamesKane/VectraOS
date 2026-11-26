@@ -319,6 +319,9 @@ function(croi_tier1 bootfs_var depends_var)
   croi_tier1_library(GPUCoreMali SOURCES ${_gpu_core_mali_t1} USES GPUCore MaliCore ValhallBackend ShaderCompiler ValhallISA GPUClient
                      GPUDevice IPC Node Sys INCLUDES system/trace/c/include)
   croi_tier1_library(VulkanLowering SOURCES ${_vulkan_lowering_t1} USES ShaderCompiler)
+  # The GLSL ES 1.00 front end (graphics/glsl, D183): the GLES library's shaders into the SPIR-V the lowering takes.
+  file(GLOB _glsl_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/graphics/glsl/*.swift)
+  croi_tier1_library(GLSL SOURCES ${_glsl_t1})
   # VulkanCoreDriver (graphics/vulkan/drivers/core, D174 step 5: the Vulkan layer over the core) goes here, after the
   # lowering, as a library, with the layer's registry (core/registry/Registry.swift, which
   # hands VulkanCoreDriver its device) as another, and vulkan-test-core linked against these two in place of the

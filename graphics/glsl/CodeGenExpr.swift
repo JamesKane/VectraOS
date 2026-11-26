@@ -356,6 +356,41 @@ extension CodeGen {
 
   // MARK: built-in functions
 
+  /// The step of a sampler reference whose index is not a constant (its place, its value, the array's length).
+  func dynamicSamplerIndex(_ r: Ref) -> (Int, UInt32, Int)? {
+    var t = r.rootType
+    var first = true
+    for (k, s) in r.steps.enumerated() {
+      defer { first = false }
+      if first, case .memory = r.root { continue }
+      switch s {
+      case .member(let i): t = prog.structs[t.structID].members[i].type
+      case .index(let id, let c):
+        if c == nil { return (k, id, t.arraySize) }
+        t = t.element
+      }
+    }
+    return nil
+  }
+
+  /// One texture lookup of a sampled image `s` at `p` (the projective forms' q last), with a bias or a level.
+  mutating func sample(_ f: BuiltinFunction, _ s: UInt32, _ p: UInt32, _ extra: UInt32?, relaxed: Bool) -> UInt32 {
+    let v4 = b.vector(b.float, 4)
+    let proj = f == .texture2DProj || f == .texture2DProjBias || f == .texture2DProjLod
+    switch f {
+    case .texture2DBias, .texture2DProjBias, .textureCubeBias:
+      return emit(proj ? SpvOp.imageSampleProjImplicitLod : SpvOp.imageSampleImplicitLod, v4, [s, p, 1, extra!], relaxed: relaxed)
+    case .texture2DLod, .texture2DProjLod, .textureCubeLod:
+      return emit(proj ? SpvOp.imageSampleProjExplicitLod : SpvOp.imageSampleExplicitLod, v4, [s, p, 2, extra!], relaxed: relaxed)
+    default:
+      if prog.stage == .vertex {
+        // A vertex shader has no derivatives: level 0.
+        return emit(proj ? SpvOp.imageSampleProjExplicitLod : SpvOp.imageSampleExplicitLod, v4, [s, p, 2, b.constant(float: 0)], relaxed: relaxed)
+      }
+      return emit(proj ? SpvOp.imageSampleProjImplicitLod : SpvOp.imageSampleImplicitLod, v4, [s, p], relaxed: relaxed)
+    }
+  }
+
   mutating func builtin(_ f: BuiltinFunction, _ args: [Expr], _ e: Expr) -> UInt32 {
     let relaxed = e.precision.relaxed
     let rt = ty(e.type)
@@ -363,27 +398,35 @@ extension CodeGen {
     if [.texture2D, .texture2DBias, .texture2DProj, .texture2DProjBias, .texture2DLod, .texture2DProjLod, .textureCube,
       .textureCubeBias, .textureCubeLod].contains(f)
     {
-      let s = load(ref(args[0]))
+      let sref = ref(args[0])
       let coord = value(args[1])
-      let v4 = b.vector(b.float, 4)
-      let proj = f == .texture2DProj || f == .texture2DProjBias || f == .texture2DProjLod
       var p = coord
+      let proj = f == .texture2DProj || f == .texture2DProjBias || f == .texture2DProjLod
       if proj && args[1].type.rows == 4 {
         // (s, t, q) of an (s, t, r, q).
         p = emit(SpvOp.vectorShuffle, b.vector(b.float, 3), [coord, coord, 0, 1, 3])
       }
-      switch f {
-      case .texture2DBias, .texture2DProjBias, .textureCubeBias:
-        return emit(proj ? SpvOp.imageSampleProjImplicitLod : SpvOp.imageSampleImplicitLod, v4, [s, p, 1, value(args[2])], relaxed: relaxed)
-      case .texture2DLod, .texture2DProjLod, .textureCubeLod:
-        return emit(proj ? SpvOp.imageSampleProjExplicitLod : SpvOp.imageSampleExplicitLod, v4, [s, p, 2, value(args[2])], relaxed: relaxed)
-      default:
-        if prog.stage == .vertex {
-          // A vertex shader has no derivatives: level 0.
-          return emit(proj ? SpvOp.imageSampleProjExplicitLod : SpvOp.imageSampleExplicitLod, v4, [s, p, 2, b.constant(float: 0)], relaxed: relaxed)
-        }
-        return emit(proj ? SpvOp.imageSampleProjImplicitLod : SpvOp.imageSampleImplicitLod, v4, [s, p], relaxed: relaxed)
+      let extra = args.count > 2 ? value(args[2]) : nil
+      guard let (k, index, n) = dynamicSamplerIndex(sref) else {
+        return sample(f, load(sref), p, extra, relaxed: relaxed)
       }
+      // A sampler array indexed by a value (a loop's index, as appendix A allows): each element's sample, the one the
+      // index names kept.
+      let result = local(.vec(4))
+      for i in 0..<n {
+        var r = sref
+        r.steps[k] = .index(b.constant(int: Int32(i)), i)
+        let hit = emit(SpvOp.iEqual, b.bool, [index, b.constant(int: Int32(i))])
+        let then = b.id()
+        let merge = b.id()
+        emitVoid(SpvOp.selectionMerge, [merge, 0])
+        emitVoid(SpvOp.branchConditional, [hit, then, merge])
+        label(then)
+        emitVoid(SpvOp.store, [result, sample(f, load(r), p, extra, relaxed: relaxed)])
+        branch(merge)
+        label(merge)
+      }
+      return emit(SpvOp.load, b.vector(b.float, 4), [result])
     }
     var a = args.map { value($0) }
     let t = e.type

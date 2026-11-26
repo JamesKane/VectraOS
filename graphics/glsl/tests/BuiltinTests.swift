@@ -139,6 +139,23 @@ private let cases: [(String, Int, [Float], Float)] = [
     }
   }
 
+  @Test func aSamplerArrayIndexedByALoop() throws {
+    let fs = """
+      precision highp float;
+      uniform sampler2D layers[3];
+      varying vec4 uv;
+      void main() {
+        vec4 sum = vec4(0.0);
+        for (int i = 0; i < 3; i++) sum += texture2D(layers[i], uv.xy) * float(i + 1);
+        int j = int(uv.z);
+        gl_FragColor = sum + texture2D(layers[j], uv.xy) * 1000.0;
+      }
+      """
+    let texel: (UInt64, [Float], Int) -> Float = { image, _, k in k == 0 ? Float(image) : 0 }
+    // Bindings 1 to 3 (slots 11 to 13): 11 + 24 + 39 + 1000 * 13.
+    expectAll(try runFragment(fs, varyings: [Varying(decl: "vec4 uv", value: [0.25, 0.5, 2, 4])], texel: texel).map { [$0[0]] }, [74 + 13000], "indexed")
+  }
+
   @Test func vertexTextureLookupsAndCubesLink() throws {
     // texture2DLod and texture2DProjLod are the vertex shader's; textureCube's image is a cube, which the layer's
     // lowering takes once it lowers cubes: here the SPIR-V is made and checked to be a cube's sample.
