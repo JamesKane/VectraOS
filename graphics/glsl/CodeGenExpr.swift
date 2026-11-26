@@ -25,7 +25,11 @@ extension CodeGen {
       var v = value(r)
       if let o = op {
         let old = load(lr, relaxed: relaxed)
-        v = arith(o, old, l.type, v, r.type, l.type, relaxed: relaxed)
+        if o == .div, let rc = reciprocal(r) {
+          v = arith(.mul, old, l.type, rc, r.type, l.type, relaxed: relaxed)
+        } else {
+          v = arith(o, old, l.type, v, r.type, l.type, relaxed: relaxed)
+        }
       }
       store(lr, v)
       return v
@@ -89,6 +93,19 @@ extension CodeGen {
   }
 
   // MARK: arithmetic
+
+  /// A float divisor that is a constant, every component a normal number: its reciprocal, by which the division is a
+  /// multiply (the device has no divide instruction; GLSL ES allows the rounding of x * (1 / y)).
+  mutating func reciprocal(_ d: Expr) -> UInt32? {
+    guard d.type.basic == .float, d.type.isScalar || d.type.isVector, let v = d.value else { return nil }
+    var r: [Scalar] = []
+    for c in v {
+      let x = c.float
+      guard x.isNormal, (1 / x).isNormal else { return nil }
+      r.append(.f(1 / x))
+    }
+    return constant(d.type, r)
+  }
 
   mutating func negate(_ x: UInt32, _ t: GType, relaxed: Bool) -> UInt32 {
     if t.isMatrix {
@@ -160,6 +177,9 @@ extension CodeGen {
     switch op {
     case .add, .sub, .mul, .div:
       let x = value(l)
+      if op == .div, let rc = reciprocal(r) {
+        return arith(.mul, x, l.type, rc, r.type, e.type, relaxed: relaxed)
+      }
       let y = value(r)
       return arith(op, x, l.type, y, r.type, e.type, relaxed: relaxed)
     case .lt, .gt, .le, .ge:
@@ -447,9 +467,14 @@ extension CodeGen {
     case .step: return ext(48, rt, [widen(0), a[1]], relaxed: relaxed)
     case .smoothstep: return ext(49, rt, [widen(0), widen(1), a[2]], relaxed: relaxed)
     case .mod:
-      // x - y * floor(x / y), as section 8.3 defines it.
+      // x - y * floor(x / y), as section 8.3 defines it (x times 1 / y for a constant y).
       let y = widen(1)
-      let q = emit(SpvOp.fDiv, rt, [a[0], y], relaxed: relaxed)
+      var q: UInt32
+      if let rc = reciprocal(args[1]) {
+        q = arith(.mul, a[0], args[0].type, rc, args[1].type, t, relaxed: relaxed)
+      } else {
+        q = emit(SpvOp.fDiv, rt, [a[0], y], relaxed: relaxed)
+      }
       let fl = ext(8, rt, [q], relaxed: relaxed)
       let p = emit(SpvOp.fMul, rt, [y, fl], relaxed: relaxed)
       return emit(SpvOp.fSub, rt, [a[0], p], relaxed: relaxed)

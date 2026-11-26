@@ -5,8 +5,14 @@
 // must compile; each vertex shader with each fragment shader whose varyings it declares must link, lower, and compile for
 // Valhall. The test is skipped where .cache has none.
 
+#if canImport(Darwin)
+  import Darwin
+#else
+  import Glibc
+#endif
 @testable import GLSL
 import Testing
+import ValhallBackend
 
 private let dumpDirectory = repositoryRoot() + "/.cache/ports/glmark2-shaders"
 
@@ -21,7 +27,7 @@ private func dump() -> [(name: String, stage: GLSLStage, source: String)] {
 }
 
 @Suite struct CorpusTests {
-  @Test(.enabled(if: !listDirectory(dumpDirectory).isEmpty)) func everyShaderGlmark2CompilesCompiles() throws {
+  @Test(.enabled(if: !listDirectory(dumpDirectory).isEmpty)) func everyShaderGlmark2CompiledCompiles() throws {
     var failed: [String] = []
     for s in dump() {
       if case .failure(let e) = compile(source: Array(s.source.utf8), stage: s.stage) { failed.append("\(s.name):\n\(e.log)") }
@@ -67,6 +73,11 @@ private func dump() -> [(name: String, stage: GLSLStage, source: String)] {
             v.program.variables.contains { $0.storage == .uniform && $0.type.isSampler && $0.read }
           }
           _ = try lowerAndCompile(p, .fragment)
+          if getenv("GLSL_COUNTS") != nil && !fragmentsLinked.contains(fn) {
+            let ir = try lowerAndCompile(p, .fragment, run: false)[0].1
+            let g = try ValhallBackend.compileGraphics(ir)
+            print("count \(fn.prefix(11)) \(g.instructions.count) instructions, \(g.registersUsed) registers, \(g.spillSlots) spills")
+          }
           fragmentsLinked.insert(fn)
           vertexLinked.insert(vn)
         } catch let e as GLSLError {
