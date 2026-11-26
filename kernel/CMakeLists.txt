@@ -713,6 +713,15 @@ if(_vulkan_test)
   set(_vulkan_test_board_entries bin/vulkan-test=${_vulkan_test}
       etc/manifests/vulkan-test.manifest=${PROJECT_SOURCE_DIR}/user/tier1/vulkan-test-board.manifest)
 endif()
+# glmark2 (D183, cmake/Glmark2.cmake), where tier 1 and its port are built: the program, its data at lib/glmark2
+# and its manifest, in the board's desktop image only, which runs it.
+get_property(_glmark2 GLOBAL PROPERTY CROI_TIER1_GLMARK2)
+set(_glmark2_entries)
+if(_glmark2)
+  get_property(_glmark2_data GLOBAL PROPERTY CROI_TIER1_GLMARK2_DATA)
+  set(_glmark2_entries bin/glmark2-es2-vectraos=${_glmark2} ${_glmark2_data}
+      etc/manifests/glmark2.manifest=${PROJECT_SOURCE_DIR}/ports/glmark2/glmark2.manifest)
+endif()
 set(CROI_BOOTFS_IMAGE ${CMAKE_BINARY_DIR}/bootfs.img PARENT_SCOPE)
 set(_bootfs_entries bin/m2=${_m2} bin/sys-test=${_sys_test} bin/dl-test=${_dl_test}
           lib/libdltest.so=${_dl_c} lib/libdlswift.so=${_dl_swift} bin/link-test=${_link_test} bin/link-stale=${_link_stale}
@@ -763,6 +772,10 @@ function(croi_bootfs name comment)
 endfunction()
 croi_bootfs(bootfs "Building bootfs"
   ${_bootfs_entries})
+# glmark2 started by userboot in QEMU (glmark2(8)): how far it gets without a GPU's EGL.
+if(_glmark2_entries)
+  croi_bootfs(bootfs-glmark2 "Building bootfs for glmark2 in QEMU" ${_bootfs_entries} ${_glmark2_entries})
+endif()
 # boot-warmboot's (D101): bootfs and this build's kernel at
 # lib/warm/kernel.elf, which bin/warmboot-test warm-boots into.
 croi_bootfs(bootfs-warmboot "Building bootfs for boot-warmboot"
@@ -1142,7 +1155,7 @@ croi_bootfs(bootfs-board-desktop "Building bootfs for the board's desktop"
   bin/crash-test=${_crash_test}
   bin/compose-test=${_compose_test}
   etc/manifests/compose-test.manifest=${PROJECT_SOURCE_DIR}/services/radharc/tests/gpu/compose-test-desktop.manifest
-  ${_vulkan_present_board_entries})
+  ${_vulkan_present_board_entries} ${_glmark2_entries})
 add_dependencies(bootfs-board-desktop cpu-keys)
 
 # Atomics count with one AMO, never a checked add's LR/SC loop
