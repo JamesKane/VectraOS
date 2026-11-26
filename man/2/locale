@@ -1,0 +1,53 @@
+page locale 2
+summary the C locale, its conventions, and locale objects
+names locale setlocale localeconv newlocale duplocale freelocale uselocale
+src system/libc/include/locale.h system/libc/include/bits/locale_t.h system/libc/native/locale.c
+keys locale setlocale lconv decimal point uselocale newlocale C POSIX iostream
+lang c
+
+# SYNOPSIS
+
+```c
+#include <locale.h>
+
+#define LC_CTYPE 0
+#define LC_NUMERIC 1
+#define LC_TIME 2
+#define LC_COLLATE 3
+#define LC_MONETARY 4
+#define LC_MESSAGES 5
+#define LC_ALL 6
+#define LC_CTYPE_MASK (1 << LC_CTYPE)  // and so on for each, and LC_ALL_MASK
+#define LC_GLOBAL_LOCALE ((locale_t)-1)
+
+typedef struct td_locale *locale_t;
+struct lconv;  // C23's fields, in its order
+
+char *setlocale(int category, const char *name);
+struct lconv *localeconv(void);
+locale_t newlocale(int category_mask, const char *name, locale_t base);
+locale_t duplocale(locale_t locale);
+void freelocale(locale_t locale);
+locale_t uselocale(locale_t locale);
+```
+
+# DESCRIPTION
+
+There is one locale, "C", for every category.
+C++'s iostreams (libc++, with its own C locale's tables) and the `_l` functions of ctype(2), stdlib(2), string(2) and time(2) are built on these calls.
+
+`setlocale` returns "C" for a null <name> and for "C", "POSIX" and "" (the environment's choice, which is the C locale); for any other <name>, or a <category> that is not one of the `LC_` values, it returns a null pointer and changes nothing.
+`localeconv` returns the C locale's conventions: a decimal point of ".", every other string empty, every `char` field `CHAR_MAX` (not available).
+
+`newlocale` returns a locale object for "C", "POSIX" or "", whatever <category_mask> and <base> say; another name fails with `ENOENT`, and a mask with bits outside `LC_ALL_MASK`, or a null name, with `EINVAL`.
+Every object is the one C locale: `duplocale` returns it, and `freelocale` has nothing to free.
+
+`uselocale` sets the calling thread's locale to <locale>, unless it is null, and returns the one it had: `LC_GLOBAL_LOCALE`, the process's, until a call sets another.
+
+# SEE ALSO
+
+ctype(2), stdlib(2), string(2), time(2), stdio(2)
+
+# BUGS
+
+No other locale exists, so a program can't format numbers or dates for a language, and there are no wide or multibyte characters beyond a byte (`MB_CUR_MAX` is 1, and C++'s wide streams are not built).

@@ -1,0 +1,57 @@
+page getopt 2
+summary parse a program's options
+names getopt getopt_long getopt_long_only optarg optind opterr optopt
+src system/libc/include/getopt.h system/libc/include/unistd.h system/libc/native/getopt.c
+keys options arguments command line long options flags
+lang c
+
+# SYNOPSIS
+
+```c
+#include <getopt.h>
+
+extern char *optarg;
+extern int optind, opterr, optopt;
+
+struct option {
+  const char *name;
+  int has_arg;  // no_argument 0, required_argument 1, optional_argument 2
+  int *flag;
+  int val;
+};
+
+int getopt(int argc, char *const argv[], const char *options);
+int getopt_long(int argc, char *const argv[], const char *options,
+                const struct option *longopts, int *longindex);
+int getopt_long_only(int argc, char *const argv[], const char *options,
+                     const struct option *longopts, int *longindex);
+```
+
+`getopt` and its variables are also declared by `<unistd.h>`.
+
+# DESCRIPTION
+
+Each call returns the next option in <argv>, from `argv[optind]` on, and -1 at the first operand, at `--` (which it passes), or at the end.
+<options> lists the option characters; one followed by `:` takes an argument, the rest of its word or the next word, and one followed by `::` takes an optional one, the rest of its word only.
+Options may be grouped (`-vx`).
+The argument is left in `optarg`, and `optind` is the index of the next word.
+
+An option not in <options> returns `?` and leaves it in `optopt`; a missing argument returns `?`, or `:` when <options> begins with `:`.
+Each prints a message to `stderr`, `<program>: <what>`, unless `opterr` is 0 or <options> begins with `:`.
+A leading `+` or `-` in <options> is accepted and ignored.
+
+`getopt_long` also takes `--name`, `--name=value` and `--name value` for each entry of <longopts>, which ends with an entry whose name is null; a unique prefix of a name is taken for it.
+The entry's <has_arg> says whether it takes an argument.
+For a match it stores the entry's index in <longindex>, if that is not null, and returns <val>, or, when <flag> is not null, stores <val> there and returns 0.
+An unknown, ambiguous or wrongly given long option returns `?` with a message.
+`getopt_long_only` takes long options after a single `-` too, and a single character there that names no long option as the short option.
+
+Setting `optind` to 0 starts a new walk.
+
+# SEE ALSO
+
+unistd(2)
+
+# BUGS
+
+<argv> is never permuted: options after the first operand are operands, as POSIX's `getopt` and GNU's with a leading `+` have it, not as GNU's `getopt_long` does by default.
