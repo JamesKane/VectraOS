@@ -252,6 +252,7 @@ docs/decisions/	-	-	-	hardware
 docs/roadmap.md	-	-	-	hardware
 bench/	-	-	-	-
 CLAUDE.md	-	-	-	-
+.claude/	-	-	-	-
 README.md	-	-	-	-
 LICENSE	-	-	-	-
 IMPORTS.tsv	-	-	-	-
