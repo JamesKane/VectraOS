@@ -82,6 +82,9 @@ struct CodeGen {
   var laidStructs: [Int: (id: UInt32, size: Int, map: [Int?])] = [:]
   var epilogue: [(from: UInt32, type: GType, outputs: [UInt32])] = []
   var errors: [String] = []
+  /// The entry block's first instructions after its variables: the uniforms' loads.
+  var prologue: [UInt32] = []
+  var uniformValues: [String: UInt32] = [:]
 
   init(prog: Program, layout: StageLayout) {
     self.prog = prog
@@ -408,6 +411,8 @@ struct CodeGen {
     var v: UInt32
     if r.type.isSampler, case .memory = r.root { return samplerValue(r) }
     switch r.root {
+    case .memory(_, _, let laid) where laid && r.steps.allSatisfy({ if case .index(_, nil) = $0 { return false } else { return true } }):
+      v = uniformValue(r)
     case .memory:
       let (p, laid, _) = pointerTo(r)
       v = laid ? loadLaid(p, r.type, relaxed: relaxed) : emit(SpvOp.load, ty(r.type), [p], relaxed: relaxed && r.type.basic == .float)
@@ -424,6 +429,27 @@ struct CodeGen {
         v = emit(SpvOp.vectorShuffle, ty(st), [v, v] + s.map { UInt32($0) })
       }
     }
+    return v
+  }
+
+  /// A part of the uniform block reached by constant steps: loaded once, at the entry's start (where it dominates every
+  /// use, and the load's latency is the earliest), and the same value after.
+  mutating func uniformValue(_ r: Ref) -> UInt32 {
+    var key = ""
+    for st in r.steps {
+      switch st {
+      case .member(let i): key += ".\(i)"
+      case .index(_, let c): key += "[\(c!)]"
+      }
+    }
+    if let v = uniformValues[key] { return v }
+    let saved = code
+    code = prologue
+    let (p, _, _) = pointerTo(r)
+    let v = loadLaid(p, r.type, relaxed: false)
+    prologue = code
+    code = saved
+    uniformValues[key] = v
     return v
   }
 

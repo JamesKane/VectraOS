@@ -219,7 +219,7 @@ extension CodeGen {
     let fnType = b.functionType(b.void)
     var fn = Builder.instruction(SpvOp.function, [b.void, main, 0, fnType])
     let first = Builder.instruction(SpvOp.label, [entryLabel]).count
-    fn += Array(code[0..<first]) + locals + Array(code[first...])
+    fn += Array(code[0..<first]) + locals + prologue + Array(code[first...])
     fn += Builder.instruction(SpvOp.functionEnd, [])
     let model: UInt32 = vertex ? 0 : 4
     let entry = Builder.instruction(SpvOp.entryPoint, [model, main] + Builder.string(layout.entryPoint) + interface)
