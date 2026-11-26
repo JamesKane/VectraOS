@@ -346,7 +346,8 @@ function(croi_tier1 bootfs_var depends_var)
   # Its shaders compile with the GLSL front end (above).
   file(GLOB _gles_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/graphics/gles/lib/*.swift
        ${PROJECT_SOURCE_DIR}/graphics/gles/lib/generated/*.swift ${PROJECT_SOURCE_DIR}/graphics/gles/native/*.swift)
-  set(_gles_uses GLSL GPUCore VulkanLowering ShaderCompiler GPUCoreMali MaliCore ValhallBackend ValhallISA GPUCoreVulkan Vulkan
+  # (VulkanDriversNative: the registry the core's Vulkan backend's loader names, td_vulkan_driver; GL reaches Venus directly.)
+  set(_gles_uses GLSL GPUCore VulkanLowering ShaderCompiler GPUCoreMali MaliCore ValhallBackend ValhallISA GPUCoreVulkan Vulkan VulkanDriversNative
                  VulkanLoader VenusClient VenusDriver Venus GPUClient GPUDevice VX Plumber Radharc Kbdfs UICore AccessTree Themes
                  NdbFile TextLayout PixelKernels Light GlyphAtlas MSDF Raster Shape OpenType TDUnicode IPC Node Ring Sys Trace)
   croi_tier1_library(GLES SOURCES ${_gles_t1} CSOURCES graphics/gles/c/procs.c USES ${_gles_uses}
