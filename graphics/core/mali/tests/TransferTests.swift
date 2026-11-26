@@ -51,7 +51,7 @@ private func byte(_ x: Int, _ y: Int, _ l: Int, _ c: Int) -> UInt8 { UInt8(trunc
     // One submit: two passes on the tiler's and the fragment's queues, between them eight kernels on the compute queue, one a
     // command, each step waiting on the GPU for the one before it.
     #expect(t.submits.count == 1)
-    #expect(t.submits[0].jobs.map { $0.queue } == [0, 1, 2, 2, 2, 2, 2, 2, 2, 2, 0, 1])
+    #expect(t.submits[0].jobs.map { $0.queue } == [0, 1, 2] + [0, 1, 2, 2, 2, 2, 2, 2, 2, 2, 0, 1])
     #expect(runner.ran.map { $0.kernel } == [.copy, .blit, .copy, .copy, .copy, .copy, .copy, .copy])
     // It signals the timeline; nothing the CPU maps was maintained between the steps.
     #expect(t.submits[0].signals.count == 1 && t.submits[0].signals[0].sync == gpu.timeline)

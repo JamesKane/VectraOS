@@ -196,6 +196,31 @@ final class FrameBudgets {
       _ = try measure("a 64 x 64 pass", "gpu.mali.frame_small_pass_us", list)
       try place("a 64 x 64 pass") { l in l.render(pass(small)) { r in r.draw(pipeline, root: quads.address, vertices: 6) } }
     }
+    // A device whose first work is a transfer on the compute queue, and whose first pass then waits for it: the queues'
+    // first streams (the Vulkan layer's order, a staging copy before the first pass).
+    attempt("a new device's first pass after a transfer") { () throws(GPUError) in
+      let fresh = try MaliDevice()
+      let m = try fresh.allocate(.device, bytes: 4096)
+      var first = GPUCommandList()
+      first.fill(m, bytes: 4096, value: 1)
+      try fresh.run(first, signal: 1)
+      let image = try fresh.makeImage(ImageDescriptor(format: .rgba8, width: 64, height: 64, usage: .renderTarget | .copySource))
+      let back = try fresh.allocate(.readback, bytes: 64 * 64 * 4)
+      let p = try fresh.makeGraphicsPipeline(GraphicsPipelineDescriptor(
+        vertex: LoinnirShaders.triangleVert, fragment: LoinnirShaders.triangleFrag, colorFormats: [.rgba8], blend: .opaque))
+      let v = try fresh.allocate(.upload, bytes: 6 * 32)
+      unsafe v.pointer!.copyMemory(from: quads.pointer!, byteCount: 6 * 32)
+      var list = GPUCommandList()
+      list.fill(m, bytes: 4096, value: 2)
+      list.render(RenderingInfo(colors: [Attachment(image: image, load: .clear(0, 0, 0, 1))])) { l in l.draw(p, root: v.address, vertices: 6) }
+      list.copy(image, to: back)
+      try fresh.run(list, signal: 2)
+      let px = unsafe back.pointer!.assumingMemoryBound(to: UInt8.self)
+      let centre = (32 * 64 + 32) * 4
+      let got = [unsafe px[centre], unsafe px[centre + 1], unsafe px[centre + 2], unsafe px[centre + 3]]
+      if got != [255, 0, 0, 255] { throw GPUError.invalid("a new device's first pass after a transfer drew \(got)") }
+      print("loinnir-test: ok: frame: a new device's first pass, after a transfer on the compute queue, drew")
+    }
     print("loinnir-test: frame budgets: \(failed == 0 ? "done" : "\(failed) FAILED")")
     return failed
   }

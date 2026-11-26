@@ -333,6 +333,10 @@ public struct CSFService<Backend: CSFBackend> {
   var tags: [(tag: UInt64, submission: Int)] = []
   var nextTag: UInt64 = 1
   var nextSubmission = 1
+  /// The service's time for each of the last submits (its checks, the rings, the doorbells and the pump), in nanoseconds,
+  /// for `submitStatusLines`.
+  var submitTimes: [UInt64] = []
+  var submitCount = 0
   /// What the tiler OOMs came to, for status.
   var oomEvents = 0
   var oomGranted = 0
@@ -903,9 +907,21 @@ public struct CSFService<Backend: CSFBackend> {
     for s in signals where counter(c, s.id) == nil { throw .notFound }
     let id = nextSubmission
     nextSubmission += 1
+    let start = scheduler.link.nanoseconds
     pending.append(Submission(id: id, context: c, group: Int(handle), jobs: jobs, waits: waits, signals: signals,
                               remaining: jobs.count))
     pump()
+    let took = scheduler.link.nanoseconds &- start
+    if submitTimes.count < 256 { submitTimes.append(took) } else { submitTimes[submitCount % 256] = took }
+    submitCount += 1
+  }
+
+  /// What the last submits took of the service (from its checks to the pump's end), for the status: a line.
+  public var submitStatusLines: [String] {
+    guard !submitTimes.isEmpty else { return ["submits: none"] }
+    let sorted = submitTimes.sorted()
+    return ["submits: \(submitCount); of the last \(sorted.count), the service's part (rings, doorbells, the pump) took"
+      + " \(sorted[sorted.count / 2] / 1000) us at the median, \(sorted[sorted.count - 1] / 1000) us at most"]
   }
 
   // MARK: Time

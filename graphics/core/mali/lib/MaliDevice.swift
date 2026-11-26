@@ -228,8 +228,10 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   var storageGeneration = 0
   var heapCopy: (region: Region, generation: Int)?
   var storageCopy: (region: Region, generation: Int)?
-  /// The submissions' memory (Arena.swift).
+  /// The submissions' memory (Arena.swift), and the steps' thread storage and workgroup memory.
   var arena = TransientArena()
+  var threadStorage: Region?
+  var workgroupStorage: Region?
   /// The steps chained on the GPU (StepChain): a 64-bit sync object every step adds one to when it is done, and the count
   /// the CPU has submitted, which it reaches once they all are.
   var chainRegion: Region?
@@ -469,6 +471,7 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     if let c = chainRegion { release([c]) }
     if let h = heapCopy { release([h.region]) }
     if let h = storageCopy { release([h.region]) }
+    for r in [threadStorage, workgroupStorage] { if let r { release([r]) } }
     for r in retired { release(r.regions) }
     for r in memories.all { release([r]) }
     for i in images.all { release([i.region] + (i.planeRegion.map { [$0] } ?? [])) }

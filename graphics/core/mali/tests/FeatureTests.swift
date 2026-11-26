@@ -352,7 +352,8 @@ func indexedPipeline(_ gpu: MaliDevice) throws -> GPUPipeline { try trianglePipe
         modes.append(words[i] | (words[i + 6] != 0 || words[i + 7] != 0 ? 0x100 : 0))
       }
     }
-    #expect(modes.first == 0, "mode never and no descriptors")
+    // The last pass's framebuffer is the last found: the submissions' memory is the arena's, taken in order.
+    #expect(modes.last == 0, "mode never and no descriptors")
   }
 
   @Test func aStorageImageIsADescriptorInTable2AndTheShadersHandleNamesIt() throws {

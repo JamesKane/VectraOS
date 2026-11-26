@@ -118,14 +118,15 @@ func trianglePipeline(_ gpu: MaliDevice, _ format: PixelFormat = .rgba8) throws 
     let s = t.submits[0]
     // One group of three queues: the tiler's, the fragment's and compute's.
     #expect(t.groups[s.group] == [16384, 16384, 16384])
-    #expect(s.jobs.map { $0.queue } == [0, 1])
+    // The group's first submit starts its three queues, then the pass.
+    #expect(s.jobs.map { $0.queue } == [0, 1, 2, 0, 1])
     #expect(s.signals.count == 1 && s.signals[0].value == 7)
     #expect(gpu.completed == 7)
     // The streams are in memory the VM maps, and say something.
-    #expect(t.streams.count == 2 && t.streams.allSatisfy { $0.contains { $0 != 0 } })
+    #expect(t.streams.count == 5 && t.streams.allSatisfy { $0.contains { $0 != 0 } })
     // A second pass on the same queues starts them no more.
     try gpu.graphicsQueue.submit(list, wait: 7, signal: 8)
-    #expect(t.submits.count == 2 && t.submits[1].group == s.group)
+    #expect(t.submits.count == 2 && t.submits[1].group == s.group && t.submits[1].jobs.map { $0.queue } == [0, 1])
     #expect(t.groups.count == 1)
   }
 
@@ -157,7 +158,7 @@ func trianglePipeline(_ gpu: MaliDevice, _ format: PixelFormat = .rgba8) throws 
       r.draw(pipeline, root: 0x1000, vertices: 3)
     }
     try gpu.graphicsQueue.submit(list, wait: 0, signal: 1)
-    #expect(t.submits.count == 1 && t.submits[0].jobs.map { $0.queue } == [0, 1])
+    #expect(t.submits.count == 1 && t.submits[0].jobs.map { $0.queue } == [0, 1, 2, 0, 1])
     // A pipeline for the wrong format is the caller's mistake, and still raises the value waited for.
     let bgra = try trianglePipeline(gpu, .bgra8)
     var wrong = GPUCommandList()
@@ -251,7 +252,7 @@ func trianglePipeline(_ gpu: MaliDevice, _ format: PixelFormat = .rgba8) throws 
     // The faulted group was let go of, and the next list made a new one (the pass and the copy on its queues).
     #expect(t.groups.count == 1 && gpu.completed == 3)
     #expect(t.submits.count == 3 && t.submits[2].group != t.submits[0].group)
-    #expect(t.submits[2].jobs.map { $0.queue } == [0, 1, 2])
+    #expect(t.submits[2].jobs.map { $0.queue } == [0, 1, 2, 0, 1, 2])
   }
 
   @Test func readbackMemoryAndATargetOnlyTheCPUReadsAreCachedAndMaintained() throws {

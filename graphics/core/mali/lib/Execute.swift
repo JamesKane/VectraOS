@@ -96,7 +96,7 @@ extension MaliDevice {
         // before (the chain counts every step ever submitted); one submit of them all, which signals the timeline.
         let chain = try chainSync()
         let base = chainValue
-        var jobs: [MaliJob] = []
+        var jobs = try queueStartJobs(held: &held)
         for (i, step) in steps.enumerated() {
           gpuMayHaveWritten(step)
           let k = base + UInt64(i)
@@ -139,6 +139,32 @@ extension MaliDevice {
 
   static let tilerQueue: UInt32 = 0
   static let computeQueue: UInt32 = 2
+
+  /// The streams that start the group's queues, before any step of theirs: each queue's slot state, and its resources asked
+  /// for (the tiler's and the vertex shading's, the fragment work's, compute's; 02 sections 2.2.3 and 2.9.3), all three at
+  /// once, before any queue waits on the chain, so no queue asks for its resources while another holds its own waiting.
+  /// None once they have run; the steps' own streams then start nothing.
+  func queueStartJobs(held: inout [Region]) throws(GPUError) -> [MaliJob] {
+    if renderStarted && computeSlotsReady && computeResourceRequested { return [] }
+    let info = transport.info
+    let registers = CSRegisterMap(workRegisters: info.workRegisters, unpreserved: info.unpreservedRegisters)
+    let scoreboards = CSScoreboards(count: info.scoreboards)
+    let region = try scratch(3 * 256, held: &held)
+    var jobs: [MaliJob] = []
+    for (q, resources) in [(Self.tilerQueue, CSResources.tiler | .idvs), (Self.tilerQueue + 1, .fragment), (Self.computeQueue, .compute)] {
+      var b = CSBuilder(address: region.address + UInt64(q) * 256, capacityBytes: 256, registers: registers, scoreboards: scoreboards)
+      b.initialiseSlotState()
+      b.requestResources(resources)
+      let stream: CSStream
+      do throws(CSBuildError) { stream = try b.finish() } catch { throw .unsupported("a queue's start stream refused: \(error)") }
+      for (i, w) in stream.words.enumerated() { region.buffer.store(w, at: Int(q) * 256 + i * 8) }
+      jobs.append(MaliJob(queue: q, address: stream.address, size: UInt32(stream.size)))
+    }
+    renderStarted = true
+    computeSlotsReady = true
+    computeResourceRequested = true
+    return jobs
+  }
 
   // MARK: The plan
 
@@ -656,7 +682,7 @@ extension MaliDevice {
   /// submitted before.
   func runTimestamps(_ addresses: [UInt64], held: inout [Region]) throws(GPUError) {
     let chain = chainValue == 0 ? nil : StepChain(address: try chainSync().address, waitAbove: chainValue - 1, signal: false)
-    let jobs = try timestampJobs(addresses, chain: chain, held: &held)
+    let jobs = try queueStartJobs(held: &held) + timestampJobs(addresses, chain: chain, held: &held)
     try launch(group: try workGroup(), jobs: jobs, signal: nil)
   }
 
@@ -670,10 +696,10 @@ extension MaliDevice {
     if let limits = computeLimits {
       let sizing = ComputeSizing.of(shader: shader, grid: indirect == nil ? grid : nil, limits: limits)
       if shader.stackBytes != 0 {
-        threadStorage = try scratch(Int(sizing.tlsBytes), held: &held).address
+        threadStorage = try stepStorage(Int(sizing.tlsBytes), workgroup: false, held: &held)
       }
       if shader.workgroupMemoryBytes != 0 {
-        workgroupMemory = try scratch(Int(sizing.wlsBytes), held: &held).address
+        workgroupMemory = try stepStorage(Int(sizing.wlsBytes), workgroup: true, held: &held)
       }
     }
     // The storage images' element 0 is table 2's, the textures' and the samplers' the heap's (binding 0 and 1 of set 0, as the
@@ -891,7 +917,7 @@ extension MaliDevice {
     let stack = request.stackBytes
     if stack != 0 {
       guard let limits = computeLimits else { throw .unsupported("a shader with a stack: the driver reports no thread limits") }
-      request.threadStorage = try scratch(Int(ThreadStorageSizing.tlsTotal(stackBytes: stack, limits: limits)), held: &held).address
+      request.threadStorage = try stepStorage(Int(ThreadStorageSizing.tlsTotal(stackBytes: stack, limits: limits)), workgroup: false, held: &held)
       request.limits = limits
     }
     if let z = pass.zs, let view = pass.zsView {

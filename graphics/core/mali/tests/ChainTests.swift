@@ -43,10 +43,12 @@ func chainUse(_ words: [UInt64], address: UInt64) -> (waits: [UInt64], adds: Int
     try gpu.run(list, signal: 1)
     #expect(t.submits.count == 1)
     let s = t.submits[0]
-    #expect(s.jobs.map { $0.queue } == [0, 1, 0, 1, 2])
+    // The three queues' start streams first (the group's first submit), then the steps.
+    #expect(s.jobs.map { $0.queue } == [0, 1, 2, 0, 1, 0, 1, 2])
     #expect(s.signals.count == 1 && s.signals[0].value == 1)
     let chain = try #require(gpu.chainRegion).address
-    let uses = t.streams.map { chainUse($0, address: chain) }
+    #expect(t.streams.prefix(3).allSatisfy { chainUse($0, address: chain) == ([], 0) })
+    let uses = t.streams.dropFirst(3).map { chainUse($0, address: chain) }
     // The first pass waits for nothing; the second pass's two streams wait for the first step (above 0), the copy for the
     // second (above 1). Each step's last stream adds one: the passes' fragment streams and the copy's.
     #expect(uses.map { $0.waits } == [[], [], [0], [0], [1]])
@@ -68,9 +70,9 @@ func chainUse(_ words: [UInt64], address: UInt64) -> (waits: [UInt64], adds: Int
       r.clearAttachments([.color(index: 0, .float(1, 0, 0, 1))], rects: [ClearRect(width: 8, height: 8)])
     }
     try gpu.run(list, signal: 1)
-    #expect(t.submits.count == 1 && t.submits[0].jobs.count == 2)
+    #expect(t.submits.count == 1 && t.submits[0].jobs.count == 5)
     // The tiler's stream issues a RUN_IDVS2 (opcode 12) for each draw and the clear.
-    let runs = t.streams[0].filter { $0 >> 56 == 12 }.count
+    let runs = t.streams[3].filter { $0 >> 56 == 12 }.count
     #expect(runs == 301)
   }
 

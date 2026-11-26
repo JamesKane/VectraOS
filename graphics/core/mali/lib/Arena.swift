@@ -101,6 +101,17 @@ extension MaliDevice {
     return r
   }
 
+  /// Thread storage (stacks and spills) or workgroup memory for a step: one region of each kind for the device, as large as
+  /// the largest step has needed, since no two steps ever run at once (each waits for the one before it on the GPU). A
+  /// step that needs more makes it again; the old one goes once the work submitted before is done.
+  func stepStorage(_ bytes: Int, workgroup: Bool, held: inout [Region]) throws(GPUError) -> UInt64 {
+    if let r = workgroup ? workgroupStorage : threadStorage, r.size >= bytes { return r.address }
+    let r = try makeRegion(bytes, window: true)
+    if let old = workgroup ? workgroupStorage : threadStorage { held.append(old) }
+    if workgroup { workgroupStorage = r } else { threadStorage = r }
+    return r.address
+  }
+
   /// Gives back the end of the latest piece the arena carved, past `used` of its bytes, when it is still the chunk's last.
   func trimTransient(_ region: Region, used: Int) {
     guard region.transient, arena.current >= 0 else { return }
