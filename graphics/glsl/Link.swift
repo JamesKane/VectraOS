@@ -153,15 +153,26 @@ public func link(
     var vectors = 0
     for v in used where p.variables[v].storage == .uniform {
       let x = p.variables[v]
-      if let oi = other.variables.firstIndex(where: { $0.storage == .uniform && $0.name == x.name }) {
+      // A uniform both shaders declare: checked once (by the vertex shader's, or the fragment shader's when only it
+      // uses the uniform). The precision qualifiers written must match where both use it (a warning otherwise); a
+      // declaration that takes its stage's default precision has none, as in Mesa's link (a highp default in one stage
+      // and a mediump default in the other link).
+      if let oi = other.variables.firstIndex(where: { $0.storage == .uniform && $0.name == x.name }),
+        si == 0 || !vUsed.contains(where: { vp.variables[$0].name == x.name && vp.variables[$0].storage == .uniform })
+      {
         let y = other.variables[oi]
         if !Program.sameType(x.type, p, y.type, other) {
-          d.error("uniform '\(x.name)' is \(p.name(x.type)) in one shader and \(other.name(y.type)) in the other")
+          d.error("uniform '\(x.name)' is \(p.name(x.type)) in the \(si == 0 ? "vertex" : "fragment") shader and \(other.name(y.type)) in the other")
           continue
         }
-        if Parser.precisionBasic(x.type) != nil && x.precision != y.precision {
-          d.error("uniform '\(x.name)' is \(x.precision.name) in one shader and \(y.precision.name) in the other")
-          continue
+        if Parser.precisionBasic(x.type) != nil && x.declaredPrecision != y.declaredPrecision {
+          let bothUse = (si == 0 ? fUsed : vUsed).contains(oi)
+          let msg = "uniform '\(x.name)' is declared \(x.declaredPrecision == .none ? "with no precision" : x.declaredPrecision.name) in the \(si == 0 ? "vertex" : "fragment") shader and \(y.declaredPrecision == .none ? "with none" : y.declaredPrecision.name) in the other"
+          if bothUse {
+            d.error(msg)
+            continue
+          }
+          d.warning(msg)
         }
       }
       vectors += uniformVectors(p, x.type)

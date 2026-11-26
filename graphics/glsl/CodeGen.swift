@@ -512,9 +512,17 @@ struct CodeGen {
       whole.swizzle = nil
       let (p, _, _) = pointerTo(whole)
       let old = emit(SpvOp.load, ty(r.type), [p])
-      var sel: [UInt32] = (0..<r.type.rows).map { UInt32($0) }
-      for (k, c) in s.enumerated() { sel[c] = UInt32(r.type.rows + k) }
-      let nv = emit(SpvOp.vectorShuffle, ty(r.type), [old, v] + sel)
+      // Each component the old vector's or the new value's (the compiler's shuffle takes two of one type).
+      let st = ty(r.type.scalar)
+      var parts: [UInt32] = []
+      for c in 0..<r.type.rows {
+        if let k = s.firstIndex(of: c) {
+          parts.append(emit(SpvOp.compositeExtract, st, [v, UInt32(k)]))
+        } else {
+          parts.append(emit(SpvOp.compositeExtract, st, [old, UInt32(c)]))
+        }
+      }
+      let nv = emit(SpvOp.compositeConstruct, ty(r.type), parts)
       emitVoid(SpvOp.store, [p, nv])
       return
     }

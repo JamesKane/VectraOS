@@ -420,6 +420,7 @@ struct Parser {
     }
     let p = resolvePrecision(t, prec, at: name.at)
     var v = Variable(name: name.text, type: t, precision: p, storage: storage, at: name.at)
+    v.declaredPrecision = prec ?? .none
     v.invariant = invariant || (prog.invariantAll && storage == .varying)
     var initializer: Expr? = nil
     if accept("=") {

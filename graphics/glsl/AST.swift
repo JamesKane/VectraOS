@@ -31,7 +31,7 @@ struct GType: Hashable, Sendable {
   var isVector: Bool { rows > 1 && cols == 1 && !isArray }
   var isScalar: Bool { rows == 1 && cols == 1 && !isArray && (basic == .float || basic == .int || basic == .bool) }
   var isSampler: Bool { basic == .sampler2D || basic == .samplerCube }
-  var isStruct: Bool { basic == .structure }
+  var isStruct: Bool { basic == .structure && !isArray }
   var isError: Bool { basic == .error }
   var isNumeric: Bool { basic == .float || basic == .int }
   /// A scalar, a vector or a matrix: what arithmetic takes.
@@ -148,6 +148,8 @@ struct Variable: Sendable {
   var precision: Precision
   var storage: Storage
   var at: SourceLocation
+  /// The precision qualifier the declaration wrote (none when it took the default).
+  var declaredPrecision: Precision = .none
   var qualifier: ParamQualifier = .in
   var invariant = false
   var builtin: BuiltinVariable = .none
@@ -298,7 +300,7 @@ struct Program: Sendable {
   /// The type contains a sampler (a structure with one, or an array of them).
   func hasSampler(_ t: GType) -> Bool {
     if t.isSampler { return true }
-    if t.isStruct { return structs[t.structID].members.contains { hasSampler($0.type) } }
+    if t.element.isStruct { return structs[t.structID].members.contains { hasSampler($0.type) } }
     return false
   }
 
@@ -311,7 +313,7 @@ struct Program: Sendable {
   /// The scalar components of a value of this type (its folded form's length).
   func flatCount(_ t: GType) -> Int {
     var n = 0
-    if t.isStruct {
+    if t.element.isStruct {
       for m in structs[t.structID].members { n += flatCount(m.type) }
     } else {
       n = t.components
