@@ -98,6 +98,8 @@ public struct ComputeDispatchRequest: Sendable {
   public var storageTable: (address: UInt64, bytes: Int)?
   /// The heap's textures and samplers (table 1 of the resource table), for a shader that samples.
   public var heapTable: (address: UInt64, bytes: Int)?
+  /// The dispatch's place in its submission's chain of steps (StepChain), if it has one.
+  public var chain: StepChain?
 
   public init(shader: ComputeShader, grid: Dim3, fau: [UInt64] = [], buffers: [BufferDescriptor] = [],
               threadStorage: UInt64 = 0, workgroupMemory: UInt64 = 0, limits: ComputeLimits? = nil,
@@ -248,6 +250,7 @@ public enum ComputeDispatch {
     } catch { throw .descriptor(error) }
 
     if r.initialiseQueue { b.initialiseSlotState() }
+    b.startStep(r.chain)
     if r.requestComputeResource { b.requestResources(.compute) }
     b.move64(CSRegisterMap.srt(), srt)
     b.move64(CSRegisterMap.fau(), fauReg)
@@ -282,6 +285,7 @@ public enum ComputeDispatch {
     // The tail (02 section 2.9.1): every slot drained, the caches cleaned for the CPU.
     b.waitAll()
     b.cleanCachesForHost()
+    b.endStep(r.chain)
     let stream: CSStream
     do throws(CSBuildError) { stream = try b.finish() } catch { throw .stream(error) }
 

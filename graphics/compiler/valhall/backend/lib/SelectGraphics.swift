@@ -74,7 +74,7 @@ extension Selector {
     for v in m.outputs where !isVertex && v.builtin < 0 {
       guard v.location >= 0 && v.location < 8 else { throw BackendError.unsupported("a colour output at location \(v.location)") }
     }
-    // The heap handles of the images and samplers the shader names, from word 0 of a fragment shader's block
+    // The heap handles of the images and samplers the shader names (a vertex shader's after its own words), from word 0 of a fragment shader's block
     // (graphics/mali/lib/GraphicsShader.swift), then the dummy sampler a fetch of a plain image names.
     var keys: [UInt64] = []
     var needsDummy = false
@@ -88,7 +88,6 @@ extension Selector {
       }
       for id in f.blocks[b].insts where f.insts[id].op == .tex {
         let t = f.insts[id]
-        if isVertex { throw BackendError.unsupported("a texture access in a vertex shader") }
         for p in t.payload where p != UInt64.max && !keys.contains(p) { keys.append(p) }
         if t.imm & TexFlags.noSampler != 0 { needsDummy = true }
       }

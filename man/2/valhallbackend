@@ -117,7 +117,7 @@ The wide form has no narrow word, so a constant offset, the array index and a fe
 The result block holds the channels the shader reads, in order, 32 bits each, and its register type field (`f`, `u` or `s`) is the texel's kind.
 `skip` is clear, since an implicit level needs the helper lanes' coordinates, and the shader has no `discard` flow, so helper lanes stay alive to its end; OpDemoteToHelperInvocation is a `DISCARD` that flags the lane and goes on.
 The wait before the result's first reader is on the instruction before it.
-A vertex shader may not sample.
+A vertex shader samples the same heap, its bindings' handles in its FAU block after its own words (the viewport's, and those of its built-ins), the driver giving its stage the resource table; it has no derivatives, so an implicit level is the base level (LOD mode none) and a bias is refused.
 
 ## Derivatives and helper invocations
 

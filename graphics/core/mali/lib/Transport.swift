@@ -126,6 +126,8 @@ public protocol MaliTransport: AnyObject {
   /// The frequency of the CPU's architected counter in Hz (CNTFRQ_EL0), which the GPU's timestamp counter runs at; 0 where
   /// it can't be read, and the period is then measured.
   func counterFrequency() -> UInt64
+  /// The CPU's architected counter now (CNTVCT_EL0), which the GPU's timestamps count in; 0 where it can't be read.
+  func counterTicks() -> UInt64
 
   /// The streams, once each wait has reached its value; each signal is raised when the last is done.
   func submit(group: UInt32, jobs: [MaliJob], waits: [(sync: UInt32, value: UInt64)],
@@ -141,4 +143,5 @@ extension MaliTransport {
   }
   public func importBuffer(vmo: UInt32, size: Int) throws(GPUError) -> any MaliBuffer { throw .unsupported("importing memory") }
   public func syncHandle(_ sync: UInt32) -> UInt32? { nil }
+  public func counterTicks() -> UInt64 { 0 }
 }

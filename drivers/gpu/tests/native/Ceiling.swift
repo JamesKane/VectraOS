@@ -184,11 +184,31 @@ enum CeilingCheck {
       print("gpu-test: ceiling: clock \(clock.id) \(clock.name): \(hz) Hz")
       if core == nil && has(Array(clock.name.utf8), Array("core".utf8)) { core = hz }
     }
+    reportPerformance(ns)
     guard let hz = core else {
       print("gpu-test: ceiling: the GPU core clock's rate can't be read through SCMI; gpu.mali.clock_mhz is not reported")
       return
     }
     print("budget name=gpu.mali.clock_mhz value=\(hz / 1_000_000) unit=MHz")
+  }
+
+  /// The GPU's SCMI performance domain (the Sky1's `gpu_core`, domain 0: its DVFS levels): its level as the agent reads it now,
+  /// as `gpu.mali.perf_level` in the platform's units, and its limits where the agent may read them.
+  static func reportPerformance(_ ns: Namespace) {
+    let domain = 0
+    func ask(_ command: String, _ prefix: String) -> String? {
+      guard ns.writeText("/dev/scmi/ctl", command + "\n"), let status = ns.readText("/dev/scmi/status") else { return nil }
+      let want = Array(prefix.utf8)
+      for line in lines(status) where line.starts(with: want) { return String(decoding: line[want.count...], as: UTF8.self) }
+      return nil
+    }
+    let limits = ask("perf \(domain) limits", "perf \(domain) limits ") ?? "refused"
+    guard let level = ask("perf \(domain) level", "perf \(domain) level ") else {
+      print("gpu-test: ceiling: performance domain \(domain): the agent gives no level (limits: \(limits))")
+      return
+    }
+    print("gpu-test: ceiling: performance domain \(domain): level \(level), limits \(limits)")
+    if let v = number(Array(level.utf8), from: 0) { print("budget name=gpu.mali.perf_level value=\(v) unit=level") }
   }
 
   // MARK: the render rig

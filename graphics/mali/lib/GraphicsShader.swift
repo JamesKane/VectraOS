@@ -36,8 +36,8 @@
 // from word 0 of a fragment shader's block: `pushWord` follows them). A sample or a fetch computes both handles as
 // the word plus the array index, and names them in the wide form of the handle source `H` (12b.2.1: word 0 the
 // sampler, word 1 the texture), so the heap may be any size. A fetch of an image with no sampler names the
-// driver's dummy sampler: `dummySamplerWord` holds its handle (12b.2.1: a valid sampler in every stage). Vertex
-// shaders do not sample. Implicit levels run with helper lanes alive: the shaders have no `discard` flow, and a
+// driver's dummy sampler: `dummySamplerWord` holds its handle (12b.2.1: a valid sampler in every stage). A vertex
+// shader samples the same heap, its handles after its own words, an implicit level its base level. Implicit levels run with helper lanes alive: the shaders have no `discard` flow, and a
 // demote is a DISCARD that flags the lane.
 //
 // FAU block (both): a vertex shader's holds the viewport (six words: scale x, offset x, scale y, offset y,
@@ -176,6 +176,41 @@ public struct GraphicsFauLayout: Equatable, Sendable {
       s += 1
     }
     return out
+  }
+}
+
+extension GraphicsFauLayout {
+  /// The block for a draw, stored at `offset` of a block whose bytes are zero there: `block`'s words, with no array made (a pass
+  /// stores one for each stage of each of its draws).
+  public func store(
+    into m: inout MemoryImage, at offset: Int, viewport: ViewportTransform? = nil, push: [UInt32] = [], images: [BindingHandle] = [],
+    dummySampler: UInt32 = 0, blendConstants: [Float] = [], viewportTable: UInt64 = 0
+  ) {
+    func put(_ word: Int, _ v: UInt32) { m.store(v, at: offset + 4 * word) }
+    if viewportWord >= 0, let v = viewport {
+      put(viewportWord, v.scale.x.bitPattern)
+      put(viewportWord + 1, v.offset.x.bitPattern)
+      put(viewportWord + 2, v.scale.y.bitPattern)
+      put(viewportWord + 3, v.offset.y.bitPattern)
+      put(viewportWord + 4, v.scale.z.bitPattern)
+      put(viewportWord + 5, v.offset.z.bitPattern)
+    }
+    if viewportTableWord >= 0 {
+      put(viewportTableWord, UInt32(truncatingIfNeeded: viewportTable))
+      put(viewportTableWord + 1, UInt32(truncatingIfNeeded: viewportTable >> 32))
+    }
+    if blendConstantWord >= 0 {
+      for i in 0..<4 { put(blendConstantWord + i, i < blendConstants.count ? blendConstants[i].bitPattern : 0) }
+    }
+    for b in imageBindings {
+      for g in images where g.set == b.set && g.binding == b.binding { put(b.word, g.handle) }
+    }
+    if dummySamplerWord >= 0 { put(dummySamplerWord, dummySampler) }
+    var i = 0
+    while i < pushWords {
+      put(pushWord + i, i < push.count ? push[i] : 0)
+      i += 1
+    }
   }
 }
 

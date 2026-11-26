@@ -77,13 +77,26 @@ public struct ZSDescriptorState: Equatable, Sendable {
 
 // MARK: The depth and stencil target (08 sections 8.2.1 and 8.5)
 
-/// The depth format of a target: its memory format (8.5.1: D16 1, D32 14) and the tile's internal format (8.2.2: D16 0,
-/// D32 2).
+/// The depth format of a target: its memory format (8.5.1: D16 1, D24X8 4, D32 14) and the tile's internal format (8.2.2: D16 0,
+/// D24 1, D32 2). `d24` is 24-bit depth in the low bits of a 32-bit element, the stencil in a plane of its own.
 public enum DepthFormat: Equatable, Sendable {
   case d16
+  case d24
   case d32f
-  public var writeFormat: UInt32 { self == .d16 ? 1 : 14 }
-  public var internalFormat: UInt32 { self == .d16 ? 0 : 2 }
+  public var writeFormat: UInt32 {
+    switch self {
+    case .d16: 1
+    case .d24: 4
+    case .d32f: 14
+    }
+  }
+  public var internalFormat: UInt32 {
+    switch self {
+    case .d16: 0
+    case .d24: 1
+    case .d32f: 2
+    }
+  }
   public var bytesPerPixel: Int { self == .d16 ? 2 : 4 }
 }
 

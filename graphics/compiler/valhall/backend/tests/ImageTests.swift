@@ -156,8 +156,14 @@ private func lines(_ c: CompiledGraphicsShader) -> [String] {
     #expect(lines(c).contains { $0.hasPrefix("LD_VAR_BUF_IMM") && $0.contains(".v2") })
   }
 
-  @Test func aVertexShaderMaySampleNothing() {
-    // A texture access in a vertex shader is refused by name, not silently dropped.
-    #expect(throws: BackendError.self) { try ValhallBackend.compileGraphics(spirv: try assemble(Corpus.vertexSample)) }
+  @Test func aVertexShaderSamplesTheHeapAtTheLevelItNames() throws {
+    // GL's vertex textures (glmark2's terrain): the same heap as a fragment shader's, its handles in the vertex FAU block after
+    // the viewport's words, and the level explicit (a vertex has no derivatives).
+    let c = try ValhallBackend.compileGraphics(spirv: try assemble(Corpus.vertexSample))
+    let v = try #require(c.vertex)
+    #expect(v.layout.imageBindings.map { $0.binding } == [0, 1])
+    #expect(v.layout.imageBindings.allSatisfy { $0.word >= 6 })
+    let sample = lines(c).filter { $0.hasPrefix("TEX") }
+    #expect(sample.count == 1 && !sample[0].contains("computed"), "\(sample)")
   }
 }

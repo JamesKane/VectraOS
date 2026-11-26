@@ -2,7 +2,8 @@
 
 // The Mali backend's indexed and indirect work and its queries over the fake transport (D174 section 5): the words the
 // streams are made of. The registers a draw's run reads are followed through the stream as the GPU would load them, so
-// each check says what the hardware is given, in the staging registers' own numbers (valhall 01 section 1.9.3).
+// each check says what the hardware is given, in the staging registers' own numbers (valhall 01 section 1.9.3). A device's
+// first submit starts the group's three queues first, so its first step's streams are streams 3 and 4.
 
 import Foundation
 import GPUCore
@@ -78,7 +79,7 @@ func indexedPipeline(_ gpu: MaliDevice) throws -> GPUPipeline { try trianglePipe
       r.drawIndexed(pipeline, root: 0x1000, indices: indices, indexType: .uint32, count: 6)
     }
     try gpu.graphicsQueue.submit(list, wait: 0, signal: 1)
-    let first = runs(t.streams[0]).prefix(2)
+    let first = runs(t.streams[3]).prefix(2)
     #expect(first.count == 2)
     let a = first[first.startIndex], b = first[first.startIndex + 1]
     // Counts, first index, base vertex (signed), the data's address, the bytes from it, and the index type in TILER_FLAGS.
@@ -100,7 +101,7 @@ func indexedPipeline(_ gpu: MaliDevice) throws -> GPUPipeline { try trianglePipe
       r.draw(pipeline, root: 0x1000, vertices: 6, instances: 1, firstVertex: 2, firstInstance: 5)
     }
     try gpu.graphicsQueue.submit(list, wait: 0, signal: 1)
-    let run = runs(t.streams[0])[0]
+    let run = runs(t.streams[3])[0]
     #expect(run.registers[33] == 6 && run.registers[36] == 2 && run.registers[37] == 5)
     #expect(run.registers[56] >> 8 & 7 == 0)
   }
@@ -118,7 +119,7 @@ func indexedPipeline(_ gpu: MaliDevice) throws -> GPUPipeline { try trianglePipe
                             offset: 256, drawCount: 1)
     }
     try gpu.graphicsQueue.submit(list, wait: 0, signal: 1)
-    let all = runs(t.streams[0])
+    let all = runs(t.streams[3])
     #expect(all.count == 3)
     // One load of the four words into registers 33, 34, 36 and 37 for each of the two draws, from where each is.
     #expect(all[0].loads.count == 1 && all[0].loads[0].base == 33 && all[0].loads[0].mask == 0b11011)
@@ -130,7 +131,7 @@ func indexedPipeline(_ gpu: MaliDevice) throws -> GPUPipeline { try trianglePipe
     #expect(all.allSatisfy { $0.waitedForLoads }, "the run waits for the load/store slot")
     // Each draw's run is guarded (06 section 6.4.7): BRANCH (22) when register 33 is zero over the next two instructions
     // and when register 34 is zero over the next one, which is the run.
-    let words = t.streams[0]
+    let words = t.streams[3]
     var guards = 0
     for (i, w) in words.enumerated() where w >> 56 == 22 {
       guards += 1
@@ -149,7 +150,7 @@ func indexedPipeline(_ gpu: MaliDevice) throws -> GPUPipeline { try trianglePipe
     var list = GPUCommandList()
     list.dispatchIndirect(fill, root: 0x2000, arguments: args, offset: 12)
     try gpu.graphicsQueue.submit(list, wait: 0, signal: 1)
-    let stream = t.streams[0]
+    let stream = t.streams[3]
     // LOAD_MULTIPLE (20) into JOB_SIZE_X/Y/Z (37 to 39) of three words, RUN_COMPUTE (4) and never RUN_COMPUTE_INDIRECT (44).
     #expect(stream.contains { $0 >> 56 == 20 && $0 >> 48 & 0xFF == 37 && $0 >> 16 & 0xFFFF == 7 })
     #expect(stream.contains { $0 >> 56 == 21 && $0 >> 48 & 0xFF == 37 && $0 >> 16 & 0xFFFF == 7 }, "into the FAU block too")
@@ -172,7 +173,7 @@ func indexedPipeline(_ gpu: MaliDevice) throws -> GPUPipeline { try trianglePipe
     var list = GPUCommandList()
     list.dispatch(fill, root: 0x2000, x: 5, y: 3, z: 2)
     try gpu.graphicsQueue.submit(list, wait: 0, signal: 1)
-    #expect(!t.streams[0].contains { $0 >> 56 == 20 })
+    #expect(!t.streams[3].contains { $0 >> 56 == 20 })
   }
 
   @Test func anOcclusionQueryIsTheDrawsCounterAndStartsAtZero() throws {
@@ -190,7 +191,7 @@ func indexedPipeline(_ gpu: MaliDevice) throws -> GPUPipeline { try trianglePipe
       r.draw(pipeline, root: 0x1000, vertices: 3)
     }
     try gpu.graphicsQueue.submit(list, wait: 0, signal: 1)
-    let all = runs(t.streams[0])
+    let all = runs(t.streams[3])
     let address = gpu.queries[set.handle]!.region.address + 16
     #expect(all.count == 4)
     // The counter's address is in OQ (register 64) and draw flags 0 `[15:14]` is 3 (counter) for the two draws inside.
@@ -198,12 +199,12 @@ func indexedPipeline(_ gpu: MaliDevice) throws -> GPUPipeline { try trianglePipe
     #expect(all.map { $0.registers[57] >> 14 & 3 } == [0, 3, 3, 0])
     // The fragment queue zeroes the report with a store before its fragment work (06 section 6.11.1): MOVE48 of the
     // report's address, STORE_MULTIPLE (21) of two zeroed registers, and a clean flush, all before RUN_FRAGMENT (7).
-    let fragment = t.streams[1]
+    let fragment = t.streams[4]
     let store = fragment.firstIndex { $0 >> 56 == 21 }
     let run = fragment.firstIndex { $0 >> 56 == 7 }
     #expect(store != nil && run != nil && store! < run!)
     #expect(fragment.contains { $0 >> 56 == 1 && $0 & 0xFFFF_FFFF_FFFF == address })
-    #expect(!t.streams[0].contains { $0 >> 56 == 21 }, "not on the tiling queue")
+    #expect(!t.streams[3].contains { $0 >> 56 == 21 }, "not on the tiling queue")
     #expect(t.cacheableBound.contains(gpu.queries[set.handle]!.region.address), "the counters live in the GPU's caches")
     // The CPU doesn't write it: the other three queries are untouched.
     #expect(try gpu.results(set, first: 0, count: 4) == [0, 0, 0, 0])
@@ -346,9 +347,13 @@ func indexedPipeline(_ gpu: MaliDevice) throws -> GPUPipeline { try trianglePipe
       r.draw(pipeline, root: 0x1000, vertices: 3)
     }
     try gpu.graphicsQueue.submit(cleared, wait: 2, signal: 3)
+    // The last pass's own block (the submissions' memory is the arena's, which holds earlier passes' blocks too).
+    let pass = try #require(gpu.probeLastPass)
     var modes: [UInt32] = []
-    for (_, words) in zip(t.boundAtSubmit, t.memory.suffix(t.boundAtSubmit.count)) {
-      for i in 0..<(words.count - 32) where words[i + 8] == 63 | 63 << 16 && words[i + 11] >> 24 != 0 {
+    for (b, words) in zip(t.boundAtSubmit, t.memory.suffix(t.boundAtSubmit.count))
+    where b.address <= pass.block && pass.block < b.address + UInt64(b.size) {
+      let first = Int(pass.block - b.address) / 4
+      for i in first..<min(first + pass.bytes / 4, words.count - 32) where words[i + 8] == 63 | 63 << 16 && words[i + 11] >> 24 != 0 {
         modes.append(words[i] | (words[i + 6] != 0 || words[i + 7] != 0 ? 0x100 : 0))
       }
     }

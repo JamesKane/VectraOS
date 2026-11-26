@@ -47,10 +47,8 @@ private func unsupported(_ body: () throws -> Void) -> Bool {
         #expect(caps.sampled && caps.renderTarget && caps.blendable && !caps.storage && !caps.depthTarget, "\(format)")
       case .r8:
         #expect(caps.sampled && !caps.renderTarget && caps.storage && !caps.storageAtomic, "\(format)")
-      case .depth16, .depth32f, .stencil8:
+      case .depth16, .depth32f, .stencil8, .depth24stencil8, .depth32fstencil8:
         #expect(caps.sampled && caps.depthTarget && !caps.renderTarget && !caps.storage, "\(format)")
-      case .depth24stencil8, .depth32fstencil8:
-        #expect(caps.sampled && !caps.depthTarget && !caps.renderTarget && !caps.storage, "\(format)")
       case .r32uint, .r32sint:
         #expect(caps.storage && caps.storageAtomic && caps.sampled && !caps.filterable && !caps.renderTarget, "\(format)")
       case .r8uint, .r8sint, .r16uint, .r16sint:
@@ -69,7 +67,8 @@ private func unsupported(_ body: () throws -> Void) -> Bool {
       unsupported { _ = try gpu.makeImage(ImageDescriptor(format: format, width: 8, height: 8, depth: depth, mipLevels: mips, layers: layers,
                                                            samples: samples, dimension: dimension, usage: usage)) }
     }
-    #expect(image(.depth24stencil8, usage: .depthStencilTarget))
+    #expect(!image(.depth24stencil8, usage: .depthStencilTarget))
+    #expect(!image(.depth32fstencil8, usage: .depthStencilTarget | .sampled))
     #expect(!image(.depth32f, usage: .depthStencilTarget))
     #expect(!image(.depth32f, usage: .depthStencilTarget | .sampled | .copyDestination))
     #expect(!image(.depth16, usage: .depthStencilTarget))
@@ -132,7 +131,8 @@ private func unsupported(_ body: () throws -> Void) -> Bool {
           multisample: multisample, attachmentBlends: blends, dynamic: dynamic))
       }
     }
-    #expect(pipeline(depth: .depth24stencil8))
+    #expect(!pipeline(depth: .depth24stencil8))
+    #expect(!pipeline(depth: .depth32fstencil8))
     #expect(pipeline(raster: RasterizationState(polygonMode: .line)))
     #expect(!pipeline(multisample: MultisampleState(samples: 4)))
     #expect(pipeline([.rgba16float]))

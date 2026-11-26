@@ -53,3 +53,47 @@ D4), and GL on our Vulkan layer, as Zink is on Vulkan (above).
 - `vx` builds glmark2 for tier 1, and the board's images carry it with its
   data.
 - GLES 3.x, desktop GL and GLX are not promised.
+
+## The Mali backend for GL, as built (2026-11-26)
+
+What a GL frame costs on the Orange Pi 6 Plus, loinnir-test's frame budgets
+(CoreFrames.swift: the median of 41 round trips at 800x600, from `submit`
+to the waiting thread running again), before and after:
+
+| budget | before | after |
+|---|---|---|
+| `gpu.mali.frame_empty_us` | 9 | 9 |
+| `gpu.mali.frame_clear_draw_us` (clear, one draw over the target) | 295 | 158 |
+| `gpu.mali.frame_100_draws_us` | refused (16 a pass) | 559 |
+| `gpu.mali.frame_two_passes_us` | 579 | 277 |
+| `gpu.mali.frame_small_pass_us` (64x64) | - | 102 |
+
+- **One submit a list, the steps chained on the GPU.** A list's passes,
+  dispatches, transfers and timestamps are streams on three queues of one
+  group (tiler, fragment, compute), each step waiting (SYNC_WAIT64) for a
+  sync object of the device's that every step adds one to; a stream on the
+  queue the last step ended on doesn't wait. The group's queues are started
+  together (slot state and resources) before any stream waits: a queue that
+  asked for its resources while another waited on the chain hung the group
+  (vulkan-test, whose first pass follows a transfer; loinnir-test probes it).
+- **No buffers a frame.** What a submission lays out comes from 4 MiB
+  chunks bound once and reused by timeline value; one thread storage and one
+  workgroup memory for every step; the heap copied again only after a
+  write. Before, each pass made and bound a buffer (73 us of layout of 108).
+- **Passes of any number of draws**; `depth24stencil8` (D24X8 and S8) and
+  `depth32fstencil8` attachments; vertex shaders sample (glmark2's terrain).
+- **Where the 158 us of a frame go:** the CPU's submit 47 us (planning 3,
+  layout 17, the driver's submit 23, of which the service's part is 9 us at
+  the median); the GPU starts 16 us after the submit returns and takes 121
+  us (64 us of it a 64x64 pass's fixed cost: two waits between queues, the
+  tiler's and the fragment's, the jobs' cache maintenance); the waiting
+  thread runs 25 us after the GPU's end. Two timestamps on one queue with
+  nothing between them take the GPU 16 us.
+- **The GPU's clock:** SCMI performance domain 0 reads level 1000 (its top,
+  1000 MHz) with nothing asking for another; the agent refuses its limits.
+- **Open:** a draw costs the CPU about 4 us (0.9 in the plan, the rest the
+  pass recipe), so 100 draws take 440 us of a 559 us frame; windowed
+  presentation is FIFO (Radharc takes the oldest present a vblank and a
+  window waits for its credit), so swap interval 0 has no path yet;
+  `gl_PointSize` is accepted and not stored; 16-bit colour targets
+  (rgb565, rgba4, rgb5a1) are not core formats.

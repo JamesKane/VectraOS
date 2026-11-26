@@ -195,6 +195,9 @@ public struct DrawPassRequest: Sendable {
   /// For a probe of the hardware (06 section 6.11.1's next experiment): where the fragment queue, after its clean flush,
   /// loads the first report through the GPU and stores the two 32-bit words it read (the report) at this address, to tell a lost update from a missing flush.
   public var queryReadback: UInt64?
+  /// The pass's place in its submission's chain of steps (StepChain): both streams wait for the step before, and the fragment
+  /// stream adds its one when the pass is done.
+  public var chain: StepChain?
   /// The depth and stencil target; nil for a pass with none (PipelineState.swift).
   public var zs: ZSTarget?
   /// The colour targets after the first (08 section 8.4); with any, a pass can't keep its target's contents.
@@ -273,7 +276,7 @@ extension RenderPass {
     at base: UInt64, capacity: Int, request r: DrawPassRequest, registers: CSRegisterMap, scoreboards: CSScoreboards, arch: Int = 12
   ) throws(RenderError) -> (image: RenderPassImage, records: [DrawRecords], resourceTable: UInt64) {
     guard arch >= 12, arch <= 13 else { throw .arch(arch) }
-    guard !r.draws.isEmpty, r.draws.count <= 16, r.clear.count == 4, r.width >= 1, r.height >= 1, r.width <= 4096,
+    guard !r.draws.isEmpty, r.clear.count == 4, r.width >= 1, r.height >= 1, r.width <= 4096,
       r.height <= 4096, r.layers >= 1, r.layers <= 256
     else { throw .badRequest }
     guard base & 63 == 0 else { throw .descriptor(.misaligned) }
@@ -353,7 +356,9 @@ extension RenderPass {
       if d.fragmentShader.writesStencil && z?.stencilTest == true { z!.stencilFromShader = true }
       return z
     }
-    for d in r.draws { drawZSDAt.append(zsState(d) != nil ? place(DepthStencilDescriptor.size, DepthStencilDescriptor.alignment) : -1) }
+    // Each draw's state, made once (a pass may have hundreds of draws).
+    let zsStates = r.draws.map { zsState($0) }
+    for z in zsStates { drawZSDAt.append(z != nil ? place(DepthStencilDescriptor.size, DepthStencilDescriptor.alignment) : -1) }
     let samplesAt = place(SamplePatterns.tableBytes, 64)
     let tableAt = r.heapAddress == nil && r.storageAddress == nil ? -1 : place(DescriptorHeap.tableEntries * ResourceTable.entrySize, ResourceTable.alignment)
     var shaders: [(code: [UInt64], spd: Int, at: Int)] = []
@@ -577,6 +582,8 @@ extension RenderPass {
         s.blend = try BlendDescriptor.register(address: va(blendAt[n]), count: targetCount)
         s.tilerContext = va(tilerAt)
         s.fragmentSRT = resourcePointer
+        // A vertex shader that samples reads the same resource table (the heap as table 1).
+        if !d.vertexShader.layout.imageBindings.isEmpty || d.vertexShader.layout.dummySamplerWord >= 0 { s.vertexSRT = resourcePointer }
         s.vertexSPD = va(shaders[vslot[n]].spd)
         s.fragmentSPD = va(shaders[fslot[n]].spd)
         s.vertexTSD = va(tsdAt)
@@ -610,7 +617,7 @@ extension RenderPass {
         } else if d.vertexShader.storesViewportIndex && d.state.scissorProbe == 7 {
           // The first scissor's box itself (the probe makes its maximum y 256 or more: read as an array, a length byte of 1 or more).
         }
-        s.depthStencil = va(zsState(d) != nil ? drawZSDAt[n] : zsdAt)
+        s.depthStencil = va(zsStates[n] != nil ? drawZSDAt[n] : zsdAt)
         s.tilerFlags = PrimitiveFlags(
           mode: d.state.mode, indexType: d.indices?.size.rawValue ?? 0, lowDepthCull: d.state.depthStencil?.depthClip ?? true,
           highDepthCull: d.state.depthStencil?.depthClip ?? true, primitiveRestart: d.state.primitiveRestart,
@@ -634,7 +641,7 @@ extension RenderPass {
         flags.cullBack = triangles && d.state.cullBack
         if r.zs != nil {
           // 6.10.2: early or late, from the shader and the state.
-          let zsd = zsState(d)
+          let zsd = zsStates[n]
           var storage = false
           for b in d.fragmentShader.layout.imageBindings where b.binding == 2 { storage = true }
           let ops = PixelOperations.derive(
@@ -680,11 +687,12 @@ extension RenderPass {
     let fragmentSlot = r.layout == .singleQueue ? singleFragmentSlot : tilingSlot
     let fragmentMask = UInt16(1) << UInt16(fragmentSlot)
 
-    func prologue(_ b: inout CSBuilder, resources: CSResources) {
+    func prologue(_ b: inout CSBuilder, resources: CSResources, fragment: Bool = false) {
       if r.initialiseQueues {
         b.initialiseSlotState()
         b.requestResources(resources)
       }
+      if !fragment || r.chain?.fragmentWaits != false { b.startStep(r.chain) }
       b.move64(heapContextRegister, r.heapContext)
       b.emit(CSInstruction.heapSet(addressPair: heapContextRegister))
     }
@@ -789,6 +797,7 @@ extension RenderPass {
       fragment(&b0)
       tail(&b0)
       readbackReport(&b0)
+      b0.endStep(r.chain)
       let s0: CSStream
       do throws(CSBuildError) { s0 = try b0.finish() } catch { throw .stream(error) }
       streams = [s0]
@@ -805,7 +814,7 @@ extension RenderPass {
       let stream1At = alignUp(stream0At + s0.size, 64)
       var b1 = CSBuilder(address: va(stream1At), capacityBytes: max(capacity - stream1At, 0), registers: registers,
                          scoreboards: scoreboards)
-      prologue(&b1, resources: .fragment)
+      prologue(&b1, resources: .fragment, fragment: true)
       b1.move64(syncAddressRegister, syncVA)
       b1.move64(syncValueRegister, 1)
       zeroReports(&b1)
@@ -813,6 +822,7 @@ extension RenderPass {
       fragment(&b1)
       tail(&b1)
       readbackReport(&b1)
+      b1.endStep(r.chain)
       let s1: CSStream
       do throws(CSBuildError) { s1 = try b1.finish() } catch { throw .stream(error) }
       streams = [s0, s1]
@@ -869,7 +879,7 @@ extension RenderPass {
         m.store(words: try resolve.words(), at: rtAt + g + 64 * (targetCount + k))
       }
       }
-      for (n, d) in r.draws.enumerated() { if let z = zsState(d) { m.store(words: z.words, at: drawZSDAt[n]) } }
+      for n in r.draws.indices { if let z = zsStates[n] { m.store(words: z.words, at: drawZSDAt[n]) } }
       if tableAt >= 0 {
         m.store(
           bytes: try DescriptorHeap.resourceTable(
@@ -901,8 +911,10 @@ extension RenderPass {
       let fs = d.fragmentShader
       let vp = d.state.viewport ?? DrawViewport(x: 0, y: 0, width: Float(r.width), height: Float(r.height))
       let viewport = ViewportTransform(x: vp.x, y: vp.y, width: vp.width, height: vp.height, minDepth: vp.minDepth, maxDepth: vp.maxDepth)
-      let vblock = vs.layout.block(viewport: viewport, push: d.push, viewportTable: viewportsAt[n] >= 0 ? va(viewportsAt[n]) : 0)
-      for (i, w) in vblock.enumerated() { m.store(w, at: vfauAt[n] + 8 * i) }
+      // The blocks are stored in place (the vertex shader's nonPerspective, base vertex and base instance words are zero, as
+      // `block` leaves them for a draw that gives none).
+      vs.layout.store(into: &m, at: vfauAt[n], viewport: viewport, push: d.push, images: d.images, dummySampler: d.dummySampler,
+                      viewportTable: viewportsAt[n] >= 0 ? va(viewportsAt[n]) : 0)
       if viewportsAt[n] >= 0 {
         var transforms: [ViewportTransform] = []
         for k in 0..<max(d.state.viewports.count, 1) {
@@ -912,9 +924,8 @@ extension RenderPass {
         m.store(words: ViewportTable.words(transforms), at: viewportsAt[n])
       }
       if scissorsAt[n] >= 0 { m.store(words: ScissorArray(state: d.state, width: r.width, height: r.height).words(stride: d.state.scissorProbe == 3 ? 16 : 8), at: scissorsAt[n]) }
-      let handles = d.images.map { (set: $0.set, binding: $0.binding, handle: $0.handle) }
-      let fblock = fs.layout.block(push: d.push, images: handles, dummySampler: d.dummySampler, blendConstants: d.blendConstants)
-      for (i, w) in fblock.enumerated() { m.store(w, at: ffauAt[n] + 8 * i) }
+      fs.layout.store(into: &m, at: ffauAt[n], push: d.push, images: d.images, dummySampler: d.dummySampler,
+                      blendConstants: d.blendConstants)
       func withShader(_ b: BlendDescriptor, _ target: Int) -> [UInt32] {
         var b = b
         if b.mode == .shader, let p = blendCodeAt[n][target] { b.shaderAddress = UInt32(truncatingIfNeeded: va(p)) }
@@ -930,20 +941,25 @@ extension RenderPass {
     }
     for (n, s) in shaders.enumerated() {
       // Each shader's program descriptor: the stage of the draws that use it.
+      // (The last draw that uses it says, as each draw of a shader has the same; found from the end, not by a walk of every draw.)
       var stage = ShaderProgramDescriptor.Stage.vertex
       var cls = RegisterClass.r64
       var preload: UInt16 = 0
-      for (k, d) in r.draws.enumerated() {
-        if vslot[k] == n {
-          stage = .vertex
-          cls = d.vertexShader.registerClass
-          preload = d.vertexShader.preloadMask
-        }
+      var k = r.draws.count - 1
+      while k >= 0 {
         if fslot[k] == n {
           stage = .fragment
-          cls = d.fragmentShader.registerClass
-          preload = d.fragmentShader.preloadMask
+          cls = r.draws[k].fragmentShader.registerClass
+          preload = r.draws[k].fragmentShader.preloadMask
+          break
         }
+        if vslot[k] == n {
+          stage = .vertex
+          cls = r.draws[k].vertexShader.registerClass
+          preload = r.draws[k].vertexShader.preloadMask
+          break
+        }
+        k -= 1
       }
       let spd = ShaderProgramDescriptor(
         stage: stage, registerClass: cls, preloadMask: preload, binary: va(s.at), coverageBitmaskType: stage == .fragment ? 1 : 0)
