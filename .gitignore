@@ -5,6 +5,12 @@ __pycache__/
 bench/out/
 .build/
 bench/history/*.local.tsv
-.claude/
+# .claude/ holds agent worktrees and local settings; the project's skills,
+# agents and hooks are tracked.
+.claude/*
+!.claude/skills/
+!.claude/agents/
+!.claude/hooks/
+!.claude/settings.json
 .swiftpm/
 Package.resolved
