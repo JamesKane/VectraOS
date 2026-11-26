@@ -195,6 +195,8 @@ final class FrameBudgets {
       list.render(pass(small)) { l in l.draw(pipeline, root: quads.address, vertices: 6) }
       _ = try measure("a 64 x 64 pass", "gpu.mali.frame_small_pass_us", list)
       try place("a 64 x 64 pass") { l in l.render(pass(small)) { r in r.draw(pipeline, root: quads.address, vertices: 6) } }
+      // Two timestamps with nothing between, on the one queue: what the placing costs by itself.
+      try place("nothing") { _ in }
     }
     // A device whose first work is a transfer on the compute queue, and whose first pass then waits for it: the queues'
     // first streams (the Vulkan layer's order, a staging copy before the first pass).
