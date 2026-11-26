@@ -38,6 +38,8 @@ struct Ref {
   var swizzle: [Int]?
   /// The type the steps reach (the vector a swizzle takes from).
   var type: GType
+  /// A uniform's name, for its samplers' bindings when it is a structure in the block that holds some.
+  var uniform: String? = nil
 }
 
 /// What the link decided that a stage's code needs.
@@ -286,7 +288,9 @@ struct CodeGen {
     let p = place(v)
     switch p {
     case .memory(let ptr, let sc, let laid, let prefix):
-      return Ref(root: .memory(ptr, sc, laid: laid), rootType: t, steps: prefix, swizzle: nil, type: t)
+      var r = Ref(root: .memory(ptr, sc, laid: laid), rootType: t, steps: prefix, swizzle: nil, type: t)
+      if laid { r.uniform = prog.variables[v].name }
+      return r
     case .value(let x):
       return Ref(root: .value(x), rootType: t, steps: [], swizzle: nil, type: t)
     case .alias(let r):
@@ -303,7 +307,7 @@ struct CodeGen {
     var p: Place
     switch x.storage {
     case .uniform:
-      if prog.hasSampler(x.type) {
+      if prog.hasSampler(x.type) && std140(x.type).size == 0 {
         p = .sampler(x.name)
       } else if let i = layout.blockMembers.firstIndex(where: { $0.name == x.name }) {
         p = .memory(blockVariable(), StorageClass.uniform, laid: true, prefix: [.member(i + 7)])
@@ -402,6 +406,7 @@ struct CodeGen {
 
   mutating func load(_ r: Ref, relaxed: Bool = false) -> UInt32 {
     var v: UInt32
+    if r.type.isSampler, case .memory = r.root { return samplerValue(r) }
     switch r.root {
     case .memory:
       let (p, laid, _) = pointerTo(r)
@@ -534,10 +539,19 @@ struct CodeGen {
 
   /// The leaf name of a sampler reference (`s`, `a[2]`, `st.tex`), its indices constant.
   func samplerName(_ r: Ref) -> String? {
-    guard case .sampler(let base) = r.root else { return nil }
-    var name = base
+    var name: String
+    var steps = r.steps[...]
+    switch r.root {
+    case .sampler(let base): name = base
+    case .memory:
+      // A sampler in a structure in the block: the steps after the block's member.
+      guard let u = r.uniform else { return nil }
+      name = u
+      steps = steps.dropFirst()
+    default: return nil
+    }
     var t = r.rootType
-    for s in r.steps {
+    for s in steps {
       switch s {
       case .member(let i):
         let m = prog.structs[t.structID].members[i]
