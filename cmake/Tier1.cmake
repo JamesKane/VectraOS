@@ -340,6 +340,40 @@ function(croi_tier1 bootfs_var depends_var)
                        USES VulkanCoreDriver VenusClient GPUCore GPUCoreVulkan GPUCoreMali Vulkan GPUClient GPUDevice Node Sys VX
                        INCLUDES ${_gpu_c_includes} system/trace/c/include)
   endif()
+  # OpenGL ES 2.0 and EGL (D183; gles(3), egl(3)): GLES (graphics/gles: the state machine, its native platform, and
+  # eglGetProcAddress's table in C) as libGLES.so, and the C names programs link or dlopen as libGLESv2.so and libEGL.so
+  # (c/libGLESv2.c, c/libEGL.c: each name calls libGLES.so's), so every name a program opens reaches the one library.
+  # The GLSL front end (graphics/glsl) is in it where it is built.
+  file(GLOB _gles_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/graphics/gles/lib/*.swift
+       ${PROJECT_SOURCE_DIR}/graphics/gles/lib/generated/*.swift ${PROJECT_SOURCE_DIR}/graphics/gles/native/*.swift)
+  file(GLOB _glsl_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/graphics/glsl/lib/*.swift)
+  set(_gles_uses GPUCore VulkanLowering ShaderCompiler GPUCoreMali MaliCore ValhallBackend ValhallISA GPUCoreVulkan Vulkan
+                 VulkanLoader VenusClient VenusDriver Venus GPUClient GPUDevice VX Plumber Radharc Kbdfs UICore AccessTree Themes
+                 NdbFile TextLayout PixelKernels Light GlyphAtlas MSDF Raster Shape OpenType TDUnicode IPC Node Ring Sys Trace)
+  if(_glsl_t1)
+    croi_tier1_library(GLSL SOURCES ${_glsl_t1})
+    list(APPEND _gles_uses GLSL)
+  endif()
+  croi_tier1_library(GLES SOURCES ${_gles_t1} CSOURCES graphics/gles/c/procs.c USES ${_gles_uses}
+                     INCLUDES ${_gpu_c_includes} system/trace/c/include)
+  set(_gles_include ${PROJECT_SOURCE_DIR}/graphics/gles/include)
+  foreach(_shim GLESv2 EGL)
+    add_custom_command(OUTPUT ${_lib}/lib${_shim}.so
+      COMMAND ${_clang} -fPIC -ffunction-sections -I${_gles_include} -c ${PROJECT_SOURCE_DIR}/graphics/gles/c/lib${_shim}.c
+              -o ${_lib}/${_shim}-shim.o
+      COMMAND ${VX} library-note ${_lib}/${_shim}-shim-libraries.c ${_lib}/libGLES.so
+      COMMAND ${_clang} -c ${_lib}/${_shim}-shim-libraries.c -o ${_lib}/${_shim}-shim-libraries.o
+      COMMAND ${_toolchain_bin}/ld.lld -shared -soname lib${_shim}.so --build-id=sha1 -z max-page-size=0x1000
+              -z separate-loadable-segments -z noexecstack -z now -z text ${_lib}/${_shim}-shim.o
+              ${_lib}/${_shim}-shim-libraries.o ${_lib}/libGLES.so -o ${_lib}/lib${_shim}.so
+      DEPENDS ${_lib}/libGLES.so vx ${PROJECT_SOURCE_DIR}/graphics/gles/c/lib${_shim}.c
+      COMMENT "lib${_shim}.so for tier 1: GL's C names over libGLES.so")
+  endforeach()
+  set(_gles_so GLES GLESv2 EGL ${_gles_uses})
+  list(TRANSFORM _gles_so PREPEND ${_lib}/lib)
+  list(TRANSFORM _gles_so APPEND .so)
+  # Each shim under the versioned names programs also open it by.
+  set_property(GLOBAL APPEND PROPERTY CROI_TIER1_SHARED lib/libGLESv2.so.2=${_lib}/libGLESv2.so lib/libEGL.so.1=${_lib}/libEGL.so)
   set(_gpu_libs VulkanLowering GPUCoreMali ValhallBackend MaliCore ValhallISA ShaderCompiler GPUCoreVulkan GPUCore
                 VulkanDriversNative VenusClient VenusDriver Venus Vulkan VulkanLoader GPUClient GPUDevice)
   set(_t1_libs SysABI Loader Ring Sys TraceFormat Trace IPCWire IPC Node Directives Codecs Launch Fs Settings FDIO)
