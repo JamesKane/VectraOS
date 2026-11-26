@@ -99,6 +99,11 @@ final class ImageRecord {
   var planes: [AspectPlane] = []
   /// Where `planeAt` is: the image's own region, or (a sparse image, whose region has no pages of its own) a region of its own.
   var planeRegion: Region?
+  /// A colour target's CRC table (valhall 08 section 8.6: transaction elimination), its row stride, and the counter that a write of
+  /// the image by anything but a pass that checks the table changes, so no checksum stored before matches.
+  var crc: (region: Region, rowStride: Int)?
+  var crcCounter: UInt16 = 1
+  func invalidateCRC() { if crc != nil { crcCounter &+= 1 } }
   init(region: Region, descriptor: ImageDescriptor, rowStride: Int, layout: ImageLayout, planeAt: Int?) {
     self.region = region
     self.descriptor = descriptor
@@ -362,6 +367,10 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   }
   /// Where the last submission spent the CPU's time (`submit`, to its return): what a benchmark reads to say where a frame goes.
   public internal(set) var lastProfile = SubmitProfile()
+  /// Whether images that qualify are AFBC (`afbcEligible`): on by default; off, every image is linear (a probe, a fallback).
+  public var afbc = true
+  /// Whether colour targets made from now on have CRC tables (transaction elimination): on by default.
+  public var crcTables = true
   /// Whether `lastProfile`'s times are taken (a benchmark's): off, the clock is not read and the times stay 0.
   public var profiling = false
   /// The clock for `lastProfile`, read only while `profiling`.
@@ -674,7 +683,7 @@ public final class MaliDevice: GPUDevice, GPUQueue {
 
   public func destroy(_ image: GPUImage) {
     guard let record = images.remove(image.handle) else { return }
-    retire([record.region] + (record.planeRegion.map { [$0] } ?? []))
+    retire([record.region] + (record.planeRegion.map { [$0] } ?? []) + (record.crc.map { [$0.region] } ?? []))
   }
 
   // MARK: The heap (MaliCore's textures land here)

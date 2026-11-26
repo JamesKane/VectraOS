@@ -178,8 +178,13 @@ public struct RenderTargetDescriptor: Equatable, Sendable {
   /// How the tile's samples reach memory (8.3.2): 0 sample 0, 1 the average, 3 every sample to its surface (`surfaceStride` apart).
   public var msaa: UInt32 = 0
   /// The block format (8.4.3): 2 linear, 8 the 64 KiB interleaved layout (05 section 5.7; the row stride is then the bytes of a row
-  /// of tiles).
+  /// of tiles), 12 AFBC with linear headers (the address the header area's, the row stride the header row stride, and
+  /// `surfaceStride` the body's offset from the header, 8.4.4).
   public var blockFormat: UInt32 = 2
+  /// AFBC (8.4.6): the compression mode, the colour transform, and reverse issue order (a superblock larger than the tile, 8.9.2).
+  public var afbcMode: UInt32 = 10
+  public var afbcYTR = false
+  public var reverseIssueOrder = false
 
   public init(format: ColourFormat, internalBufferOffset: Int = 0, address: UInt64, rowStride: Int, surfaceStride: Int,
               clearWord: UInt32, cleanTileWrite: Bool = true, dithering: Bool = true) {
@@ -208,14 +213,73 @@ public struct RenderTargetDescriptor: Equatable, Sendable {
     guard address & 63 == 0 else { throw .misaligned }
     var w = [UInt32](repeating: 0, count: 16)
     w[0] = UInt32(internalBufferOffset >> 4) << 4 | ColourFormat.internalFormat << 26
-    guard msaa == 0 || msaa == 1 || msaa == 3, blockFormat == 2 || blockFormat == 8 else { throw .outOfRange }
+    guard msaa == 0 || msaa == 1 || msaa == 3, blockFormat == 2 || blockFormat == 8 || (blockFormat == 12 && msaa == 0) else {
+      throw .outOfRange
+    }
     w[1] = 1 | ColourFormat.writebackFormat << 3 | blockFormat << 8 | msaa << 12 | (dithering ? 1 << 15 : 0) | format.swizzle << 16
       | (cleanTileWrite ? 1 << 31 : 0)
     w[8] = UInt32(truncatingIfNeeded: address)
     w[9] = UInt32(truncatingIfNeeded: address >> 32)
     w[10] = UInt32(rowStride) | UInt32(truncatingIfNeeded: UInt64(surfaceStride) >> 32) << 27
     w[11] = UInt32(truncatingIfNeeded: surfaceStride)
+    if blockFormat == 12 {
+      // The AFBC RGB variant (8.4.4, 8.4.6): word 2 the transform `[0]`, reverse issue order `[3]` and the mode `[15:10]`; word 10
+      // the header row stride, word 11 the body offset.
+      w[2] = (afbcYTR ? 1 : 0) | (reverseIssueOrder ? 1 << 3 : 0) | (afbcMode & 0x3F) << 10
+      w[10] = UInt32(rowStride)
+      w[11] = UInt32(truncatingIfNeeded: surfaceStride)
+    }
     for i in 0..<4 { w[12 + i] = clear[i] }
+    return w
+  }
+}
+
+// MARK: Transaction elimination (08 section 8.6)
+
+/// A render target's CRC table (8.6.1, arch 12: a prefetch region of 64 pixels): an 8-byte checksum a 16 x 16 tile, in rows of
+/// `rowStride` bytes; the CRC record of the depth/stencil/CRC extension names it (8.5.1).
+public struct CRCTable: Equatable, Sendable {
+  public var address: UInt64
+  public var rowStride: Int
+  /// The checksums' initialisation, which the driver changes to invalidate every checksum stored (8.6.3: the clear word's `[15:0]`).
+  public var counter: UInt16
+
+  public init(address: UInt64, rowStride: Int, counter: UInt16) {
+    self.address = address
+    self.rowStride = rowStride
+    self.counter = counter
+  }
+
+  /// The table's row stride and bytes for a level 0 of `width` by `height` (8.6.1).
+  public static func size(width: Int, height: Int) -> (rowStride: Int, bytes: Int) {
+    let tilesX = 4 * ((width + 63) / 64), tilesY = 4 * ((height + 63) / 64)
+    let stride = (tilesX * 8 + 63) & ~63
+    return (stride, stride * tilesY)
+  }
+
+  /// The empty tile's checksum word (8.6.3): a signature of the cleared targets' clear words (`[62:16]`; bit 46 of the signature
+  /// set, bit 63 clear) and the counter (`[15:0]`).
+  public static func emptyWord(clears: [[UInt32]], counter: UInt16) -> UInt64 {
+    let primes: [UInt64] = [16381, 16369, 16363, 16361]
+    var signature: UInt64 = 0
+    for (r, words) in clears.enumerated() {
+      var t: UInt64 = 0
+      for c in 0..<min(4, words.count) { t ^= primes[c] &* UInt64(words[c]) &* UInt64(r + 1) }
+      signature ^= t
+    }
+    signature |= 1 << 46
+    return (signature << 16) & 0x7FFF_FFFF_FFFF_0000 | UInt64(counter)
+  }
+
+  /// The CRC record's words (8.5.1) for render target 0: word 0 `[15:13]` the target (0), word 1 the row stride, words 2 and 3
+  /// the empty tile's word, words 4 and 5 the table's address; OR'd into the extension.
+  public func words(emptyWord: UInt64) -> [UInt32] {
+    var w = [UInt32](repeating: 0, count: 16)
+    w[1] = UInt32(rowStride) & 0x7FF_FFFF
+    w[2] = UInt32(truncatingIfNeeded: emptyWord)
+    w[3] = UInt32(truncatingIfNeeded: emptyWord >> 32)
+    w[4] = UInt32(truncatingIfNeeded: address)
+    w[5] = UInt32(truncatingIfNeeded: address >> 32)
     return w
   }
 }
@@ -258,6 +322,10 @@ public struct FramebufferParameters: Equatable, Sendable {
   public var frameShaderDCDs: UInt64 = 0
   /// The depth and stencil target (word 12 and 13, and the 64-byte extension after this block); nil for a pass with none.
   public var zs: ZSTarget?
+  /// Transaction elimination for render target 0 (8.6): word 12's CRC read and write `[30:31]`, empty tile write `[29]` and, with one
+  /// target, empty tile read `[28]`, and the extension present `[21]` (the CRC record is in it, 8.5).
+  public var crc = false
+  public var emptyTileRead = false
 
   public init(
     width: Int, height: Int, sampleCountLog2: UInt32 = 0, samplePattern: UInt32 = 0, sampleLocations: UInt64,
@@ -322,6 +390,7 @@ public struct FramebufferParameters: Equatable, Sendable {
       w[12] = z.word12
       w[13] = z.clearDepth.bitPattern
     }
+    if crc { w[12] |= 1 << 21 | 1 << 29 | 1 << 30 | 1 << 31 | (emptyTileRead ? 1 << 28 : 0) }
     w[14] = UInt32(truncatingIfNeeded: tiler)
     w[15] = UInt32(truncatingIfNeeded: tiler >> 32)
     return w

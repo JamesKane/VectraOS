@@ -114,17 +114,28 @@ public enum ImageLayoutKind: Equatable, Sendable {
   /// 64 KiB tiles of elements in row-major order, 16 by 16-element blocks stored linearly inside a tile and the u-curve inside a
   /// block (05 section 5.7; clump ordering 8): the layout whose tiles a sparse image binds one at a time.
   case interleaved64K
+  /// AFBC (05 section 5.11): 16 x 16 superblocks, linear headers, the sparse body; a level is its header area (16 bytes a
+  /// superblock), the body at the header area rounded up to 128 bytes, and a slot of the uncompressed superblock's bytes for each.
+  /// Written by a pass and read by the texture unit only: no copy kernel, storage image or CPU touches its bytes.
+  case afbc
 
-  /// The plane descriptor's clump ordering (03 section 3.9.2).
+  /// The plane descriptor's clump ordering (03 section 3.9.2); AFBC's plane has none.
   public var clumpOrdering: UInt32 {
     switch self {
     case .linear: 2
     case .uInterleaved: 1
     case .interleaved64K: 8
+    case .afbc: 0
     }
   }
-  /// The render target's block format (08 section 8.4.3), for the two layouts a pass writes.
-  public var blockFormat: UInt32 { self == .interleaved64K ? 8 : 2 }
+  /// The render target's block format (08 section 8.4.3), for the layouts a pass writes.
+  public var blockFormat: UInt32 {
+    switch self {
+    case .interleaved64K: 8
+    case .afbc: 12
+    default: 2
+    }
+  }
   /// Texel interleave (03 section 3.8.2): 1 for every layout but plain linear.
   public var texelInterleave: UInt32 { self == .linear ? 0 : 1 }
 }
@@ -143,6 +154,10 @@ public struct LevelLayout: Equatable, Sendable {
   public var depth: Int = 1
   /// Sample planes of the level (05 section 5.5.3): a multisampled image's samples, `surface stride` apart.
   public var samples: Int = 1
+  /// AFBC (05 section 5.11.6): the header area's bytes, and the body's offset from the level's start; `rowStride` is then the header
+  /// row stride and `surfaceStride` the level's bytes, header area through body.
+  public var headerBytes = 0
+  public var bodyOffset = 0
   /// Bytes of the whole level of one layer: `surface stride * depth * samples`.
   public var levelSize: Int { surfaceStride * depth * samples }
 }
@@ -231,14 +246,44 @@ public struct ImageLayout: Equatable, Sendable {
         let tile = ImageLayout.tile64K(bytes: s) ?? (64, 64)
         row = (ew + tile.width - 1) / tile.width * ImageLayout.tileBytes64K
         surface = row * ((eh + tile.height - 1) / tile.height)
+      case .afbc:
+        // 05 section 5.11.6, linear headers and 16 x 16 superblocks: the extent aligned to the render block, a 16-byte header a
+        // superblock, the body at the header area aligned to 128, and a sparse slot of 256 texels a superblock.
+        let columns = (w + 15) / 16, rows = (h + 15) / 16
+        row = columns * 16
+        let headers = columns * rows * 16
+        let body = alignUp(headers, 128)
+        surface = body + columns * rows * 256 * s
+        offset = alignUp(offset, 128)
+        var level = LevelLayout(width: w, height: h, offset: offset, rowStride: row, surfaceStride: surface, depth: d, samples: samples)
+        level.headerBytes = headers
+        level.bodyOffset = body
+        levels.append(level)
+        offset += surface
+        continue
       }
       offset = alignUp(offset, ImageLayout.alignment)
       levels.append(LevelLayout(width: w, height: h, offset: offset, rowStride: row, surfaceStride: surface, depth: d, samples: samples))
       offset += surface * d * samples
     }
-    arrayStride = alignUp(offset, ImageLayout.alignment)
+    arrayStride = alignUp(offset, kind == .afbc ? 128 : ImageLayout.alignment)
     size = alignUp(arrayStride * layers, 4096)
   }
+
+  /// AFBC's compression mode for a texel of `bytes` (05 section 5.11.8: the component widths, not the order or the type): R8, R8G8
+  /// (and 16-bit depth), R8G8B8A8 (and 32-bit depth); nil for a texel AFBC doesn't take here.
+  public static func afbcMode(bytes: Int) -> UInt32? {
+    switch bytes {
+    case 1: 0
+    case 2: 3
+    case 4: 10
+    default: nil
+    }
+  }
+
+  /// Whether an AFBC image of this format uses the colour transform (05 section 5.11.7: for three and four colour components,
+  /// never a depth or a one or two-component mode).
+  public var afbcYTR: Bool { kind == .afbc && format.bytesPerTexel == 4 && format != .depth32f }
 
   /// The u-curve (05 section 5.6.2): the index of the element `(x, y)` of a 16 by 16 tile, the bits from the most
   /// significant `y3, x3 ^ y3, y2, x2 ^ y2, y1, x1 ^ y1, y0, x0 ^ y0`.
@@ -268,6 +313,9 @@ public struct ImageLayout: Equatable, Sendable {
       return base + (y / t) * l.rowStride + (x / t) * tileBytes + ImageLayout.uCurve(x: x % t, y: y % t) * s
     case .interleaved64K:
       return base + ImageLayout.offset64K(x: x / format.blockWidth, y: y / format.blockHeight, bytes: s, rowStride: l.rowStride)
+    case .afbc:
+      // An AFBC texel has no address: its superblock is compressed (only the GPU's writes and the texture unit's reads know it).
+      return base
     }
   }
 
@@ -314,10 +362,12 @@ public struct ImageLayout: Equatable, Sendable {
     for layer in layerRange {
       for l in range {
         let lv = levels[l]
-        out.append(
-          PlaneDescriptor(
-            address: base + UInt64(layer * arrayStride + lv.offset), size: UInt64(lv.levelSize), rowStride: lv.rowStride,
-            sliceStride: depth > 1 || samples > 1 ? UInt64(lv.surfaceStride) : 0, width: lv.width, height: lv.height, kind: kind, format: format))
+        var p = PlaneDescriptor(
+          address: base + UInt64(layer * arrayStride + lv.offset), size: UInt64(lv.levelSize), rowStride: lv.rowStride,
+          sliceStride: depth > 1 || samples > 1 ? UInt64(lv.surfaceStride) : 0, width: lv.width, height: lv.height, kind: kind, format: format)
+        p.headerBytes = lv.headerBytes
+        p.ytr = afbcYTR
+        out.append(p)
       }
     }
     return out
@@ -340,6 +390,9 @@ public struct PlaneDescriptor: Equatable, Sendable {
   public var height: Int
   public var kind: ImageLayoutKind
   public var format: TexelFormat
+  /// AFBC (03 section 3.9.6): the header area's bytes (the header slice size) and the colour transform.
+  public var headerBytes = 0
+  public var ytr = false
 
   public init(address: UInt64, size: UInt64, rowStride: Int, sliceStride: UInt64 = 0, width: Int, height: Int,
               kind: ImageLayoutKind, format: TexelFormat) {
@@ -366,6 +419,22 @@ public struct PlaneDescriptor: Equatable, Sendable {
       // ASTC 2D (03 section 3.9.4): plane type 4, decode wide `[25]`, block width `[28:26]` and height `[31:29]`.
       guard let w = ASTCPlaneFields.code(a.blockWidth), let h = ASTCPlaneFields.code(a.blockHeight) else { throw .outOfRange }
       word0 = PlaneDescriptor.typeTag | 4 << 4 | kind.clumpOrdering << 8 | (a.wide ? 1 << 25 : 0) | w << 26 | h << 29
+    }
+    if kind == .afbc {
+      // The AFBC plane (03 section 3.9.6): plane type 6, superblock 16 x 16 `[10:8]` 0, YTR `[16]`, prefetch `[20]` (the reference
+      // sets it), the compression mode `[31:26]`; the pointer is the header area's, word 4 the header row stride, word 5 the header
+      // slice size, word 6 the header slice stride (0 for a 2D view).
+      guard let mode = ImageLayout.afbcMode(bytes: format.bytesPerTexel) else { throw .outOfRange }
+      return [
+        PlaneDescriptor.typeTag | 6 << 4 | (ytr ? 1 << 16 : 0) | 1 << 20 | mode << 26,
+        UInt32(truncatingIfNeeded: size),
+        UInt32(truncatingIfNeeded: address),
+        UInt32(truncatingIfNeeded: address >> 32) & 0xFFFF | UInt32(truncatingIfNeeded: size >> 32) << 16,
+        UInt32(rowStride),
+        UInt32(headerBytes),
+        0,
+        UInt32(width - 1) | UInt32(height - 1) << 16,
+      ]
     }
     return [
       word0,

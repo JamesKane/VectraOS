@@ -240,7 +240,8 @@ extension MaliDevice {
     reclaim()
     if !d.sparse.isEmpty, let e = sparseImageError(d) { throw e }
     // Linear, but for a sparse image used partly bound: the 64 KiB layout, whose tiles are its blocks (valhall 05 section 5.7.3).
-    let kind: ImageLayoutKind = d.sparse.contains(.residency) ? .interleaved64K : .linear
+    var kind: ImageLayoutKind = d.sparse.contains(.residency) ? .interleaved64K : .linear
+    if afbcEligible(d) { kind = .afbc }
     var planes: [AspectPlane] = []
     var offset = 0
     for aspect in singleAspects(d.format.aspects) {
@@ -258,8 +259,9 @@ extension MaliDevice {
     // (syncCached).
     let arrayBytes = sampled ? layout.levels.count * layout.layers * PlaneDescriptor.size : 0
     if !d.sparse.isEmpty { return try makeSparseImage(d, planes: planes, bytes: offset, planeBytes: arrayBytes) }
+    // (Only one that is copied out of: an attachment the CPU never reads, a depth buffer, needs no maintenance after each wait.)
     let readOnlyByCPU = !sampled && !d.usage.contains(.copyDestination) && !d.usage.contains(.storage)
-      && !d.usage.contains(.scanout)
+      && !d.usage.contains(.scanout) && d.usage.contains(.copySource) && kind != .afbc
     // A storage image's memory is cacheable for the GPU, where its atomics work (MaliDevice.makeRegion).
     let region = try makeRegion(offset + arrayBytes, cpuCached: readOnlyByCPU, gpuCacheable: d.usage.contains(.storage))
     var planeAt: Int?
@@ -278,7 +280,26 @@ extension MaliDevice {
     }
     let record = ImageRecord(region: region, descriptor: d, rowStride: layout.levels[0].rowStride, layout: layout, planeAt: planeAt)
     record.planes = planes
+    // A colour target the pass writes alone (not a storage image, a window's or another process's) has a CRC table for its level 0
+    // (valhall 08 section 8.6): zero, which no checksum matches, until a pass fills it.
+    if crcTables && d.usage.contains(.renderTarget) && d.samples == 1 && !d.usage.contains(.storage) && !d.usage.contains(.scanout) {
+      let t = CRCTable.size(width: Int(d.width), height: Int(d.height))
+      if let r = try? makeRegion(t.bytes) { record.crc = (r, t.rowStride) }
+    }
     return GPUImage(handle: images.insert(record), descriptor: d)
+  }
+
+  /// Whether an image is AFBC (valhall 05 section 5.11): a 2D target of one level, layer and sample, at least a superblock each
+  /// way, of a four-byte colour or a depth-only format, that no copy, clear kernel, storage access or other process touches (the
+  /// texture unit reads it, a pass writes it), and the device's AFBC on (`afbc`).
+  func afbcEligible(_ d: ImageDescriptor) -> Bool {
+    guard afbc, d.sparse.isEmpty, d.dimension == .d2, d.mipLevels == 1, d.layers == 1, d.samples == 1, d.width >= 16, d.height >= 16
+    else { return false }
+    let colour = d.format == .rgba8 || d.format == .bgra8 || d.format == .bgra8srgb
+    let depth = d.format == .depth16 || d.format == .depth32f
+    guard (colour && d.usage.contains(.renderTarget)) || (depth && d.usage.contains(.depthStencilTarget)) else { return false }
+    let allowed = ImageUsage.renderTarget | .depthStencilTarget | .sampled
+    return d.usage.rawValue & ~allowed.rawValue == 0
   }
 
   // MARK: Views in the heap

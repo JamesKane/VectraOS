@@ -186,7 +186,15 @@ extension MaliDevice {
   /// The steps of a list; a transfer's parameters are laid out in memory now, held until the submission is done.
   func plan(_ list: GPUCommandList, held: inout [Region]) throws(GPUError) -> [Step] {
     var steps: [Step] = []
-    func transfer(_ t: Transfer) throws(GPUError) { steps += try transferSteps(t, held: &held) }
+    func transfer(_ t: Transfer) throws(GPUError) {
+      // A kernel that writes an image changes its bytes behind its CRC table (valhall 08 section 8.6.4).
+      switch t {
+      case .bufferToImage(_, let i, _), .clearColor(let i, _, _), .clearDepthStencil(let i, _, _, _): i.invalidateCRC()
+      case .copyImage(_, let i, _), .blit(_, let i, _, _), .resolve(_, let i, _): i.invalidateCRC()
+      default: break
+      }
+      steps += try transferSteps(t, held: &held)
+    }
     var target: ImageRecord?
     var clear: [Float] = []
     var draws: [PassDraw] = []
@@ -274,6 +282,26 @@ extension MaliDevice {
       case .endRendering:
         guard let record = target else { throw .invalid("a pass ends that didn't begin") }
         guard activeQuery == 0 else { throw .invalid("a pass ends inside an occlusion query") }
+        // A pass over an AFBC attachment that draws nothing still runs, with its clears drawn: AFBC is written by a pass only (no
+        // clear kernel writes its headers, valhall 05 section 5.11.10.1).
+        let afbc = record.layout.kind == .afbc || zs?.image.planes.contains(where: { $0.layout.kind == .afbc }) == true
+          || extraTargets.contains(where: { $0.image.layout.kind == .afbc })
+        if draws.isEmpty && afbc {
+          var cleared: [ClearAttachment] = []
+          if !loads { cleared.append(.color(index: 0, .float(clear[0], clear[1], clear[2], clear[3]))) }
+          for (i, e) in extraTargets.enumerated() { cleared.append(.color(index: i + 1, .float(e.clear[0], e.clear[1], e.clear[2], e.clear[3]))) }
+          if let z = zs, !z.loadDepth && !z.loadStencil {
+            let f = z.image.descriptor.format
+            var aspects = ImageAspects(rawValue: 0)
+            if f.hasDepth { aspects = aspects | .depth }
+            if f.hasStencil { aspects = aspects | .stencil }
+            cleared.append(.depthStencil(aspects: aspects, depth: z.clearDepth, stencil: z.clearStencil))
+          }
+          if !cleared.isEmpty {
+            try appendClears(cleared, [ClearRect(width: UInt32(planSize.width), height: UInt32(planSize.height), layerCount: UInt32(layers))],
+                             into: &draws, target: target, zs: zs, view: views.first, layers: viewMask != 0 ? 1 : layers, viewMask: viewMask)
+          }
+        }
         if draws.isEmpty {
           // A pass that keeps the contents and draws nothing changes nothing.
           // The clear kernel clears what the views cover: their level and the pass's layers.
@@ -885,7 +913,9 @@ extension MaliDevice {
     let layout = plane?.layout ?? image.layout
     let level = layout.levels[min(Int(view.baseMip), layout.levels.count - 1)]
     let offset = (plane?.offset ?? 0) + Int(view.baseLayer) * layout.arrayStride + level.offset
-    return (image.region.address + UInt64(offset), level.rowStride, level.surfaceStride, layout.arrayStride, level.width, level.height)
+    // An AFBC plane's "surface stride" slot is its body's offset from the header area (valhall 08 sections 8.4.4 and 8.5.1).
+    let surface = layout.kind == .afbc ? level.bodyOffset : level.surfaceStride
+    return (image.region.address + UInt64(offset), level.rowStride, surface, layout.arrayStride, level.width, level.height)
   }
 
   func renderJobs(_ pass: DrawPass, chain: StepChain?, held: inout [Region]) throws(GPUError) -> [MaliJob] {
@@ -948,6 +978,18 @@ extension MaliDevice {
     request.colourSurfaceStride = targets[0].surfaceStride
     request.colourLayerStride = targets[0].layerStride
     request.extraTargets = Array(targets.dropFirst())
+    // Transaction elimination (valhall 08 section 8.6) for target 0 where the pass covers its level 0 whole, one layer, one sample:
+    // a tile whose checksum matches the one stored is not written back. Any other pass that writes a target with a table changes
+    // its bytes behind it, and invalidates it.
+    let v0 = pass.views[0]
+    if let c = target.crc, pass.samples == 1, pass.layers == 1, pass.viewMask == 0, v0.baseMip == 0, v0.baseLayer == 0,
+      width == Int(target.descriptor.width), height == Int(target.descriptor.height), pass.resolves.isEmpty {
+      request.crc = CRCTable(address: c.region.address, rowStride: c.rowStride, counter: target.crcCounter)
+    } else {
+      target.invalidateCRC()
+    }
+    for e in pass.extra { e.image.invalidateCRC() }
+    for r in pass.resolves { r.image.invalidateCRC() }
     request.queryReports = probeSkipQueryZero ? [] : pass.queries
     if probeQueryReadback && !pass.queries.isEmpty {
       let r = try makeRegion(4096)
@@ -982,6 +1024,7 @@ extension MaliDevice {
         target.depthRowStride = at.rowStride
         target.depthSurfaceStride = at.surfaceStride
         target.depthLayerStride = at.layerStride
+        target.depthAFBC = planeImage.planes.first(where: { $0.aspect == .depth })?.layout.kind == .afbc
       }
       if (z.storeStencil || resolveOnly) && f.hasStencil {
         let at = placement(planeImage, planeView, aspect: .stencil)
