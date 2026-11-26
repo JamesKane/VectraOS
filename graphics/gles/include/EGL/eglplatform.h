@@ -56,12 +56,9 @@ typedef void *EGLNativeWindowType;
 
 #elif defined(__vectraos__)
 
-/* VectraOS (gles(3), egl(3)): a window is described, and EGL opens it as a
- * window of Radharc's; a display is the default one. */
-struct vectra_egl_window {
-  uint32_t width, height;
-  const char *title;
-};
+/* VectraOS (egl(2)): a window is described (EGL/vectraos.h), and EGL opens it
+ * as a window of Radharc's; a display is the default one. */
+#include <EGL/vectraos.h>
 
 typedef void                     *EGLNativeDisplayType;
 typedef void                     *EGLNativePixmapType;

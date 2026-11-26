@@ -15,7 +15,8 @@ programs that use the library and for the generated C entry points:
 
 They are not lifted from croi, todhchai or NeoVectra, so `IMPORTS.tsv`
 doesn't list them. One change: `EGL/eglplatform.h` has a `__vectraos__`
-branch, as the header invites adopters to add, naming `struct
+branch, as the header invites adopters to add, including `EGL/vectraos.h`
+(ours) and naming its `struct
 vectra_egl_window` as `EGLNativeWindowType`.
 
 ## Generated files

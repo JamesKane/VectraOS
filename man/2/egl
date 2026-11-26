@@ -5,14 +5,14 @@ names eglGetDisplay eglGetPlatformDisplay eglInitialize eglChooseConfig eglCreat
 names eglCreateContext eglMakeCurrent eglSwapBuffers eglSwapInterval eglGetProcAddress eglCreateSync
 src graphics/gles/lib/EGL.swift graphics/gles/lib/ExportsEGL.swift graphics/gles/native/Platform.swift
 src graphics/gles/c/libEGL.c graphics/gles/c/procs.c graphics/gles/include/EGL/egl.h graphics/gles/include/EGL/eglext.h
-src graphics/gles/include/EGL/eglplatform.h graphics/gles/tests/EGLTests.swift
+src graphics/gles/include/EGL/eglplatform.h graphics/gles/include/EGL/vectraos.h graphics/gles/tests/EGLTests.swift
 keys egl opengl gles display config surface pbuffer window context swap interval present radharc fence tier 1
 lang c
 
 # SYNOPSIS
 
 ```c
-#include <EGL/egl.h>
+#include <EGL/egl.h>   // and, through eglplatform.h, <EGL/vectraos.h>
 
 struct vectra_egl_window {   // EGLNativeWindowType is a pointer to one
   uint32_t width, height;

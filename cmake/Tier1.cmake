@@ -367,6 +367,9 @@ function(croi_tier1 bootfs_var depends_var)
   set(_gles_so GLES GLESv2 EGL ${_gles_uses})
   list(TRANSFORM _gles_so PREPEND ${_lib}/lib)
   list(TRANSFORM _gles_so APPEND .so)
+  # What a GL program links (the glmark2 port names each NEEDED): a library dlopen loads can't have TLS, so a program's
+  # dlopen of libEGL.so or libGLESv2.so must find it loaded already.
+  set_property(GLOBAL PROPERTY CROI_TIER1_GLES ${_gles_so})
   # Each shim under the versioned names programs also open it by.
   set_property(GLOBAL APPEND PROPERTY CROI_TIER1_SHARED lib/libGLESv2.so.2=${_lib}/libGLESv2.so lib/libEGL.so.1=${_lib}/libEGL.so)
   set(_gpu_libs VulkanLowering GPUCoreMali ValhallBackend MaliCore ValhallISA ShaderCompiler GPUCoreVulkan GPUCore
