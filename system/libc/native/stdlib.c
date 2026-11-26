@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
-// <stdlib.h>'s, <inttypes.h>'s and <string.h>'s C side (M6d), by principle
-// 28's calling-convention exception: what returns a struct (div and its
-// kin), a long double (strtold: Swift has no binary128) or a buffer of its
-// own (strerror's, each thread's), over the Swift that does the work
-// (system/libc/stdlib, string).
+// <stdlib.h>'s, <inttypes.h>'s, <string.h>'s and <time.h>'s C side (M6d),
+// by principle 28's calling-convention exception: what returns a struct
+// (div and its kin), a long double (strtold: Swift has no binary128) or a buffer of its
+// own (strerror's, each thread's), or takes a C struct (strftime's struct tm,
+// read into fields), over the Swift that does the work
+// (system/libc/stdlib, string, time).
 
 #include <inttypes.h>
 #include <stdint.h>
