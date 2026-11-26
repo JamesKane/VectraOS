@@ -60,9 +60,33 @@ struct LoweredVertex {
 
 /// What a draw reads of a program's attributes: for each location the program has (in `locations`), the format and the
 /// stride of the root-block vertex buffer it reads, which the vertex stage is lowered against.
+/// Packed, so that a draw makes no array: four bits of format and sixteen of stride for each of up to 8 locations.
 struct VertexLayout: Hashable {
-  var formats: [UInt8]
-  var strides: [UInt32]
+  private var formatBits: UInt32 = 0
+  private var strideLow: UInt64 = 0
+  private var strideHigh: UInt64 = 0
+  private(set) var count = 0
+
+  init() {}
+  init(formats: [UInt8], strides: [UInt32]) {
+    for (f, s) in zip(formats, strides) { append(format: f, stride: s) }
+  }
+
+  /// The largest stride a layout holds: a longer one is copied tightly packed.
+  static let maxStride: UInt32 = 0xFFFF
+
+  mutating func append(format: UInt8, stride: UInt32) {
+    let n = count
+    formatBits |= UInt32(format & 15) << UInt32(4 * n)
+    let s = UInt64(stride & 0xFFFF)
+    if n < 4 { strideLow |= s << UInt64(16 * n) } else { strideHigh |= s << UInt64(16 * (n - 4)) }
+    count += 1
+  }
+
+  func format(_ n: Int) -> UInt8 { UInt8((formatBits >> UInt32(4 * n)) & 15) }
+  func stride(_ n: Int) -> UInt32 {
+    UInt32(truncatingIfNeeded: (n < 4 ? strideLow >> UInt64(16 * n) : strideHigh >> UInt64(16 * (n - 4))) & 0xFFFF)
+  }
 }
 
 @safe final class GLProgram {
@@ -98,6 +122,8 @@ struct VertexLayout: Hashable {
   var attributeComponents: [Int] = []
   // Lowering and pipelines.
   var setLayout = SetLayout(bindings: [])
+  var blockRecordOffset = -1
+  var samplerRecordOffsets: [Int] = []
   var lowering = LoweringLayout()
   var fragmentBytes: [UInt8] = []
   var vertexBytes: [LoweredVertex] = []
@@ -159,6 +185,15 @@ struct VertexLayout: Hashable {
     samplerUnits = [Int32](repeating: 0, count: samplerBindings.count)
     setLayout = SetLayout(bindings: bindings)
     lowering = LoweringLayout(sets: [setLayout])
+    // Where each draw writes the block's and each sampler element's descriptors in the set record.
+    blockRecordOffset = setLayout.find(0).map { Int($0.offset) } ?? -1
+    samplerRecordOffsets = samplerBindings.map { binding in
+      var at = -1
+      for b in setLayout.bindings where b.binding <= binding && binding < b.binding + b.count {
+        if let (offset, _) = setLayout.find(b.binding) { at = Int(offset) + Int(binding - b.binding) * descriptorSize }
+      }
+      return at
+    }
     attributeLocations = []
     attributeComponents = []
     for a in i.attributes.sorted(by: { $0.location < $1.location }) {
@@ -180,9 +215,9 @@ struct VertexLayout: Hashable {
     for v in vertexBytes where v.layout == layout { return v.bytes }
     var l = lowering
     for (n, location) in attributeLocations.enumerated() {
-      l.vertexBindings.append(VertexBinding(binding: location, stride: layout.strides[n]))
+      l.vertexBindings.append(VertexBinding(binding: location, stride: layout.stride(n)))
       l.vertexAttributes.append(VertexAttribute(location: location, binding: location,
-                                                format: vertexFormat(code: layout.formats[n]), offset: 0))
+                                                format: vertexFormat(code: layout.format(n)), offset: 0))
     }
     let b = try bytes(lower(spirv: vertexWords, stage: .vertex, entryPoint: "main", layout: l))
     vertexBytes.append(LoweredVertex(layout: layout, bytes: b))

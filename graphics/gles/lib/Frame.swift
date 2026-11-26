@@ -118,6 +118,7 @@ final class UploadRing {
 /// The heap's texture and sampler slots, as the library hands them out.
 final class HeapSlots {
   let device: any GPUDevice
+  let limits: DeviceLimits
   private var nextTexture: UInt32 = 0
   private var freeTextures: [UInt32] = []
   /// Slots let go of while the open list may read them: free after its submission.
@@ -130,12 +131,17 @@ final class HeapSlots {
   }
   var samplers: [SamplerEntry] = []
   private var generations: UInt64 = 0
+  /// Sampler slots written, for the stats.
+  var writes = 0
 
-  init(device: any GPUDevice) { self.device = device }
+  init(device: any GPUDevice, limits: DeviceLimits) {
+    self.device = device
+    self.limits = limits
+  }
 
   func takeTextureSlot() throws(GPUError) -> UInt32 {
     if let s = freeTextures.popLast() { return s }
-    guard nextTexture < device.limits.heapTextures else { throw .outOfMemory("the heap's \(device.limits.heapTextures) texture slots") }
+    guard nextTexture < limits.heapTextures else { throw .outOfMemory("the heap's \(limits.heapTextures) texture slots") }
     defer { nextTexture += 1 }
     return nextTexture
   }
@@ -155,8 +161,9 @@ final class HeapSlots {
       return (UInt32(i), samplers[i].generation)
     }
     generations &+= 1
-    if samplers.count < Int(device.limits.heapSamplers) {
+    if samplers.count < Int(limits.heapSamplers) {
       try device.writeSampler(UInt32(samplers.count), d)
+      writes += 1
       samplers.append(SamplerEntry(descriptor: d, generation: generations, openUse: epoch))
       return (UInt32(samplers.count - 1), generations)
     }
@@ -167,6 +174,7 @@ final class HeapSlots {
     }
     guard pick >= 0 else { return nil }
     try device.writeSampler(UInt32(pick), d)
+    writes += 1
     samplers[pick] = SamplerEntry(descriptor: d, generation: generations, openUse: epoch)
     return (UInt32(pick), generations)
   }
@@ -217,6 +225,11 @@ struct OpenPass {
   var target: RenderTarget
   var begun = false
   var clear = PendingClear()
+  /// The pass's attachments and loads, as begun; its stores are decided as it ends.
+  var info = RenderingInfo(colors: [])
+  var discardColor = false
+  var discardDepth = false
+  var discardStencil = false
   var draws = 0
   /// Images its draws read.
   var reads: [UInt64] = []
@@ -234,6 +247,8 @@ struct OpenPass {
 /// A device's frame: shared by the contexts of a display, which use it one at a time.
 final class Frame {
   let device: any GPUDevice
+  /// The device's limits, read once: the device's getter makes a copy of them at every call.
+  let limits: DeviceLimits
   let ring: UploadRing
   let heap: HeapSlots
   var list = GPUCommandList()
@@ -257,13 +272,15 @@ final class Frame {
   var drawsSubmitted = 0
   var passesSubmitted = 0
   var submissions = 0
+  var stats = FrameStats()
   /// Called when the list is submitted, with its value (a window's present waits for it).
   var onSubmit: ((UInt64) -> Void)?
 
   init(device: any GPUDevice) {
     self.device = device
+    limits = device.limits
     ring = UploadRing(device: device)
-    heap = HeapSlots(device: device)
+    heap = HeapSlots(device: device, limits: limits)
     // The first epoch is 1.
     valueBase = device.completed
     lastSubmitted = device.completed
@@ -284,18 +301,31 @@ final class Frame {
 
   /// Ends the open pass, if there is one: a pass that drew nothing is recorded only if it clears.
   func endPass() {
-    guard let p = pass else { return }
+    guard var p = pass else { return }
     if !p.begun {
       guard p.clear.color != nil || p.clear.depth != nil || p.clear.stencil != nil else {
         pass = nil
         return
       }
       begin()
+      p = pass!
     }
+    // The begin, now that what the pass stores is known (glDiscardFramebufferEXT, a swap), then what the pass recorded.
+    var info = p.info
+    if p.discardColor { for i in info.colors.indices { info.colors[i].store = .discard } }
+    if p.discardDepth { info.depthStencil?.depthStore = .discard }
+    if p.discardStencil { info.depthStencil?.stencilStore = .discard }
+    list.beginRendering(info)
+    list.append(contentsOf: passList)
+    passList = GPUCommandList()
     list.endRendering()
     passesSubmitted += 1
+    stats.passes += 1
     pass = nil
   }
+
+  /// The open pass's commands, recorded after its begin as it ends.
+  var passList = GPUCommandList()
 
   /// Images written in the open list since its last barrier: a pass's attachments, a copy's destination.
   var written: [UInt64] = []
@@ -338,7 +368,7 @@ final class Frame {
                                   depthStore: depth ? .store : .discard, stencilStore: stencil ? .store : .discard,
                                   clearDepth: p.clear.depth ?? 1, clearStencil: p.clear.stencil ?? 0)
     }
-    list.beginRendering(RenderingInfo(colors: colors, depthStencil: ds))
+    p.info = RenderingInfo(colors: colors, depthStencil: ds)
     p.begun = true
     p.clear = PendingClear()
     pass = p
@@ -353,7 +383,15 @@ final class Frame {
     let value = self.value(ofEpoch: epoch)
     let l = list
     list = GPUCommandList()
+    let counting = unsafe glesStats
+    var t0: UInt64 = 0
+    if counting {
+      t0 = unsafe glesClock()
+      if stats.frameStart != 0 { stats.recordNs &+= t0 &- stats.frameStart }
+      count(l)
+    }
     try device.graphicsQueue.submit(l, wait: 0, signal: value)
+    if counting { stats.submitNs &+= unsafe glesClock() &- t0 }
     lastSubmitted = value
     submissions += 1
     ring.submitted(value)
@@ -372,8 +410,15 @@ final class Frame {
   /// Submits and waits for the GPU to finish everything.
   func finish() throws(GPUError) {
     let v = try submit()
+    let counting = unsafe glesStats
+    let t0 = counting ? unsafe glesClock() : 0
     if v > device.completed { try device.wait(v) }
     ring.reclaim()
+    if counting {
+      let t1 = unsafe glesClock()
+      stats.waitNs &+= t1 &- t0
+      stats.frameStart = t1
+    }
   }
 
   /// The timeline value the list of `epoch` was (or will be) submitted as: each submission is the next value.

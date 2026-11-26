@@ -98,6 +98,9 @@ public final class GLContext {
 
   /// Pipelines made, and the memory ReadPixels reads back into.
   var pipelinesMade = 0
+  /// The last draw's pipeline and what it was found by.
+  var lastPipeline: (program: GLProgram, link: UInt64, serial: UInt64, layout: VertexLayout, topology: PrimitiveTopology,
+                     target: RenderTarget, pipeline: GPUPipeline)?
   var readback: GPUMemory?
   /// Bumps whenever a pipeline's fixed state may have changed.
   var pipelineSerial: UInt64 = 1
@@ -284,7 +287,7 @@ public final class GLContext {
 
   func setViewport(_ x: GLint, _ y: GLint, _ w: GLsizei, _ h: GLsizei) {
     guard w >= 0, h >= 0 else { return fail(.invalidValue) }
-    let maxSize = GLsizei(max(device.limits.maxImageDimension, 4096))
+    let maxSize = GLsizei(max(frame.limits.maxImageDimension, 4096))
     viewport = (x, y, min(w, maxSize), min(h, maxSize))
   }
 
@@ -550,7 +553,7 @@ public final class GLContext {
   /// The device storage for a GL renderbuffer or depth texture format, or nil for one GL ES 2.0 (with the extensions
   /// the library has) doesn't name.
   func storage(forRenderbuffer f: GLenum) -> StorageKind? {
-    let limits = device.limits
+    let limits = frame.limits
     func depthTarget(_ p: PixelFormat) -> Bool { limits.formats(p).depthTarget }
     let depth24: PixelFormat = depthTarget(.depth24stencil8) ? .depth24stencil8 : .depth32f
     switch f {
@@ -578,7 +581,7 @@ public final class GLContext {
       }
       return fail(.invalidEnum)
     }
-    let maxSize = device.limits.maxImageDimension
+    let maxSize = frame.limits.maxImageDimension
     guard width >= 0, height >= 0, width <= maxSize, height <= maxSize else { return fail(.invalidValue) }
     guard let r = renderbuffer else { return fail(.invalidOperation) }
     if let old = r.image { releaseImage(old) }

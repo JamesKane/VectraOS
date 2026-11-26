@@ -257,7 +257,7 @@ extension GLContext {
     r.frontFace = glCCW == on(8) ? .counterClockwise : .clockwise
     r.depthBias = on(5)
     var ms = MultisampleState()
-    ms.alphaToCoverage = on(6) && device.limits.features.alphaToCoverage
+    ms.alphaToCoverage = on(6) && frame.limits.features.alphaToCoverage
     if on(7) { ms.sampleMask = on(10) != on(9) ? ~0 : 0 }
     var colorFormats: [PixelFormat] = []
     if let c = target.colorFormat { colorFormats.append(c) } else if let s = target.scratch { colorFormats.append(s.format) }
@@ -271,15 +271,26 @@ extension GLContext {
   func pipeline(_ program: GLProgram, _ layout: VertexLayout, _ topology: PrimitiveTopology, _ target: RenderTarget)
     throws(GPUError) -> GPUPipeline
   {
+    // The last draw's, where nothing it was found by has changed: no key is made.
+    if let c = lastPipeline, c.program === program, c.link == program.linkSerial, c.serial == pipelineSerial, c.layout == layout,
+      c.topology == topology, c.target == target
+    {
+      return c.pipeline
+    }
     let key = pipelineKey(layout, topology, target)
-    if let p = program.pipelines[key] { return p }
+    if let p = program.pipelines[key] {
+      lastPipeline = (program, program.linkSerial, pipelineSerial, layout, topology, target, p)
+      return p
+    }
     let vertex: [UInt8]
     do throws(LoweringError) { vertex = try program.vertexStage(layout) } catch {
       throw .unsupported("the vertex stage can't be lowered for this vertex layout: \(error)")
     }
     let p = try device.makeGraphicsPipeline(pipelineDescriptor(program, key, vertex: vertex, target))
     program.pipelines[key] = p
+    lastPipeline = (program, program.linkSerial, pipelineSerial, layout, topology, target, p)
     pipelinesMade += 1
+    frame.stats.pipelines += 1
     return p
   }
 
@@ -331,51 +342,51 @@ extension GLContext {
     guard var p = frame.pass else { return }
     let v = coreViewport(t, shaderFlips: shaderFlips)
     if p.viewport != v {
-      frame.list.setViewports([v])
+      frame.passList.setViewports([v])
       p.viewport = v
     }
     let s = coreScissor(t)
     if p.scissor != s {
-      frame.list.setScissor(x: s.x, y: s.y, width: s.width, height: s.height)
+      frame.passList.setScissor(x: s.x, y: s.y, width: s.width, height: s.height)
       p.scissor = s
     }
     if t.hasStencil {
       let ref = (UInt32(bitPattern: stencilFront.reference) & 0xFF, UInt32(bitPattern: stencilBack.reference) & 0xFF)
       if p.stencilReference == nil || p.stencilReference! != ref {
-        frame.list.setStencilReference(.front, ref.0)
-        frame.list.setStencilReference(.back, ref.1)
+        frame.passList.setStencilReference(.front, ref.0)
+        frame.passList.setStencilReference(.back, ref.1)
         p.stencilReference = ref
       }
       let compare = (stencilFront.valueMask & 0xFF, stencilBack.valueMask & 0xFF)
       if p.stencilCompare == nil || p.stencilCompare! != compare {
-        frame.list.setStencilCompareMask(.front, compare.0)
-        frame.list.setStencilCompareMask(.back, compare.1)
+        frame.passList.setStencilCompareMask(.front, compare.0)
+        frame.passList.setStencilCompareMask(.back, compare.1)
         p.stencilCompare = compare
       }
       let write = (stencilFront.writeMask & 0xFF, stencilBack.writeMask & 0xFF)
       if p.stencilWrite == nil || p.stencilWrite! != write {
-        frame.list.setStencilWriteMask(.front, write.0)
-        frame.list.setStencilWriteMask(.back, write.1)
+        frame.passList.setStencilWriteMask(.front, write.0)
+        frame.passList.setStencilWriteMask(.back, write.1)
         p.stencilWrite = write
       }
     }
     if polygonOffsetFill {
       let bias = (polygonOffset.units, polygonOffset.factor)
       if p.depthBias == nil || p.depthBias! != bias {
-        frame.list.setDepthBias(constant: bias.0, slope: bias.1)
+        frame.passList.setDepthBias(constant: bias.0, slope: bias.1)
         p.depthBias = bias
       }
     }
     if blend {
       let k = BlendConstants(red: blendColor.0, green: blendColor.1, blue: blendColor.2, alpha: blendColor.3)
       if p.blendConstants != k {
-        frame.list.setBlendConstants(k)
+        frame.passList.setBlendConstants(k)
         p.blendConstants = k
       }
     }
-    let width = device.limits.features.wideLines ? min(lineWidth, device.limits.maxLineWidth) : 1
+    let width = frame.limits.features.wideLines ? min(lineWidth, frame.limits.maxLineWidth) : 1
     if p.lineWidth != width {
-      frame.list.setLineWidth(width)
+      frame.passList.setLineWidth(width)
       p.lineWidth = width
     }
     frame.pass = p
@@ -405,7 +416,7 @@ extension GLContext {
   func vertexInputs(_ program: GLProgram, root: UnsafeMutableRawPointer, range rangeOf: () -> (Int, Int)) throws(GPUError)
     -> VertexLayout
   {
-    var layout = VertexLayout(formats: [], strides: [])
+    var layout = VertexLayout()
     var range: (Int, Int)?
     for (n, location) in program.attributeLocations.enumerated() {
       let a = vertexArray.attributes[Int(location)]
@@ -421,14 +432,13 @@ extension GLContext {
       } else {
         let s = a.effectiveStride
         let native = nativeVertexFormat(size: a.size, type: a.type, normalized: a.normalized)
-        if let b = a.buffer, let native, s % 4 == 0, a.pointer % 4 == 0 {
+        if let b = a.buffer, let native, s % 4 == 0, a.pointer % 4 == 0, UInt32(s) <= VertexLayout.maxStride {
           // Read where it is.
           guard let m = try deviceCopy(b) else {
             address = 0
             format = native
             stride = UInt32(s)
-            layout.formats.append(vertexFormatCode(format))
-            layout.strides.append(stride)
+            layout.append(format: vertexFormatCode(format), stride: stride)
             continue
           }
           address = m.address + UInt64(a.pointer)
@@ -471,8 +481,7 @@ extension GLContext {
       }
       _ = n
       unsafe root.storeBytes(of: address, toByteOffset: RootBlock.vertexBuffersOffset + 8 * Int(location), as: UInt64.self)
-      layout.formats.append(vertexFormatCode(format))
-      layout.strides.append(stride)
+      layout.append(format: vertexFormatCode(format), stride: stride)
     }
     return layout
   }
@@ -587,17 +596,11 @@ extension GLContext {
       program.blockDirty = false
     }
     let set = unsafe root.pointer + rootBytes
-    if let (offset, _) = program.setLayout.find(0) {
-      unsafe set.storeBytes(of: program.blockAddress, toByteOffset: Int(offset), as: UInt64.self)
-      unsafe set.storeBytes(of: UInt64(program.blockBytes), toByteOffset: Int(offset) + 8, as: UInt64.self)
+    if program.blockRecordOffset >= 0 {
+      unsafe set.storeBytes(of: program.blockAddress, toByteOffset: program.blockRecordOffset, as: UInt64.self)
+      unsafe set.storeBytes(of: UInt64(program.blockBytes), toByteOffset: program.blockRecordOffset + 8, as: UInt64.self)
     }
-    for (n, binding) in program.samplerBindings.enumerated() {
-      // Binding `binding` is element (binding - first) of its array's descriptor.
-      var at = -1
-      for b in program.setLayout.bindings where b.binding <= binding && binding < b.binding + b.count {
-        if let (offset, _) = program.setLayout.find(b.binding) { at = Int(offset) + Int(binding - b.binding) * descriptorSize }
-      }
-      guard at >= 0 else { continue }
+    for (n, at) in program.samplerRecordOffsets.enumerated() where at >= 0 {
       unsafe set.storeBytes(of: slots[n].0, toByteOffset: at, as: UInt32.self)
       unsafe set.storeBytes(of: slots[n].1, toByteOffset: at + 4, as: UInt32.self)
     }
@@ -606,13 +609,14 @@ extension GLContext {
     openPass(target, reads: reads)
     recordDynamicState(target, shaderFlips: program.interface.driverWords != nil)
     if let m = indexMemory {
-      frame.list.drawIndexed(pipeline, root: root.address, indices: m, indexOffset: indexOffset, indexType: indexType,
+      frame.passList.drawIndexed(pipeline, root: root.address, indices: m, indexOffset: indexOffset, indexType: indexType,
                              count: UInt32(drawCount))
     } else {
-      frame.list.draw(pipeline, root: root.address, vertices: UInt32(count), firstVertex: UInt32(first))
+      frame.passList.draw(pipeline, root: root.address, vertices: UInt32(count), firstVertex: UInt32(first))
     }
     frame.pass!.draws += 1
     frame.drawsSubmitted += 1
+    frame.stats.draws += 1
   }
 
   func drawArrays(_ mode: GLenum, _ first: GLint, _ count: GLsizei) {
@@ -658,7 +662,7 @@ extension GLContext {
       }
     }
     guard area.width > 0, area.height > 0 else { return }
-    guard device.limits.features.clearAttachments else {
+    guard frame.limits.features.clearAttachments else {
       say("a clear of part of the framebuffer: the device has no clears inside a pass")
       return
     }
@@ -670,8 +674,30 @@ extension GLContext {
     if c.depth != nil { aspects = aspects | .depth }
     if c.stencil != nil { aspects = aspects | .stencil }
     if !aspects.isEmpty { attachments.append(.depthStencil(aspects: aspects, depth: c.depth ?? 1, stencil: c.stencil ?? 0)) }
-    frame.list.clearAttachments(attachments, rects: [ClearRect(x: area.x, y: area.y, width: area.width, height: area.height)])
+    frame.passList.clearAttachments(attachments, rects: [ClearRect(x: area.x, y: area.y, width: area.width, height: area.height)])
     frame.pass!.draws += 1
+  }
+
+  // MARK: Discarding
+
+  /// glDiscardFramebufferEXT: the open pass on the bound framebuffer doesn't store what is named.
+  func discard(_ attachments: [GLenum]) {
+    let fbo = framebuffer != nil
+    for a in attachments {
+      switch a {
+      case GL_COLOR_ATTACHMENT0, GL_DEPTH_ATTACHMENT, GL_STENCIL_ATTACHMENT: if !fbo { return fail(.invalidEnum) }
+      case GL_COLOR_EXT, GL_DEPTH_EXT, GL_STENCIL_EXT: if fbo { return fail(.invalidEnum) }
+      default: return fail(.invalidEnum)
+      }
+    }
+    guard let t = currentTarget(), frame.pass?.target == t else { return }
+    for a in attachments {
+      switch a {
+      case GL_COLOR_ATTACHMENT0, GL_COLOR_EXT: frame.pass!.discardColor = true
+      case GL_DEPTH_ATTACHMENT, GL_DEPTH_EXT: frame.pass!.discardDepth = true
+      default: frame.pass!.discardStencil = true
+      }
+    }
   }
 
   // MARK: Reading, flushing and finishing
@@ -723,5 +749,6 @@ extension GLContext {
 
   func finish() {
     do throws(GPUError) { try frame.finish() } catch { fail(error) }
+    frame.frameEnded()
   }
 }

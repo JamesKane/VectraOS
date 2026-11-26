@@ -88,7 +88,7 @@ extension GLContext {
     case GL_TEXTURE_MAX_ANISOTROPY_EXT:
       let a = fvalue ?? Float(value ?? 1)
       guard a >= 1 else { return fail(.invalidValue) }
-      t.maxAnisotropy = device.limits.features.samplerAnisotropy ? min(a, device.limits.maxAnisotropy) : 1
+      t.maxAnisotropy = frame.limits.features.samplerAnisotropy ? min(a, frame.limits.maxAnisotropy) : 1
     default: return fail(.invalidEnum)
     }
     t.samplerSlot = nil
@@ -123,7 +123,7 @@ extension GLContext {
     return nil
   }
 
-  var maxTextureSize: Int32 { min(device.limits.maxImageDimension, 4096) }
+  var maxTextureSize: Int32 { min(frame.limits.maxImageDimension, 4096) }
 
   /// The device storage of a texture of GL format `format` and `type`.
   func textureStorage(_ format: GLenum, _ type: GLenum) -> StorageKind {
@@ -131,7 +131,7 @@ extension GLContext {
     case GL_DEPTH_COMPONENT:
       return .depth(type == GL_UNSIGNED_SHORT ? .depth16 : .depth32f)
     case GL_DEPTH_STENCIL_OES:
-      return device.limits.formats(.depth24stencil8).sampled ? .depthStencil(.depth24stencil8) : .depth(.depth32f)
+      return frame.limits.formats(.depth24stencil8).sampled ? .depthStencil(.depth24stencil8) : .depth(.depth32f)
     default: return .color(alpha: formatHasAlpha(format))
     }
   }
@@ -159,6 +159,8 @@ extension GLContext {
     let slot = try frame.heap.takeTextureSlot()
     try device.writeTexture(slot, image)
     t.slot = slot
+    frame.stats.textureWrites += 1
+    frame.stats.images += 1
   }
 
   /// Ends the open pass if it reads `image` or draws into it: what follows in the list changes it. (A copy is never inside
@@ -367,7 +369,7 @@ extension GLContext {
     }
     var d = t.samplerDescriptor
     // A device whose samplers have one filter (Mali, so far) takes the magnification filter for both.
-    if d.minFilter != d.magFilter && !device.limits.features.samplerMinMagFilters { d.minFilter = d.magFilter }
+    if d.minFilter != d.magFilter && !frame.limits.features.samplerMinMagFilters { d.minFilter = d.magFilter }
     var found = try frame.heap.samplerSlot(d, epoch: frame.epoch)
     if found == nil {
       // Every sampler slot is read by the open list: submit it, and the slots are free to be written again.

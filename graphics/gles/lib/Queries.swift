@@ -51,7 +51,7 @@ extension GLContext {
              "GL_OES_rgb8_rgba8", "GL_OES_texture_npot", "GL_OES_vertex_array_object", "GL_EXT_texture_format_BGRA8888",
              "GL_EXT_discard_framebuffer"]
     if storage(forRenderbuffer: GL_DEPTH24_STENCIL8_OES) != nil { e.append("GL_OES_packed_depth_stencil") }
-    if device.limits.features.samplerAnisotropy { e.append("GL_EXT_texture_filter_anisotropic") }
+    if frame.limits.features.samplerAnisotropy { e.append("GL_EXT_texture_filter_anisotropic") }
     return e
   }
 
@@ -88,7 +88,7 @@ extension GLContext {
     switch pname {
     case GL_ACTIVE_TEXTURE: return ints(Int64(GL_TEXTURE0) + Int64(activeTexture))
     case GL_ALIASED_LINE_WIDTH_RANGE:
-      return .floats([1, device.limits.features.wideLines ? device.limits.maxLineWidth : 1])
+      return .floats([1, frame.limits.features.wideLines ? frame.limits.maxLineWidth : 1])
     case GL_ALIASED_POINT_SIZE_RANGE: return .floats([1, 1024])
     case GL_RED_BITS: return ints(Int64(target?.redBits ?? 0))
     case GL_GREEN_BITS: return ints(Int64(target?.greenBits ?? 0))
@@ -165,12 +165,12 @@ extension GLContext {
     case GL_STENCIL_BACK_FAIL: return ints(Int64(stencilBack.fail))
     case GL_STENCIL_BACK_PASS_DEPTH_FAIL: return ints(Int64(stencilBack.depthFail))
     case GL_STENCIL_BACK_PASS_DEPTH_PASS: return ints(Int64(stencilBack.depthPass))
-    case GL_SUBPIXEL_BITS: return ints(Int64(max(device.limits.viewportSubPixelBits, 4)))
+    case GL_SUBPIXEL_BITS: return ints(Int64(max(frame.limits.viewportSubPixelBits, 4)))
     case GL_TEXTURE_BINDING_2D: return ints(Int64(textures2D[activeTexture]?.name ?? 0))
     case GL_TEXTURE_BINDING_CUBE_MAP: return ints(Int64(texturesCube[activeTexture]?.name ?? 0))
     case GL_VIEWPORT: return ints(Int64(viewport.x), Int64(viewport.y), Int64(viewport.width), Int64(viewport.height))
     case GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT:
-      return .floats([device.limits.features.samplerAnisotropy ? device.limits.maxAnisotropy : 1])
+      return .floats([frame.limits.features.samplerAnisotropy ? frame.limits.maxAnisotropy : 1])
     default:
       fail(.invalidEnum)
       return nil

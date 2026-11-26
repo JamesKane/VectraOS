@@ -17,7 +17,19 @@ import VX
 @_silgen_name("td_venus_connect")
 func connectVenus() -> @convention(c) (OpaquePointer?, UnsafePointer<CChar>?) -> UnsafeRawPointer?
 
-func defaultPlatform() -> (any GLPlatform)? { NativePlatform() }
+func defaultPlatform() -> (any GLPlatform)? {
+  // The library's messages go to the program's output; the stats' clock is the monotonic one, and Mali's account of a
+  // submission is its last profile.
+  unsafe glesLog = { print($0) }
+  unsafe glesClock = { Deadline.now.ns }
+  unsafe glesDeviceProfile = { device in
+    guard let mali = device as? MaliDevice else { return nil }
+    let p = mali.lastProfile
+    return "\(p.steps) steps, \(p.submits) submits, \(p.buffers) buffers, plan \(p.planNanoseconds / 1000) us, total "
+      + "\(p.totalNanoseconds / 1000) us, waiting \(p.waitNanoseconds / 1000) us"
+  }
+  return NativePlatform()
+}
 
 /// The process's loop, made when the first window opens.
 final class LoopBox {

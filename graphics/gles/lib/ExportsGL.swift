@@ -298,10 +298,13 @@ nonisolated(unsafe) var stringCache: [GLenum: UnsafeMutablePointer<GLubyte>] = u
 }
 @c(gles_glDiscardFramebufferEXT) public func gles_glDiscardFramebufferEXT(_ target: GLenum, _ count: GLsizei,
                                                                           _ attachments: UnsafePointer<GLenum>?) {
-  // A hint: what the pass stores is kept as it is.
   guard let c = gl() else { return }
   guard target == GL_FRAMEBUFFER else { return c.fail(.invalidEnum) }
   guard count >= 0 else { return c.fail(.invalidValue) }
+  guard let attachments = unsafe attachments else { return }
+  var list: [GLenum] = []
+  for i in 0..<Int(count) { list.append(unsafe attachments[i]) }
+  c.discard(list)
 }
 
 // MARK: Shaders and programs

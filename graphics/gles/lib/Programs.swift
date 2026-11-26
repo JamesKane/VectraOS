@@ -76,7 +76,8 @@ extension GLContext {
       s.attachments -= 1
       if s.deletePending && s.attachments == 0 { share.shaderObjects[s.name] = nil }
     }
-    for (_, pipeline) in p.pipelines { device.destroy(pipeline) }
+    lastPipeline = nil
+    for (_, pipeline) in p.pipelines { frame.release(pipeline) }
     p.pipelines = [:]
     share.shaderObjects[p.name] = nil
   }
@@ -157,6 +158,7 @@ extension GLContext {
 
   func linkProgram(_ name: GLuint) {
     guard let p = program(name) else { return }
+    lastPipeline = nil
     if program === p {
       // The program in use is re-linked: what the open list recorded keeps its pipelines.
       for (_, pipeline) in p.pipelines { frame.release(pipeline) }
