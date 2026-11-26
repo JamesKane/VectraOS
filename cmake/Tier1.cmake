@@ -484,7 +484,8 @@ function(croi_tier1 bootfs_var depends_var)
   endif()
   # gl-test (gl-test(8), D183): GL ES 2.0 and EGL in C through libEGL.so and libGLESv2.so; boot-venus runs it, and the
   # board's images start it (board-test).
-  croi_tier1_c(gl-test SOURCES ${_src}/gl-test.c LIBS ${_gles_so} INCLUDES graphics/gles/include user/tier1/gl-shaders
+  croi_tier1_c(gl-test SOURCES ${_src}/gl-test.c LIBS ${_gles_so} NEEDED ${_lib}/libVulkanDriversNative.so
+               INCLUDES graphics/gles/include user/tier1/gl-shaders
                DEPENDS ${_src}/gl-shaders/shaders.h)
   # spawn-test: posix_spawn and waitpid (boot-cpu runs it through rc).
   croi_tier1_c(spawn-test SOURCES ${_src}/spawn-test.c)
