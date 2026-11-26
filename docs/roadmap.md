@@ -5,7 +5,7 @@ under `vx ci` and every budget it introduces has a running check
 (principle 13). This file looks ahead: a finished milestone keeps a brief
 here, and its history, step by step, is in git and `docs/decisions/`.
 
-## Where things stand (2026-11-23)
+## Where things stand (2026-11-26)
 
 - **V0 to V7 are done**: the kernel, the userland, the bring-up link,
   Taisce, the desktop, the Orange Pi 6 Plus and the swarm. amd64 and arm64
@@ -39,6 +39,10 @@ here, and its history, step by step, is in git and `docs/decisions/`.
   hardware has no polygon modes, and its scissor array faulted on the
   board). Next: the vkmark port and the CTS as a report (D174's step 7),
   then the video codec (the linlon-vpu spec), then the NPU.
+- **Audio, in QEMU while the board is allocated elsewhere** (V6f item 3,
+  2026-11-26): the graph and the buffer as the hardware's are decided
+  (D179, D180); audio(3)'s class and virtio-snd(3) play and record in
+  boot-audio. Next: the audio service with push streams, then HDA.
 - **Paused:** V6b, the Orange Pi RV2 (the owner, 2026-11-20). Its
   kernel runs on the board's harts from our own devicetree (D154), V3's
   link and the native suite pass there, 8 of its budgets over their
@@ -231,8 +235,13 @@ checked on the board through the cpu image and a warm boot.
    floor, the little cluster's temperature, a tested critical
    shutdown; the idle desktop's wakeups and resident memory (Carried
    forward).
-3. **Audio:** an audio class fed by a ring (V9's, brought forward), HDA
+3. **Audio:** the audio class (D179, D180; V9's, brought forward), HDA
    (`CIXH6020`) with the ALC269 (sky1-audio), and DisplayPort audio.
+   Begun in QEMU while the board is elsewhere (2026-11-26): the graph and
+   the buffer as the hardware's decided (D179, D180), audio(3)'s
+   directory over each stream's cyclic buffer, and virtio-snd(3), tested
+   by boot-audio. Next: the audio service with push streams, then HDA
+   against QEMU's `ich9-intel-hda` before the Sky1's.
 4. **Display:** the other DisplayPort outputs, HBR3, MST and hotplug
    acted on.
 5. **Before the large devices,** the backlog's adoptions (below the

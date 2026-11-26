@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# virtio-snd, modern only (there is no transitional sound device), serving
+# the audio class (D179): its devices at /dev/audio/0, 1, ...
+driver virtio-snd
+class audio
+match pci 1af4:1059

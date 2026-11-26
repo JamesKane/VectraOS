@@ -1,0 +1,6 @@
+# bin/audio-test (launcher.until=audio-test): the virtio sound device
+# bin/virtio-snd serves, at /dev/audio/0, and its driver's status.
+service audio-test
+program audio-test
+use devmgr
+mount /dev devmgr/dev
