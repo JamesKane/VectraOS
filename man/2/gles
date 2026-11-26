@@ -1,0 +1,102 @@
+page gles 2
+summary OpenGL ES 2.0 over the core: a GL context's state, its draws batched into the frame's passes, and the C names in libGLESv2.so
+names gles GLES libGLES.so libGLESv2.so GLContext ShaderFrontEnd ProgramInterface currentContext glesLog shaderFrontEnd
+names GL_SHADER_BINARY_FORMAT_SPIR_V glShaderBinary glMapBufferOES glUnmapBufferOES glBindVertexArrayOES
+src graphics/gles/lib/Types.swift graphics/gles/lib/Objects.swift graphics/gles/lib/Shaders.swift graphics/gles/lib/Spirv.swift
+src graphics/gles/lib/Pixels.swift graphics/gles/lib/Frame.swift graphics/gles/lib/Context.swift graphics/gles/lib/Textures.swift
+src graphics/gles/lib/Programs.swift graphics/gles/lib/Draw.swift graphics/gles/lib/Queries.swift graphics/gles/lib/ExportsGL.swift
+src graphics/gles/lib/GLSLFrontEnd.swift graphics/gles/lib/generated/Constants.swift graphics/gles/hosted/Platform.swift
+src graphics/gles/c/libGLESv2.c graphics/gles/c/generate.sh graphics/gles/include/GLES2/gl2.h graphics/gles/include/GLES2/gl2ext.h
+src graphics/gles/include/GLES2/gl2platform.h graphics/gles/include/KHR/khrplatform.h graphics/gles/README.md
+src graphics/gles/tests/Support.swift graphics/gles/tests/TestDevice.swift graphics/gles/tests/StateTests.swift
+src graphics/gles/tests/TextureTests.swift graphics/gles/tests/ProgramTests.swift
+keys opengl gles gl es 2.0 glsl shader texture buffer framebuffer renderbuffer draw pass pipeline uniform gpu core tier 1
+lang c
+
+# SYNOPSIS
+
+```c
+#include <GLES2/gl2.h>
+#include <GLES2/gl2ext.h>
+// linked against libGLESv2.so (and libEGL.so, egl(2)), or opened by name:
+// libGLESv2.so, libGLESv2.so.2
+```
+
+# DESCRIPTION
+
+The library is OpenGL ES 2.0 (the Khronos specification, 2.0.25) written in Swift on the core's `GPUDevice` and `GPUQueue` (gpucore(2)), as the Vulkan layer is; it is not written on Vulkan.
+A context is made and made current by EGL (egl(2)); every `gl*` call goes to the current context, and with none does nothing (a query returns 0).
+The C names are in `libGLESv2.so`; each calls the same name with a `gles_` prefix in `libGLES.so`, which has the library itself, so a program that links one name and opens another by `dlopen` (`libGLESv2.so.2`) reaches one library and one state.
+
+Errors are the specification's: a call that fails records `GL_INVALID_ENUM`, `GL_INVALID_VALUE`, `GL_INVALID_OPERATION`, `GL_INVALID_FRAMEBUFFER_OPERATION` or `GL_OUT_OF_MEMORY` (the first since the last `glGetError` is kept) and changes nothing.
+A device failure is `GL_OUT_OF_MEMORY`, and its words go to `glesLog` (`gles:` lines, which tier 1 prints where a program sets it).
+
+## Frames
+
+A device's draws, clears and uploads are recorded in GL's order into one open command list, and the draws into as few render passes as the state allows.
+A pass is opened by the first clear or draw of a framebuffer and begun at its first draw, so a `glClear` of the whole framebuffer before anything is drawn is the pass's load (a clear of a tiler's memory, no draw); a clear of part of it (the scissor) or after a draw is a clear inside the pass.
+A pass ends at a change of framebuffer, at an upload or copy (a copy is never inside a pass), at `glReadPixels`, `glFlush`, `glFinish` and a swap, and before a draw that reads an image the open list wrote after the pass began; the next pass on the framebuffer loads what the last stored.
+A barrier goes between a pass or copy that writes an image and the next that reads it.
+The list is submitted at `glFlush`, `glFinish`, a swap, `glReadPixels` and a fence (egl(2)), signalling the next value of the device's timeline; `glFinish` and `glReadPixels` wait for it.
+
+Each draw writes, into an upload ring of the frame's, a root block and set record as vulkanlowering(2) lays them out: the set record's binding 0 is the program's uniform block, and each later binding a sampler's texture and sampler slots.
+Each vertex attribute location is a vertex buffer of its own.
+A buffer's float attribute (and four normalized unsigned bytes) is read where it is, at an offset and stride that are multiples of 4; a client array is copied into the ring from the first vertex the draw reads to the last (the index range is found by reading the indices); an attribute of another type, or misaligned, is converted to floats as it is copied; a disabled attribute is its constant (`glVertexAttrib4f`), a vertex buffer of stride 0.
+`GL_UNSIGNED_BYTE` indices are widened to shorts, and `GL_LINE_LOOP` is a strip of indices that ends where it began.
+A program's uniform block is copied into the ring when a `glUniform*` changed it since its last copy.
+
+A pipeline is made the first time a program is drawn with a state, and kept by that state: the vertex layout (each location's format and stride), the primitive, the attachments' formats and GL's blend, depth, stencil, cull, front face, colour mask, polygon offset and sample coverage enables and functions.
+The stencil reference and masks, the polygon offset's values, the blend colour, the line width, the viewport (with `glDepthRangef`) and the scissor are the pass's, set by commands only where they change.
+A program's fragment stage is lowered once and its vertex stage once for each vertex layout.
+
+## Objects
+
+A buffer keeps its bytes on the CPU, which every call writes, and a copy on the device that a draw brings up to date; a copy the GPU may still read (submitted, or in the open list) is never written: the buffer moves to other memory, which goes back once the GPU is past it.
+`GL_OES_mapbuffer`'s map is the CPU's copy, written through at the unmap.
+
+Every colour texture and renderbuffer is the device's `rgba8`, whatever its GL format: an upload is converted on the CPU into the ring and copied into the image (`GL_RGBA`, `GL_RGB`, `GL_LUMINANCE`, `GL_ALPHA`, `GL_LUMINANCE_ALPHA` and `GL_BGRA_EXT` of `GL_UNSIGNED_BYTE`, and `GL_UNSIGNED_SHORT_5_6_5`, `4_4_4_4` and `5_5_5_1`), with `GL_UNPACK_ALIGNMENT`.
+A format without alpha reads alpha 1; a colour attachment without alpha is drawn with alpha's write off and cleared with alpha 1.
+A texture's image has the full mip chain of its level 0's size; a level GL never gave is never read, since a texture is complete (GL ES 2.0's 3.7.10) or reads (0, 0, 0, 1).
+A minification filter without mipmaps reads level 0 alone (a sampler's level of detail clamped to 0.25, which keeps the choice of the magnification filter).
+`glGenerateMipmap` is a blit of each level from the one above.
+A depth texture (`GL_OES_depth_texture`) is `depth16` (`GL_UNSIGNED_SHORT`) or `depth32f` (`GL_UNSIGNED_INT`).
+A depth renderbuffer of 24 or 32 bits is `depth32f`, and a depth and stencil one (`GL_OES_packed_depth_stencil`) the device's combined format, where it has one.
+A texture's heap slot is its image's; samplers are kept by their state, one heap slot for each distinct one, written only when nothing in the open list reads the slot (the Mali backend has 16).
+
+A framebuffer object is complete as GL ES 2.0's 4.4.5 says; a depth and a stencil attachment that are different images are `GL_FRAMEBUFFER_UNSUPPORTED`, since a pass has one depth and stencil attachment.
+Framebuffer 0 is the surface EGL made current.
+GL's first row is its bottom one, which is where the core's attachments have their row 0, so an off-screen framebuffer is drawn and read as it is; a window's image has its first row at the top, so it is drawn flipped (egl(2)).
+
+## Shaders
+
+`glShaderSource` and `glCompileShader` give GLSL ES 1.00 to the front end (glsl(2)), and `glLinkProgram` links two compiled shaders into Vulkan-style SPIR-V and the program's interface.
+A program also links from SPIR-V given to `glShaderBinary` in `GL_SHADER_BINARY_FORMAT_SPIR_V` (0x9551, the one format `GL_SHADER_BINARY_FORMATS` lists), two modules whose entry points are `main`, in the front end's convention: the uniforms one std140 block at set 0, binding 0, the same in both stages; each sampler a combined image sampler at set 0, bindings 1 on; the attributes at their locations, which `glBindAttribLocation` doesn't move.
+Its interface is read from the modules: each block member by its name (a structure's as `s.m`, an array's as `a[0]`), each sampler by its variable's, a uint (a bool in a block) as `GL_BOOL`.
+Its vertex stage writes GL's clip space, which the library makes the core's: before each return of the entry point, Position's z becomes (z + w) / 2.
+The front end's programs do that themselves, and begin their block with 32 bytes of driver words, which each draw writes for its target (the y scales of `gl_Position`, `gl_FragCoord` and `gl_PointCoord`, and `gl_DepthRange`): a window's flip is their vertex stage's, the viewport upright.
+A uniform's location is its first element's place among every element of the program's uniforms; `glUniform*` checks the type and size as the specification does and writes the block as std140 lays it out (a matrix's columns `matrixStride` apart, a bool as 1 or 0); a sampler's value is a texture unit, of the 8.
+
+## Extensions
+
+`GL_EXTENSIONS` lists `GL_OES_mapbuffer`, `GL_OES_element_index_uint`, `GL_OES_depth_texture`, `GL_OES_depth24`, `GL_OES_depth32`, `GL_OES_rgb8_rgba8`, `GL_OES_texture_npot`, `GL_OES_vertex_array_object`, `GL_EXT_texture_format_BGRA8888` and `GL_EXT_discard_framebuffer`, and `GL_OES_packed_depth_stencil` and `GL_EXT_texture_filter_anisotropic` where the device has them.
+
+## Limits
+
+8 vertex attributes (the root block's 8 vertex buffers), 8 texture units, none in the vertex stage, 256 uniform vectors in each stage, 15 varying vectors, textures and renderbuffers to the device's largest image or 4096, no compressed formats, no multisampled surfaces (`GL_SAMPLES` is 0), and every precision 32-bit (`glGetShaderPrecisionFormat`).
+`GL_IMPLEMENTATION_COLOR_READ_FORMAT` and `_TYPE` are `GL_RGBA` and `GL_UNSIGNED_BYTE`, the one pair `glReadPixels` takes.
+
+# SEE ALSO
+
+egl(2), glsl(2), gpucore(2), vulkanlowering(2), gl-test(8)
+
+# BUGS
+
+A pass split by a draw that reads what the frame wrote loads its attachments again; a depth and stencil attachment of both planes can't be loaded on Mali.
+An upload into a texture, a `glCopyTexImage2D` and a `glGenerateMipmap` end the open pass even when it doesn't read the image.
+A clear with the colour mask partly off clears every channel; a partial stencil write mask clears all of the stencil.
+`glCopyTexImage2D` into `GL_LUMINANCE` or `GL_ALPHA` keeps the framebuffer's other channels in the texture, which a shader reads.
+A cube map's sampler is refused by vulkanlowering(2) (`a cube image`), so a program with a `samplerCube` doesn't link; nor does a program that samples a texture in its vertex stage.
+A program given as SPIR-V draws into a window with the viewport flipped, so its `gl_FragCoord.y` counts from the window's top and `gl_PointCoord.y` is inverted there.
+A buffer's attribute of another type than float is converted at every draw, not once.
+`glDiscardFramebufferEXT` changes nothing that is stored.
+The current context is the process's, not each thread's.

@@ -31,6 +31,7 @@ let shaderArrays = [
 /// Directories whose SPIR-V also goes into a C header, as `static const uint32_t` arrays of its words.
 let shaderHeaders = [
   ("user/tier1/vulkan-shaders", "user/tier1/vulkan-shaders/shaders.h"),
+  ("user/tier1/gl-shaders", "user/tier1/gl-shaders/shaders.h"),
 ]
 
 func shadersCommand(_ args: [String]) -> Bool {

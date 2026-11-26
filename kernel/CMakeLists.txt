@@ -713,6 +713,14 @@ if(_vulkan_test)
   endif()
   set(_vulkan_test_board_entries bin/vulkan-test=${_vulkan_test}
       etc/manifests/vulkan-test.manifest=${PROJECT_SOURCE_DIR}/user/tier1/vulkan-test-board.manifest)
+  # gl-test (user/tier1/gl-test.c, D183): OpenGL ES and EGL's check, beside vulkan-test in both.
+  get_property(_gl_test GLOBAL PROPERTY CROI_TIER1_GL_TEST)
+  if(_gl_test)
+    list(APPEND _vulkan_test_entries bin/gl-test=${_gl_test}
+         etc/manifests/gl-test.manifest=${PROJECT_SOURCE_DIR}/user/tier1/gl-test.manifest)
+    list(APPEND _vulkan_test_board_entries bin/gl-test=${_gl_test}
+         etc/manifests/gl-test.manifest=${PROJECT_SOURCE_DIR}/user/tier1/gl-test-board.manifest)
+  endif()
 endif()
 # glmark2 (D183, cmake/Glmark2.cmake), where tier 1 and its port are built: the program, its data at lib/glmark2
 # and its manifest, in the board's desktop image only, which runs it.
