@@ -127,7 +127,7 @@ extension GLContext {
     case GL_IMPLEMENTATION_COLOR_READ_TYPE: return ints(Int64(GL_UNSIGNED_BYTE))
     case GL_LINE_WIDTH: return .floats([lineWidth])
     case GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS, GL_MAX_TEXTURE_IMAGE_UNITS: return ints(Int64(GLContext.textureUnits))
-    case GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS: return ints(0)
+    case GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS: return ints(Int64(GLContext.textureUnits))
     case GL_MAX_CUBE_MAP_TEXTURE_SIZE, GL_MAX_TEXTURE_SIZE, GL_MAX_RENDERBUFFER_SIZE: return ints(maxTexture)
     case GL_MAX_FRAGMENT_UNIFORM_VECTORS, GL_MAX_VERTEX_UNIFORM_VECTORS: return ints(256)
     case GL_MAX_VARYING_VECTORS: return ints(15)

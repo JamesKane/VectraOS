@@ -196,6 +196,7 @@ extension GLContext {
     if colorMask.1 { mask |= 2 }
     if colorMask.2 { mask |= 4 }
     if colorMask.3 && target.colorAlpha { mask |= 8 }
+    if target.color == nil { mask = 0 }
     flags |= mask << 12
     flags |= UInt32(cullFaceMode - GL_FRONT) << 16  // FRONT, BACK; FRONT_AND_BACK is 0x408
     flags |= (depthFunc - GL_NEVER) << 20
@@ -206,7 +207,7 @@ extension GLContext {
     }
     var t: UInt8 = 0
     for (i, x) in topologies.enumerated() where x == topology { t = UInt8(i) }
-    return PipelineKey(layout: layout, topology: t, colorFormat: formatCode(target.colorFormat),
+    return PipelineKey(layout: layout, topology: t, colorFormat: formatCode(target.colorFormat ?? target.scratch?.format),
                        depthFormat: formatCode(target.depthStencilFormat), flags: flags, blend: blend && target.color != nil ? b : 0,
                        stencilFront: stencilTest ? stencil(stencilFront) : 0, stencilBack: stencilTest ? stencil(stencilBack) : 0)
   }
@@ -259,7 +260,7 @@ extension GLContext {
     ms.alphaToCoverage = on(6) && device.limits.features.alphaToCoverage
     if on(7) { ms.sampleMask = on(10) != on(9) ? ~0 : 0 }
     var colorFormats: [PixelFormat] = []
-    if let c = target.colorFormat { colorFormats.append(c) }
+    if let c = target.colorFormat { colorFormats.append(c) } else if let s = target.scratch { colorFormats.append(s.format) }
     return GraphicsPipelineDescriptor(vertex: vertex, fragment: program.fragmentBytes, colorFormats: colorFormats, blend: .opaque,
                                       topology: topologies[Int(key.topology)], depthStencilFormat: target.depthStencilFormat,
                                       depthStencil: ds, rasterization: r, multisample: ms,

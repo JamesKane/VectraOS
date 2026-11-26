@@ -61,6 +61,7 @@ final class TestDevice: GPUDevice {
     l.features.imageRegionCopies = true
     l.features.clearAttachments = true
     l.features.alphaToCoverage = true
+    l.features.samplerMinMagFilters = true
     l.heapTextures = 4096
     l.heapSamplers = heapSamplers
     l.maxImageDimension = 4096

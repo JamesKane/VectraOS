@@ -86,6 +86,23 @@ final class Harness {
     return p
   }
 
+  /// A program of GLSL ES sources, `position` at location 0.
+  func glsl(_ vertex: String, _ fragment: String) -> GLuint {
+    let p = gles_glCreateProgram()
+    for (source, type) in [(vertex, GL_VERTEX_SHADER), (fragment, GL_FRAGMENT_SHADER)] {
+      let s = gles_glCreateShader(type)
+      source.withCString { c in
+        var ptr: UnsafePointer<GLchar>? = c
+        gles_glShaderSource(s, 1, &ptr, nil)
+      }
+      gles_glCompileShader(s)
+      gles_glAttachShader(p, s)
+    }
+    gles_glBindAttribLocation(p, 0, "position")
+    gles_glLinkProgram(p)
+    return p
+  }
+
   func linked(_ p: GLuint) -> Bool {
     var status: GLint = 0
     gles_glGetProgramiv(p, GL_LINK_STATUS, &status)

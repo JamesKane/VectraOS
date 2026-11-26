@@ -765,7 +765,11 @@ public final class GLContext {
     }
     t.width = w
     t.height = h
-    if t.color == nil { (t.redBits, t.greenBits, t.blueBits, t.alphaBits) = (0, 0, 0, 0) }
+    if t.color == nil {
+      (t.redBits, t.greenBits, t.blueBits, t.alphaBits) = (0, 0, 0, 0)
+      // A pass with no colour attachment draws into a scratch image no one reads (the Mali backend's passes have one).
+      if let image = try? frame.scratchColor(width: w, height: h) { t.scratch = ImageView(image) }
+    }
     return (GL_FRAMEBUFFER_COMPLETE, t)
   }
 

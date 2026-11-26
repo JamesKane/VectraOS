@@ -365,7 +365,9 @@ extension GLContext {
     if let s = t.samplerSlot, frame.heap.samplerValid(s, t.samplerGeneration, epoch: frame.epoch) {
       return (slot, s, image.handle)
     }
-    let d = t.samplerDescriptor
+    var d = t.samplerDescriptor
+    // A device whose samplers have one filter (Mali, so far) takes the magnification filter for both.
+    if d.minFilter != d.magFilter && !device.limits.features.samplerMinMagFilters { d.minFilter = d.magFilter }
     var found = try frame.heap.samplerSlot(d, epoch: frame.epoch)
     if found == nil {
       // Every sampler slot is read by the open list: submit it, and the slots are free to be written again.

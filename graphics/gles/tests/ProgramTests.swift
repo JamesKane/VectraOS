@@ -180,6 +180,94 @@ extension GLTests {
     #expect(program.block!.load(fromByteOffset: 8, as: Float.self) == 64)
   }
 
+  /// A shadow map: depth drawn into a depth texture of a framebuffer with no colour, then sampled (as glmark2's shadow).
+  @Test func aDepthTextureIsDrawnThenSampled() throws {
+    let mali = try MaliDevice(transport: FakeTransport())
+    let h = Harness(mali, depth: .depth32f)
+    nonisolated(unsafe) var said: [String] = []
+    unsafe glesLog = { unsafe said.append($0) }
+    defer { unsafe glesLog = nil }
+    let depthVS = "attribute vec4 position; uniform mat4 mvp; void main() { gl_Position = mvp * position; }"
+    let depthFS = "precision mediump float; void main() { gl_FragColor = vec4(1.0); }"
+    let sampleVS = "attribute vec4 position; uniform mat4 mvp; varying vec4 coord; void main() { coord = mvp * position; gl_Position = position; }"
+    let sampleFS = """
+      precision mediump float;
+      uniform sampler2D map;
+      varying vec4 coord;
+      void main() {
+        vec4 c = coord / coord.w;
+        float d = texture2D(map, c.st).x;
+        gl_FragColor = vec4(d < c.z ? 0.5 : 1.0);
+      }
+      """
+    let depth = h.glsl(depthVS, depthFS)
+    let sample = h.glsl(sampleVS, sampleFS)
+    #expect(h.linked(depth) && h.linked(sample), "\(h.log(depth)) \(h.log(sample))")
+    var t: GLuint = 0, f: GLuint = 0
+    gles_glGenTextures(1, &t)
+    gles_glBindTexture(GL_TEXTURE_2D, t)
+    gles_glTexImage2D(GL_TEXTURE_2D, 0, GLint(GL_DEPTH_COMPONENT), 64, 64, 0, GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, nil)
+    gles_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GLint(GL_NEAREST))
+    gles_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GLint(GL_NEAREST))
+    gles_glGenFramebuffers(1, &f)
+    gles_glBindFramebuffer(GL_FRAMEBUFFER, f)
+    gles_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, t, 0)
+    #expect(gles_glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE)
+    let identity: [Float] = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
+    h.fullTriangle()
+    for _ in 0..<3 {
+      gles_glBindFramebuffer(GL_FRAMEBUFFER, f)
+      gles_glViewport(0, 0, 64, 64)
+      gles_glColorMask(0, 0, 0, 0)
+      gles_glEnable(GL_DEPTH_TEST)
+      gles_glClear(GL_DEPTH_BUFFER_BIT)
+      gles_glUseProgram(depth)
+      gles_glUniformMatrix4fv(gles_glGetUniformLocation(depth, "mvp"), 1, 0, identity)
+      gles_glDrawArrays(GL_TRIANGLES, 0, 3)
+      gles_glBindFramebuffer(GL_FRAMEBUFFER, 0)
+      gles_glColorMask(1, 1, 1, 1)
+      gles_glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+      gles_glUseProgram(sample)
+      gles_glUniformMatrix4fv(gles_glGetUniformLocation(sample, "mvp"), 1, 0, identity)
+      gles_glUniform1i(gles_glGetUniformLocation(sample, "map"), 0)
+      gles_glDrawArrays(GL_TRIANGLES, 0, 3)
+      gles_glFinish()
+    }
+    #expect(h.error() == GL_NO_ERROR, "\(unsafe said)")
+  }
+
+  /// A texture sampled in the vertex stage (glmark2's terrain), on the Mali backend.
+  @Test func aVertexStageSamples() throws {
+    let mali = try MaliDevice(transport: FakeTransport())
+    nonisolated(unsafe) var said: [String] = []
+    unsafe glesLog = { unsafe said.append($0) }
+    defer { unsafe glesLog = nil }
+    let h = Harness(mali, depth: .depth32f)
+    var units: GLint = 0
+    gles_glGetIntegerv(GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS, &units)
+    #expect(units == 8)
+    let vs = """
+      attribute vec4 position;
+      uniform sampler2D height;
+      varying float h;
+      void main() { h = texture2D(height, position.xy * 0.5 + 0.5).x; gl_Position = position + vec4(0.0, h, 0.0, 0.0); }
+      """
+    let fs = "precision mediump float; varying float h; void main() { gl_FragColor = vec4(h); }"
+    let p = h.glsl(vs, fs)
+    #expect(h.linked(p), "\(h.log(p))")
+    var t: GLuint = 0
+    gles_glGenTextures(1, &t)
+    gles_glBindTexture(GL_TEXTURE_2D, t)
+    let texel: [UInt8] = [128, 0, 0, 255]
+    gles_glTexImage2D(GL_TEXTURE_2D, 0, GLint(GL_RGBA), 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, texel)
+    gles_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GLint(GL_NEAREST))
+    gles_glUseProgram(p)
+    h.fullTriangle()
+    gles_glDrawArrays(GL_TRIANGLES, 0, 3)
+    gles_glFinish()
+    #expect(h.error() == GL_NO_ERROR, "\(unsafe said)")
+  }
+
   @Test func theMaliBackendTakesThePipelines() throws {
     nonisolated(unsafe) var said: [String] = []
     unsafe glesLog = { unsafe said.append($0) }

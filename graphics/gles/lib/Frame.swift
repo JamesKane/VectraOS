@@ -189,6 +189,8 @@ struct RenderTarget: Equatable {
   var hasStencil = false
   var width: Int32 = 0
   var height: Int32 = 0
+  /// The colour attachment a pass has where GL's framebuffer has none: drawn into with nothing written, never stored.
+  var scratch: ImageView?
   /// A window's image, whose first row is the top: drawn with the viewport flipped.
   var flipped = false
   /// The colour attachment has alpha; without, alpha isn't written and reads 1.
@@ -273,6 +275,7 @@ final class Frame {
     for b in spareBuffers { device.free(b.memory) }
     if let b = blackTexture { device.destroy(b.image) }
     if let b = blackCube { device.destroy(b.image) }
+    for s in scratchImages { device.destroy(s.image) }
   }
 
   func release(_ image: GPUImage) { releaseImages.append(image) }
@@ -319,6 +322,7 @@ final class Frame {
     if let c = t.color { noteWrite(c.image) }
     if let d = t.depthStencil { noteWrite(d.image) }
     var colors: [Attachment] = []
+    if t.color == nil, let scratch = t.scratch { colors.append(Attachment(view: scratch, load: .dontCare, store: .discard)) }
     if let c = t.color {
       var load = LoadAction.load
       if let v = p.clear.color { load = .clear(v.0, v.1, v.2, t.colorAlpha ? v.3 : 1) }
@@ -398,6 +402,16 @@ final class Frame {
       device.free(spareBuffers.removeFirst().memory)
     }
     spareBuffers.append((m, bytes, value(ofEpoch: openUse)))
+  }
+
+  /// Scratch colour images by size, for passes GL gives no colour attachment.
+  var scratchImages: [(width: Int32, height: Int32, image: GPUImage)] = []
+
+  func scratchColor(width: Int32, height: Int32) throws(GPUError) -> GPUImage {
+    if let s = scratchImages.first(where: { $0.width == width && $0.height == height }) { return s.image }
+    let image = try device.makeImage(ImageDescriptor(format: .rgba8, width: width, height: height, usage: .renderTarget))
+    scratchImages.append((width, height, image))
+    return image
   }
 
   /// The slot of the texture an incomplete one reads: (0, 0, 0, 1).
