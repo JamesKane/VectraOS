@@ -8,7 +8,8 @@ keys gles opengl egl benchmark score frames fps glmark2 port gpu mali panfrost t
 
 ```text
 echo start glmark2 >/svc/launcher/ctl
-glmark2-es2-vectraos [--off-screen] [--size WxH] [-b BENCHMARK]... [--run-forever] [-l] [-d]
+glmark2-es2-vectraos [--off-screen] [--size WxH] [-b BENCHMARK]...
+                     [--run-forever] [-l] [-d]
 ```
 
 # DESCRIPTION
@@ -26,7 +27,7 @@ Its models, shaders and textures are `/lib/glmark2` (glmark2's `GLMARK_DATA_PATH
 It carries libpng, libjpeg-turbo and zlib, compiled into it alone (ports/glmark2/README.md says which releases).
 
 On the Orange Pi 6 Plus it is an app of the desktop image, started by the launcher (`echo start glmark2 >/svc/launcher/ctl`) once Radharc is up.
-In QEMU, `esp-glmark2` (built on request: `ninja -C build/arm64 esp-glmark2`) has userboot start it with no arguments.
+In QEMU, `esp-glmark2` (built on request: `ninja -C build/arm64 esp-glmark2`) has userboot start it with no arguments; with no manifest there is no `/lib/glmark2`, so it says it can't open the models and textures directories, and with no GPU's EGL it stops at loading the EGL library.
 
 # FILES
 

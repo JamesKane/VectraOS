@@ -329,6 +329,12 @@ struct StreamSink: FormatSink {
 @c(scalbn) public func exported_scalbn(_ x: Double, _ n: Int32) -> Double { ldexp(x, n) }
 @c(frexp) public func exported_frexp(_ x: Double, _ e: UnsafeMutablePointer<Int32>) -> Double { unsafe frexp(x, e) }
 @c(modf) public func exported_modf(_ x: Double, _ i: UnsafeMutablePointer<Double>) -> Double { unsafe modf(x, i) }
+@c(modff) public func exported_modff(_ x: Float, _ i: UnsafeMutablePointer<Float>) -> Float {
+  var whole = 0.0
+  let fraction = unsafe modf(Double(x), &whole)
+  unsafe i.pointee = Float(whole)
+  return Float(fraction)
+}
 
 // MARK: scanf's family from a string, and strftime (their C entries are
 // native/stdio.c's and native/stdlib.c's)

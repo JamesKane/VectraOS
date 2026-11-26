@@ -1,6 +1,6 @@
 page math 2
 summary mathematical functions
-names math floor ceil trunc round roundeven rint nearbyint fabs sqrt exp exp2 log log2 log10 sin cos tan atan atan2 asin acos pow floorf ceilf truncf roundf roundevenf rintf nearbyintf fabsf sqrtf expf exp2f logf log2f log10f sinf cosf tanf atanf atan2f asinf acosf powf copysign fmod remainder copysignf fmodf remainderf fma fmaf ldexp scalbn frexp modf
+names math floor ceil trunc round roundeven rint nearbyint fabs sqrt exp exp2 log log2 log10 sin cos tan atan atan2 asin acos pow floorf ceilf truncf roundf roundevenf rintf nearbyintf fabsf sqrtf expf exp2f logf log2f log10f sinf cosf tanf atanf atan2f asinf acosf powf copysign fmod remainder copysignf fmodf remainderf fma fmaf ldexp scalbn frexp modf modff
 src system/libc/include/math.h system/libc/math/Exact.swift system/libc/math/Transcendental.swift system/libc/math/Inverse.swift system/libc/math/Power.swift system/libc/native/Exports.swift
 keys libm floating point rounding sine cosine tangent arctangent power logarithm square root
 lang c
@@ -66,6 +66,7 @@ double ldexp(double x, int n);
 double scalbn(double x, int n);
 double frexp(double x, int *e);
 double modf(double x, double *i);
+float modff(float x, float *i);
 ```
 
 # DESCRIPTION
@@ -84,7 +85,7 @@ These have one right answer and give it, bit for bit as glibc does.
 `fma` computes x times y plus z rounded once; `fmaf` rounds once to `float`.
 `ldexp` and `scalbn` (the radix is 2, so they are the same function) return x times 2 to the <n>, rounded once.
 `frexp` returns a significand in [0.5, 1) and stores the exponent in <e>; for zero, infinity and NaN it returns x and stores 0.
-`modf` returns the fractional part of x and stores the integer part in <i>, both with x's sign.
+`modf` returns the fractional part of x and stores the integer part in <i>, both with x's sign; `modff` is its float form, exact as well.
 `fmodf` and `remainderf` are exact too.
 
 ## Transcendental functions

@@ -94,6 +94,7 @@ double ldexp(double x, int n);
 double scalbn(double x, int n);
 double frexp(double x, int *e);
 double modf(double x, double *i);
+float modff(float x, float *i);
 
 #ifdef __cplusplus
 }

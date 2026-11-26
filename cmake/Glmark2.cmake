@@ -71,7 +71,7 @@ function(croi_tier1_glmark2)
       COMMAND ${CMAKE_COMMAND} -E make_directory ${_o}
       COMMAND ${_cc} ${_cflags} ${_defines} ${_includes} -c ${_s}/${_f} -o ${_o}/${_b}
       DEPENDS cxx ${_s}/${_f} ${_sysroot}/usr/lib/libsys.a
-      COMMENT "glmark2: ${_f}")
+      COMMENT "glmark2: ${_f}" VERBATIM)
     list(APPEND _objects ${_o}/${_b})
   endforeach()
   # The EGL and GLES libraries (graphics/gles), when tier 1 builds them and
