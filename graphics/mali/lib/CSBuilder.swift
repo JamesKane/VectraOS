@@ -208,9 +208,12 @@ public struct StepChain: Equatable, Sendable {
   public var waitAbove: UInt64?
   /// Whether the step adds one to it when it is done.
   public var signal: Bool
-  public init(address: UInt64, waitAbove: UInt64?, signal: Bool = true) {
+  /// Whether a render pass's fragment stream waits too (false: the step before ended on the fragment queue, whose order is the wait).
+  public var fragmentWaits: Bool
+  public init(address: UInt64, waitAbove: UInt64?, signal: Bool = true, fragmentWaits: Bool = true) {
     self.address = address
     self.waitAbove = waitAbove
     self.signal = signal
+    self.fragmentWaits = fragmentWaits
   }
 }

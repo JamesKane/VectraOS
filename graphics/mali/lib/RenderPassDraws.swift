@@ -687,12 +687,12 @@ extension RenderPass {
     let fragmentSlot = r.layout == .singleQueue ? singleFragmentSlot : tilingSlot
     let fragmentMask = UInt16(1) << UInt16(fragmentSlot)
 
-    func prologue(_ b: inout CSBuilder, resources: CSResources) {
+    func prologue(_ b: inout CSBuilder, resources: CSResources, fragment: Bool = false) {
       if r.initialiseQueues {
         b.initialiseSlotState()
         b.requestResources(resources)
       }
-      b.startStep(r.chain)
+      if !fragment || r.chain?.fragmentWaits != false { b.startStep(r.chain) }
       b.move64(heapContextRegister, r.heapContext)
       b.emit(CSInstruction.heapSet(addressPair: heapContextRegister))
     }
@@ -814,7 +814,7 @@ extension RenderPass {
       let stream1At = alignUp(stream0At + s0.size, 64)
       var b1 = CSBuilder(address: va(stream1At), capacityBytes: max(capacity - stream1At, 0), registers: registers,
                          scoreboards: scoreboards)
-      prologue(&b1, resources: .fragment)
+      prologue(&b1, resources: .fragment, fragment: true)
       b1.move64(syncAddressRegister, syncVA)
       b1.move64(syncValueRegister, 1)
       zeroReports(&b1)

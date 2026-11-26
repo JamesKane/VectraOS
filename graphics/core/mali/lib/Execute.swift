@@ -83,6 +83,7 @@ extension MaliDevice {
     if let e = rule.accept(wait: wait, signal: signal) { throw e }
     var held: [Region] = []
     let started = (renderStarted, computeSlotsReady, computeResourceRequested)
+    let lastQueue = chainQueue
     do {
       let steps = try plan(list, held: &held)
       lastProfile.planNanoseconds = clock() &- start
@@ -100,14 +101,28 @@ extension MaliDevice {
         for (i, step) in steps.enumerated() {
           gpuMayHaveWritten(step)
           let k = base + UInt64(i)
-          jobs += try self.jobs(step, chain: StepChain(address: chain.address, waitAbove: k == 0 ? nil : k - 1), held: &held)
+          // A stream on the queue the step before ended on needs no wait: the queue runs its jobs in order, each to its last
+          // slot's wait, and the next job starts with the driver's clean and invalidate of the caches. Only a stream on
+          // another queue waits on the chain (and a wait costs the GPU some 18 us: loinnir-test's frame budgets).
+          var c = StepChain(address: chain.address, waitAbove: k == 0 ? nil : k - 1)
+          let queue: UInt32
+          if case .render = step {
+            queue = Self.tilerQueue + 1
+            if chainQueue == queue { c.fragmentWaits = false }
+          } else {
+            queue = Self.computeQueue
+            if chainQueue == queue { c.waitAbove = nil }
+          }
+          jobs += try self.jobs(step, chain: c, held: &held)
+          chainQueue = queue
         }
         try launch(group: try workGroup(), jobs: jobs, signal: signal)
         chainValue = base + UInt64(steps.count)
       }
     } catch {
-      // Streams that never reached the GPU set no queue's state.
+      // Streams that never reached the GPU set no queue's state, nor which queue the last step ended on.
       (renderStarted, computeSlotsReady, computeResourceRequested) = started
+      chainQueue = lastQueue
       // Whoever waits for the value is not left waiting for ever, nor sees it before what came first is done.
       if before > completed { try? self.wait(before) }
       transport.raiseSync(timeline, to: signal)
@@ -515,6 +530,8 @@ extension MaliDevice {
     instances: Int, vertexOffset: Int32, firstInstance: UInt32, indices: IndexSource? = nil, firstIndex: UInt32 = 0,
     indirect: IndirectArguments? = nil, query: UInt64, dynamic dyn: DynamicValues, zs: ZSBinding?
   ) throws(GPUError) {
+    let t0 = clock()
+    defer { lastProfile.drawNanoseconds &+= clock() &- t0 }
     guard let record = target else { throw .invalid("a draw outside a pass") }
     guard case .graphics(let vs, let fs, let format, var blend, let state)? = pipelines[p.handle] else {
       throw .invalid("a pipeline that isn't this device's graphics pipeline")
@@ -677,6 +694,7 @@ extension MaliDevice {
     computeSlotsReady = false
     computeResourceRequested = false
     chainRegion?.buffer.store(chainValue, at: 0)
+    chainQueue = nil
   }
 
   /// A group that ended, in words (the driver reports the group's state, not the fault's address).
@@ -1011,6 +1029,8 @@ extension MaliDevice {
     var attempts = 0
     while image == nil {
       do throws(RenderError) {
+        let t0 = clock()
+        defer { lastProfile.recipeNanoseconds &+= clock() &- t0 }
         let made = try RenderPass.build(at: region.address, capacity: region.size, request: request, registers: registers,
                                         scoreboards: scoreboards, arch: info.arch)
         image = made.image
@@ -1032,7 +1052,9 @@ extension MaliDevice {
       }
     }
     guard let built = image else { throw .invalid("no render pass") }
+    let t1 = clock()
     put(built.memory, into: region)
+    lastProfile.copyNanoseconds &+= clock() &- t1
     trimTransient(region, used: built.memory.count)
     var jobs: [MaliJob] = []
     probeLastPass = (region.address, region.size, built.streams.map { ($0.address, $0.size) })

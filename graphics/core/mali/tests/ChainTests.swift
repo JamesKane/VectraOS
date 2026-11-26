@@ -49,15 +49,30 @@ func chainUse(_ words: [UInt64], address: UInt64) -> (waits: [UInt64], adds: Int
     let chain = try #require(gpu.chainRegion).address
     #expect(t.streams.prefix(3).allSatisfy { chainUse($0, address: chain) == ([], 0) })
     let uses = t.streams.dropFirst(3).map { chainUse($0, address: chain) }
-    // The first pass waits for nothing; the second pass's two streams wait for the first step (above 0), the copy for the
-    // second (above 1). Each step's last stream adds one: the passes' fragment streams and the copy's.
-    #expect(uses.map { $0.waits } == [[], [], [0], [0], [1]])
+    // The first pass waits for nothing; the second pass's tiling stream waits for the first step (above 0), and its fragment
+    // stream not (the first ended on its queue, whose order is the wait); the copy waits for the second (above 1). Each
+    // step's last stream adds one: the passes' fragment streams and the copy's.
+    #expect(uses.map { $0.waits } == [[], [], [0], [], [1]])
     #expect(uses.map { $0.adds } == [0, 1, 0, 1, 1])
     #expect(gpu.chainValue == 3)
     // The next list's first step waits for the last step of this one.
     t.streams = []
     try gpu.run(list, signal: 2)
-    #expect(t.streams.map { chainUse($0, address: chain).waits } == [[2], [2], [3], [3], [4]])
+    #expect(t.streams.map { chainUse($0, address: chain).waits } == [[2], [2], [3], [], [4]])
+  }
+
+  @Test func stepsOnTheQueueTheLastEndedOnDontWait() throws {
+    let (gpu, t) = try device()
+    let m = try gpu.allocate(.device, bytes: 4096)
+    var list = GPUCommandList()
+    list.fill(m, bytes: 4096, value: 1)
+    list.fill(m, bytes: 4096, value: 2)
+    try gpu.run(list, signal: 1)
+    let chain = try #require(gpu.chainRegion).address
+    // Two kernels on the compute queue: the second follows the first in the queue's order, and both add their one.
+    #expect(t.streams.dropFirst(3).map { chainUse($0, address: chain).waits } == [[], []])
+    #expect(t.streams.dropFirst(3).map { chainUse($0, address: chain).adds } == [1, 1])
+    #expect(gpu.chainValue == 2)
   }
 
   @Test func aPassTakesAHundredDrawsAndMore() throws {

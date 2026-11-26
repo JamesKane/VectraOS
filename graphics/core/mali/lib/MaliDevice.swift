@@ -183,6 +183,11 @@ public struct SubmitProfile: Sendable, Equatable {
   public var submitNanoseconds: UInt64 = 0
   /// The CPU's waits inside the submission, for a step before it submits the next.
   public var waitNanoseconds: UInt64 = 0
+  /// Of the plan, the draws' (each draw's state); of the layout, the render pass recipe's (`RenderPass.build`) and the copy of
+  /// its bytes into the GPU's memory.
+  public var drawNanoseconds: UInt64 = 0
+  public var recipeNanoseconds: UInt64 = 0
+  public var copyNanoseconds: UInt64 = 0
   /// The steps, the transport's submits, and the buffers made for the submission (each a call to the driver to make and one to bind).
   public var steps = 0
   public var submits = 0
@@ -266,6 +271,8 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   /// the CPU has submitted, which it reaches once they all are.
   var chainRegion: Region?
   var chainValue: UInt64 = 0
+  /// The queue the last step submitted ended on (its signalling stream's): the next step's stream on that queue needs no wait.
+  var chainQueue: UInt32?
   /// The timeline value of the submission before the last: a submission is laid out while the one before it runs, and
   /// waits for the one before that.
   var previousSignal: UInt64 = 0
