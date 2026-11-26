@@ -129,7 +129,7 @@ its own drivers, so it can hold every driver to the same budget.
 
 ### 2.5 Consoles
 
-From the NeoDarwin API study (`../NeoDarwin-api-study/platforms/consoles-modern-SUMMARY.md`)
+From the NeoDarwin API study (`../NeoDarwin-workspace/NeoDarwin-api-study/platforms/consoles-modern-SUMMARY.md`)
 and the public PS5 and Xbox material:
 
 - **A system mixer with a fixed period** (NDSP's 4.9 ms, the Switch's
@@ -678,5 +678,5 @@ keeps to a few minutes (the owner rejects long-running checks).
 - Android, AAudio and MMAP documentation.
 - `../fuchsia/sdk/fidl/fuchsia.hardware.audio`, `../fuchsia/src/media/audio/audio_core`.
 - `../9front/sys/man/3/audio`, `../9front/sys/src/cmd/audio/mixfs`.
-- `../NeoDarwin-api-study/platforms/consoles-modern-SUMMARY.md`.
+- `../NeoDarwin-workspace/NeoDarwin-api-study/platforms/consoles-modern-SUMMARY.md`.
 - `../chinese-wall/specs/sky1-audio` (00, 02, 03).

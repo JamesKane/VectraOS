@@ -17,7 +17,7 @@ from these sources (D4); Linux is read as hardware documentation only
 | Linux (`../linux`) | `24a19b953e2a` (2026-10-11) | `drivers/hwmon/applesmc.c`, `drivers/gpu/drm/amd/pm/legacy-dpm/si_dpm.c`, `drivers/gpu/drm/amd/amdgpu/amdgpu_bios.c`, `gfx_v6_0.c` and siblings (firmware names) |
 | digital951/D700macpro (GPL-2.0, read only) | 2026-10 | README: the D700s' stuck clocks and VBIOS selection |
 | CrystalIDEA, "Optimizing thermals on Mac Pro 2013" | blog | the SMC's fan curve under macOS |
-| AbyssBSD (`../AbyssBSD`) | `bfc0b05` (2026-10-09) | `desktop/docs/PHASE4.md` (P4.0, §6.2–6.3), `PLAN.md`, `HANDOFF.md` §2.49, `desktop/abyss/mk/live-image.sh`, `desktop/de/install/Steps.swift` |
+| AbyssBSD (`../AbyssBSD-workspace/AbyssBSD`) | `bfc0b05` (2026-10-09) | `desktop/docs/PHASE4.md` (P4.0, §6.2–6.3), `PLAN.md`, `HANDOFF.md` §2.49, `desktop/abyss/mk/live-image.sh`, `desktop/de/install/Steps.swift` |
 | FreeBSD (`../freebsd-src`) | `fe90f180047b` (2026-10-13) | `sys/dev/asmc/asmc.c`, `asmcmmio.c` |
 
 ## What AbyssBSD's boot shows
