@@ -48,11 +48,13 @@ private func byte(_ x: Int, _ y: Int, _ l: Int, _ c: Int) -> UInt8 { UInt8(trunc
     list.resolveImage(ms, to: target, regions: [ImageCopyRegion(extent: Extent3D(width: 8, height: 8))])
     list.render(RenderingInfo(colors: [Attachment(image: target, load: .load)])) { r in r.draw(pipeline, root: 0x1000, vertices: 3) }
     try gpu.graphicsQueue.submit(list, wait: 0, signal: 1)
-    // Two passes on the render group's two queues; between them eight kernels on the compute group, one a command.
-    #expect(t.submits.map { $0.jobs.count } == [2, 1, 1, 1, 1, 1, 1, 1, 1, 2])
+    // One submit: two passes on the tiler's and the fragment's queues, between them eight kernels on the compute queue, one a
+    // command, each step waiting on the GPU for the one before it.
+    #expect(t.submits.count == 1)
+    #expect(t.submits[0].jobs.map { $0.queue } == [0, 1, 2, 2, 2, 2, 2, 2, 2, 2, 0, 1])
     #expect(runner.ran.map { $0.kernel } == [.copy, .blit, .copy, .copy, .copy, .copy, .copy, .copy])
-    // Only the last signals the timeline; nothing the CPU maps was maintained between them.
-    #expect(t.submits.dropLast().allSatisfy { $0.signals.allSatisfy { $0.sync != gpu.timeline } })
+    // It signals the timeline; nothing the CPU maps was maintained between the steps.
+    #expect(t.submits[0].signals.count == 1 && t.submits[0].signals[0].sync == gpu.timeline)
     #expect(t.bound.allSatisfy { $0.buffer.maintenance == 0 })
     #expect(read(back, 8) == [7, 0, 0, 0, 1, 2, 3, 4])
   }

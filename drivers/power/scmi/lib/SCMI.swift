@@ -57,6 +57,12 @@ public enum Message {
   public static let clockRateGet: UInt32 = 0x6
   /// Clock: id, attributes (bit 0, enabled) (§4.6.2.7).
   public static let clockConfigSet: UInt32 = 0x7
+  /// Performance: domain; status, the highest and the lowest level allowed (§4.5.3.7).
+  public static let performanceLimitsGet: UInt32 = 0x6
+  /// Performance: domain, level (§4.5.3.8).
+  public static let performanceLevelSet: UInt32 = 0x7
+  /// Performance: domain; status, level (§4.5.3.9).
+  public static let performanceLevelGet: UInt32 = 0x8
 }
 
 /// A power domain's states (§4.3.2.4): on, and off with its context lost.
@@ -143,7 +149,8 @@ public func nameText(_ words: ArraySlice<UInt32>) -> String {
 }
 
 /// A line written to bin/scmi's ctl: `power DOMAIN on|off`, `clock ID
-/// on|off`, or `clock ID rate HZ`; numbers in decimal or 0x hex.
+/// on|off`, `clock ID rate HZ`, `perf DOMAIN level [LEVEL]` or `perf DOMAIN
+/// limits`; numbers in decimal or 0x hex.
 public enum Command: Equatable, Sendable {
   case power(domain: UInt32, on: Bool)
   case clock(id: UInt32, on: Bool)
@@ -153,9 +160,31 @@ public enum Command: Equatable, Sendable {
   /// The clock's rate as it is, asked for (CLOCK_RATE_GET); the status
   /// then shows it as `clock ID rate HZ`.
   case rateGet(id: UInt32)
+  /// A performance domain's level: set (PERFORMANCE_LEVEL_SET, then read back), or as it is (PERFORMANCE_LEVEL_GET), in the
+  /// platform's units.
+  case level(domain: UInt32, level: UInt32)
+  case levelGet(domain: UInt32)
+  /// A performance domain's limits (PERFORMANCE_LIMITS_GET): asked for, and as answered.
+  case limitsGet(domain: UInt32)
+  case limits(domain: UInt32, lowest: UInt32, highest: UInt32)
 
   public init?(_ line: String) {
     let words = line.utf8.split(separator: 0x20).map { Array($0) }
+    if words.count >= 3, words[0] == Array("perf".utf8), let d = Self.number(words[1]) {
+      if words.count == 3, words[2] == Array("level".utf8) {
+        self = .levelGet(domain: d)
+        return
+      }
+      if words.count == 3, words[2] == Array("limits".utf8) {
+        self = .limitsGet(domain: d)
+        return
+      }
+      if words.count == 4, words[2] == Array("level".utf8), let v = Self.number(words[3]) {
+        self = .level(domain: d, level: v)
+        return
+      }
+      return nil
+    }
     if words.count == 3, words[0] == Array("clock".utf8), words[2] == Array("rate".utf8), let id = Self.number(words[1]) {
       self = .rateGet(id: id)
       return
@@ -192,6 +221,9 @@ public enum Command: Equatable, Sendable {
     // Flags 0: synchronous, rounded down.
     case .rate(let id, let hz): (.clock, Message.clockRateSet, [0, id, hz, 0])
     case .rateGet(let id): (.clock, Message.clockRateGet, [id])
+    case .level(let d, let v): (.performance, Message.performanceLevelSet, [d, v])
+    case .levelGet(let d): (.performance, Message.performanceLevelGet, [d])
+    case .limitsGet(let d), .limits(let d, _, _): (.performance, Message.performanceLimitsGet, [d])
     }
   }
 
@@ -202,6 +234,10 @@ public enum Command: Equatable, Sendable {
     case .clock(let id, let on): "clock \(id) \(on ? "on" : "off")"
     case .rate(let id, let hz): "clock \(id) rate \(hz)"
     case .rateGet(let id): "clock \(id) rate"
+    case .level(let d, let v): "perf \(d) level \(v)"
+    case .levelGet(let d): "perf \(d) level"
+    case .limitsGet(let d): "perf \(d) limits"
+    case .limits(let d, let lo, let hi): "perf \(d) limits \(lo) \(hi)"
     }
   }
 
@@ -209,7 +245,10 @@ public enum Command: Equatable, Sendable {
   public func sameSubject(_ other: Command) -> Bool {
     switch (self, other) {
     case (.power(let a, _), .power(let b, _)), (.clock(let a, _), .clock(let b, _)), (.rate(let a, _), .rate(let b, _)),
-      (.rateGet(let a), .rateGet(let b)), (.rateGet(let a), .rate(let b, _)), (.rate(let a, _), .rateGet(let b)):
+      (.rateGet(let a), .rateGet(let b)), (.rateGet(let a), .rate(let b, _)), (.rate(let a, _), .rateGet(let b)),
+      (.level(let a, _), .level(let b, _)), (.levelGet(let a), .levelGet(let b)), (.level(let a, _), .levelGet(let b)),
+      (.levelGet(let a), .level(let b, _)), (.limits(let a, _, _), .limits(let b, _, _)), (.limitsGet(let a), .limitsGet(let b)),
+      (.limits(let a, _, _), .limitsGet(let b)), (.limitsGet(let a), .limits(let b, _, _)):
       a == b
     default: false
     }

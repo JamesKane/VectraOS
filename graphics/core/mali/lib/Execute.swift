@@ -4,8 +4,10 @@
 // turns it into steps (a compute dispatch, a render pass of its draws, or a
 // transfer's kernel, Transfers.swift), and runs the steps in order. The streams
 // are MaliCore's recipes (ComputeDispatch, RenderPass) laid out in memory of
-// this process's VM, a block a step; the last step signals the timeline itself,
-// and each step before it is waited for, so what follows sees what it wrote.
+// this process's VM (the arena's, Arena.swift), a block a step, on the queues of
+// one group; each step waits on the GPU for the one before it through the
+// device's chain (StepChain), so what follows sees what it wrote, and the whole
+// list is one submission to the driver, which signals the timeline when it is done.
 // See MaliDevice.swift for what this v0 refuses.
 
 import GPUCore
@@ -14,7 +16,7 @@ import GPUCore
   import MaliCore
 #endif
 
-/// A render pass of up to 16 draws, run one after the other in the one tiler pass.
+/// A render pass of its draws, run one after the other in the one tiler pass.
 struct DrawPass {
   var target: ImageRecord
   var clear: [Float]
@@ -71,27 +73,72 @@ enum Step {
 
 extension MaliDevice {
   public func submit(_ list: GPUCommandList, wait: UInt64, signal: UInt64) throws(GPUError) {
+    // A submission is laid out while the one before it runs; the one before that is done first, so at most two are on the GPU.
+    try self.wait(previousSignal)
+    let start = clock()
+    lastProfile = SubmitProfile()
+    defer { lastProfile.totalNanoseconds = clock() &- start }
     if let e = list.validate(features: baseLimits.features) { throw e }
-    // This v0 starts a submission when the one before it is done: what it waits for has been signalled by then.
-    try self.wait(rule.lastSignalled)
+    let before = rule.lastSignalled
     if let e = rule.accept(wait: wait, signal: signal) { throw e }
     var held: [Region] = []
+    let started = (renderStarted, computeSlotsReady, computeResourceRequested)
     do {
       let steps = try plan(list, held: &held)
-      // Every step is the GPU's, each ordered after the one before it (`launch`); the last signals the timeline itself.
-      for (i, step) in steps.enumerated() {
-        gpuMayHaveWritten(step)
-        try run(step, signal: i == steps.count - 1 ? signal : nil, held: &held)
+      lastProfile.planNanoseconds = clock() &- start
+      lastProfile.steps = steps.count
+      if steps.isEmpty {
+        // Nothing for the GPU: the value is reached when what was submitted before it is.
+        if before > completed { try self.wait(before) }
+        transport.raiseSync(timeline, to: signal)
+      } else {
+        // Every step is the GPU's, each waiting on the GPU for the one before it, the first for the last step submitted
+        // before (the chain counts every step ever submitted); one submit of them all, which signals the timeline.
+        let chain = try chainSync()
+        let base = chainValue
+        var jobs: [MaliJob] = []
+        for (i, step) in steps.enumerated() {
+          gpuMayHaveWritten(step)
+          let k = base + UInt64(i)
+          jobs += try self.jobs(step, chain: StepChain(address: chain.address, waitAbove: k == 0 ? nil : k - 1), held: &held)
+        }
+        try launch(group: try workGroup(), jobs: jobs, signal: signal)
+        chainValue = base + UInt64(steps.count)
       }
-      if steps.isEmpty { transport.raiseSync(timeline, to: signal) }
     } catch {
-      // Whoever waits for the value is not left waiting for ever.
+      // Streams that never reached the GPU set no queue's state.
+      (renderStarted, computeSlotsReady, computeResourceRequested) = started
+      // Whoever waits for the value is not left waiting for ever, nor sees it before what came first is done.
+      if before > completed { try? self.wait(before) }
       transport.raiseSync(timeline, to: signal)
       retire(held)
+      previousSignal = before
       throw error
     }
     retire(held)
+    previousSignal = before
   }
+
+  /// The chain's sync object: 8 bytes of a buffer of its own, made at the first step, which every step adds one to.
+  func chainSync() throws(GPUError) -> Region {
+    if let c = chainRegion { return c }
+    let c = try makeRegion(4096)
+    c.buffer.store(UInt64(0), at: 0)
+    chainRegion = c
+    chainValue = 0
+    return c
+  }
+
+  /// The one group, made at first use.
+  func workGroup() throws(GPUError) -> UInt32 {
+    if let g = renderGroup { return g }
+    let g = try transport.createGroup(vm: vm, ringSizes: [Self.ringBytes, Self.ringBytes, Self.ringBytes])
+    renderGroup = g
+    return g
+  }
+
+  static let tilerQueue: UInt32 = 0
+  static let computeQueue: UInt32 = 2
 
   // MARK: The plan
 
@@ -179,7 +226,7 @@ extension MaliDevice {
             zs!.resolve = (r, v)
           }
           if zs!.loadDepth && zs!.loadStencil {
-            throw .unsupported("keeping both the depth and the stencil of one image: no such format is a depth target here")
+            throw .unsupported("keeping both the depth and the stencil of one image: the frame shader loads one plane")
           }
         }
       case .endRendering:
@@ -333,7 +380,7 @@ extension MaliDevice {
         guard activeQuery == q.region.address + UInt64(index * 8) else { throw .invalid("a query ends that wasn't begun in this pass") }
         activeQuery = 0
       case .writeTimestamp(let set, let index, _):
-        // Every step is waited for before the next, so a timestamp is of everything before it, whatever stages it names.
+        // Every step waits for the one before it to finish, so a timestamp is of everything before it, whatever stages it names.
         guard let q = queries[set.handle] else { throw .invalid("a query set that isn't this device's") }
         steps.append(.timestamp(q.region.address + UInt64(index * 8)))
       case .dispatch(let p, let root, let x, let y, let z):
@@ -348,7 +395,7 @@ extension MaliDevice {
         guard let m = memories[arguments.handle] else { throw .invalid("memory that isn't this device's") }
         steps.append(.dispatch(shader, layout, root: root, grid: Dim3(1, 1, 1), indirect: m.address + UInt64(offset)))
       case .barrier:
-        break  // one submission at a time: every step is already ordered after the last
+        break  // every step already waits for the one before it
       case .copyBuffer(let from, let fromOffset, let to, let toOffset, let bytes):
         guard let a = memories[from.handle], let b = memories[to.handle] else { throw .invalid("memory that isn't this device's") }
         try transfer(.copyBuffer(a, fromOffset, b, toOffset, bytes))
@@ -485,7 +532,6 @@ extension MaliDevice {
       blendShaders[i] = try blendShader(spec).code
     }
     let heapDraw = !fs.layout.imageBindings.isEmpty || fs.layout.dummySamplerWord >= 0
-    guard draws.count < 16 else { throw .unsupported("a pass of more than 16 draws") }
     usesHeap = usesHeap || heapDraw
     // A binding's element 0: the textures' array is binding 0 and the samplers' binding 1 (Loinnir's, and the one
     // layout of every pipeline).
@@ -521,35 +567,41 @@ extension MaliDevice {
 
   // MARK: Steps
 
-  func run(_ step: Step, signal: UInt64?, held: inout [Region]) throws(GPUError) {
+  /// The streams of a step, laid out in memory, as jobs of the one group's queues.
+  func jobs(_ step: Step, chain: StepChain?, held: inout [Region]) throws(GPUError) -> [MaliJob] {
     switch step {
     case .dispatch(let shader, let layout, let root, let grid, let indirect, let heap, let kernel):
       if let k = kernel { transferKernelRan?(k, root, grid, heap) }
-      try runDispatch(shader, layout, root: root, grid: grid, indirect: indirect, heap: heap, signal: signal, held: &held)
+      return try dispatchJobs(shader, layout, root: root, grid: grid, indirect: indirect, heap: heap, chain: chain, held: &held)
     case .timestamp(let address):
-      try runTimestamps([address], signal: signal, held: &held)
+      return try timestampJobs([address], chain: chain, held: &held)
     case .render(let pass):
-      try runRender(pass, signal: signal, held: &held)
+      return try renderJobs(pass, chain: chain, held: &held)
     }
   }
 
-  /// Puts a recipe's block into its region, a word at a time.
-  func put(_ image: MemoryImage, into region: Region) {
-    var i = 0
-    while i < image.count {
-      region.buffer.store(image.load64(at: i), at: i)
-      i += 8
-    }
-  }
-
-  /// Runs `jobs` in `group`, and when this isn't the last step waits for them.
+  /// Runs `jobs` in `group`, in pieces of as many as the driver takes at once; with a signal, the timeline's when the last is
+  /// done, and without one, the CPU waits for them (a step run alone, outside a submission).
   func launch(group: UInt32, jobs: [MaliJob], signal: UInt64?) throws(GPUError) {
+    let t0 = clock()
     if let signal {
-      try transport.submit(group: group, jobs: jobs, waits: [], signals: [(timeline, signal)])
+      var at = 0
+      while at < jobs.count {
+        let n = min(jobs.count - at, Self.jobsPerSubmit)
+        lastProfile.submits += 1
+        try transport.submit(group: group, jobs: Array(jobs[at..<(at + n)]), waits: [],
+                             signals: at + n == jobs.count ? [(timeline, signal)] : [])
+        at += n
+      }
+      lastProfile.submitNanoseconds &+= clock() &- t0
       return
     }
+    lastProfile.submits += 1
     stepValue += 1
     try transport.submit(group: group, jobs: jobs, waits: [], signals: [(stepSync, stepValue)])
+    let t1 = clock()
+    lastProfile.submitNanoseconds &+= t1 &- t0
+    defer { lastProfile.waitNanoseconds &+= clock() &- t1 }
     guard transport.wait(sync: stepSync, value: stepValue, timeoutNanoseconds: 10_000_000_000) else {
       let state = transport.groupState(group)
       if state != 0 { dropGroup(group) }
@@ -562,19 +614,19 @@ extension MaliDevice {
     }
   }
 
+  /// The jobs the driver takes in one submit (its `maxJobs`).
+  static let jobsPerSubmit = 256
+
   /// A group that faulted is of no more use: its queues are gone and the next pass makes a group of its own, whose
-  /// queues start again.
+  /// queues start again. The steps it never ran added nothing to the chain, which starts again from the count submitted.
   func dropGroup(_ group: UInt32) {
-    if group == renderGroup {
-      transport.destroyGroup(group)
-      renderGroup = nil
-      renderStarted = false
-    } else if group == computeGroup {
-      transport.destroyGroup(group)
-      computeGroup = nil
-      computeSlotsReady = false
-      computeResourceRequested = false
-    }
+    guard group == renderGroup else { return }
+    transport.destroyGroup(group)
+    renderGroup = nil
+    renderStarted = false
+    computeSlotsReady = false
+    computeResourceRequested = false
+    chainRegion?.buffer.store(chainValue, at: 0)
   }
 
   /// A group that ended, in words (the driver reports the group's state, not the fault's address).
@@ -584,42 +636,44 @@ extension MaliDevice {
 
   /// The timestamps of the system's counter, stored at `addresses` once the compute queue has drained, on the compute
   /// group's queue (a stream of its own: the steps before it have all finished).
-  func runTimestamps(_ addresses: [UInt64], signal: UInt64?, held: inout [Region]) throws(GPUError) {
+  func timestampJobs(_ addresses: [UInt64], chain: StepChain?, held: inout [Region]) throws(GPUError) -> [MaliJob] {
     let info = transport.info
     let registers = CSRegisterMap(workRegisters: info.workRegisters, unpreserved: info.unpreservedRegisters)
     let scoreboards = CSScoreboards(count: info.scoreboards)
-    let region = try makeRegion(4096)
-    held.append(region)
+    let region = try scratch(1024, held: &held)
     let stream: CSStream
     do throws(CSBuildError) {
       stream = try TimestampStream.build(
         at: region.address, capacity: region.size, addresses: addresses, initialiseQueue: !computeSlotsReady,
-        registers: registers, scoreboards: scoreboards)
+        registers: registers, scoreboards: scoreboards, chain: chain)
     } catch { throw .unsupported("the timestamp stream refused: \(error)") }
     for (i, w) in stream.words.enumerated() { region.buffer.store(w, at: i * 8) }
-    if computeGroup == nil { computeGroup = try transport.createGroup(vm: vm, ringSizes: [4096]) }
-    try launch(group: computeGroup!, jobs: [MaliJob(queue: 0, address: stream.address, size: UInt32(stream.size))], signal: signal)
     computeSlotsReady = true
+    return [MaliJob(queue: Self.computeQueue, address: stream.address, size: UInt32(stream.size))]
+  }
+
+  /// Timestamps stored at once, the CPU waiting for them: outside any submission (the calibration's), after every step
+  /// submitted before.
+  func runTimestamps(_ addresses: [UInt64], held: inout [Region]) throws(GPUError) {
+    let chain = chainValue == 0 ? nil : StepChain(address: try chainSync().address, waitAbove: chainValue - 1, signal: false)
+    let jobs = try timestampJobs(addresses, chain: chain, held: &held)
+    try launch(group: try workGroup(), jobs: jobs, signal: nil)
   }
 
   /// A dispatch; with `heap`, a transfer kernel's own heap (Transfers.swift): its samplers from entry 0 (binding 1), its textures
   /// from entry 2 (every other binding), in place of the device's heap.
-  func runDispatch(_ shader: ComputeShader, _ layout: FauLayout, root: UInt64, grid: Dim3, indirect: UInt64? = nil,
-                   heap own: (address: UInt64, bytes: Int)? = nil, signal: UInt64?, held: inout [Region]) throws(GPUError) {
+  func dispatchJobs(_ shader: ComputeShader, _ layout: FauLayout, root: UInt64, grid: Dim3, indirect: UInt64? = nil,
+                    heap own: (address: UInt64, bytes: Int)? = nil, chain: StepChain?, held: inout [Region]) throws(GPUError) -> [MaliJob] {
     let info = transport.info
     var threadStorage: UInt64 = 0
     var workgroupMemory: UInt64 = 0
     if let limits = computeLimits {
       let sizing = ComputeSizing.of(shader: shader, grid: indirect == nil ? grid : nil, limits: limits)
       if shader.stackBytes != 0 {
-        let r = try makeRegion(Int(sizing.tlsBytes))
-        held.append(r)
-        threadStorage = r.address
+        threadStorage = try scratch(Int(sizing.tlsBytes), held: &held).address
       }
       if shader.workgroupMemoryBytes != 0 {
-        let r = try makeRegion(Int(sizing.wlsBytes), window: true)
-        held.append(r)
-        workgroupMemory = r.address
+        workgroupMemory = try scratch(Int(sizing.wlsBytes), held: &held).address
       }
     }
     // The storage images' element 0 is table 2's, the textures' and the samplers' the heap's (binding 0 and 1 of set 0, as the
@@ -653,10 +707,11 @@ extension MaliDevice {
     }
     request.indirectGrid = indirect
     request.numWorkgroupsWord = layout.numWorkgroupsWord
+    request.chain = chain
     let registers = CSRegisterMap(workRegisters: info.workRegisters, unpreserved: info.unpreservedRegisters)
     let scoreboards = CSScoreboards(count: info.scoreboards)
-    var capacity = (shader.code.count * 8 + 8192 + 4095) & ~4095
-    var region = try makeRegion(capacity)
+    var capacity = shader.code.count * 8 + 8192
+    var region = try scratch(capacity, held: &held)
     var image: ComputeDispatchImage?
     var attempts = 0
     while image == nil {
@@ -666,23 +721,19 @@ extension MaliDevice {
       } catch {
         if case .noRoom(let needed, _) = error, attempts == 0 {
           attempts += 1
-          held.append(region)
-          capacity = (needed + 4095) & ~4095
-          region = try makeRegion(capacity)
+          capacity = needed
+          region = try scratch(capacity, held: &held)
           continue
         }
-        held.append(region)
         throw .unsupported("the dispatch recipe refused it: \(error)")
       }
     }
-    held.append(region)
     guard let built = image else { throw .invalid("no dispatch") }
     put(built.memory, into: region)
-    if computeGroup == nil { computeGroup = try transport.createGroup(vm: vm, ringSizes: [4096]) }
-    let job = MaliJob(queue: 0, address: built.stream.address, size: UInt32(built.stream.size))
-    try launch(group: computeGroup!, jobs: [job], signal: signal)
+    trimTransient(region, used: built.memory.count)
     computeSlotsReady = true
     computeResourceRequested = true
+    return [MaliJob(queue: Self.computeQueue, address: built.stream.address, size: UInt32(built.stream.size))]
   }
 
   /// The pre-frame shader that loads `target`: the shader (compiled once), and a heap of its own made for this pass: the
@@ -711,8 +762,7 @@ extension MaliDevice {
     let planeAt = 64
     let mip = Int(view.baseMip)
     let base = Int(view.baseLayer)
-    let region = try makeRegion(planeAt + PlaneDescriptor.size * layers)
-    held.append(region)
+    let region = try scratch(planeAt + PlaneDescriptor.size * layers, held: &held)
     do throws(DescriptorError) {
       var at = planeAt
       for p in layout.planes(base: owner.region.address + UInt64(plane), levels: mip..<(mip + 1), layers: base..<(base + layers)) {
@@ -770,7 +820,7 @@ extension MaliDevice {
     return (image.region.address + UInt64(offset), level.rowStride, level.surfaceStride, layout.arrayStride, level.width, level.height)
   }
 
-  func runRender(_ pass: DrawPass, signal: UInt64?, held: inout [Region]) throws(GPUError) {
+  func renderJobs(_ pass: DrawPass, chain: StepChain?, held: inout [Region]) throws(GPUError) -> [MaliJob] {
     let info = transport.info
     let target = pass.target
     // Each attachment is its view: the first layer's level of its plane, drawn at the level's size (valhall 08 section 8.4.4: a
@@ -841,14 +891,19 @@ extension MaliDevice {
     let stack = request.stackBytes
     if stack != 0 {
       guard let limits = computeLimits else { throw .unsupported("a shader with a stack: the driver reports no thread limits") }
-      let r = try makeRegion(Int(ThreadStorageSizing.tlsTotal(stackBytes: stack, limits: limits)))
-      held.append(r)
-      request.threadStorage = r.address
+      request.threadStorage = try scratch(Int(ThreadStorageSizing.tlsTotal(stackBytes: stack, limits: limits)), held: &held).address
       request.limits = limits
     }
     if let z = pass.zs, let view = pass.zsView {
       let f = z.image.descriptor.format
-      var target = ZSTarget(depthFormat: f == .depth16 ? .d16 : (f == .depth32f ? .d32f : nil), hasStencil: f.hasStencil)
+      // A depth and stencil format is two planes, the depth's (D24X8 or D32) and the stencil's (S8): valhall 08 section 8.5.1.
+      let depthFormat: DepthFormat? = switch f {
+      case .depth16: .d16
+      case .depth24stencil8: .d24
+      case .depth32f, .depth32fstencil8: .d32f
+      default: nil
+      }
+      var target = ZSTarget(depthFormat: depthFormat, hasStencil: f.hasStencil)
       // A plane not stored but resolved writes its sample 0 into the resolve image (writeback Single, 08 section 8.3.2).
       let resolveOnly = z.resolve != nil && !z.storeDepth && !z.storeStencil
       let planeImage = resolveOnly ? z.resolve!.image : z.image
@@ -897,9 +952,11 @@ extension MaliDevice {
       codeWords += d.vertexShader.code.count + d.fragmentShader.code.count
       for (_, code) in d.blendShaders { codeWords += code.count + 16 }
     }
-    // The pass's block is within one 4 GiB window: a blend shader's address is 32 bits and the fragment shader jumps to it (09 section 9.9.1).
-    var capacity = (codeWords * 8 + 16384 * pass.draws.count + 4095) & ~4095
-    var region = try makeRegion(capacity, window: true)
+    request.chain = chain
+    // The pass's block is within one 4 GiB window (the arena's are): a blend shader's address is 32 bits and the fragment shader
+    // jumps to it (09 section 9.9.1). What a draw takes is a few hundred bytes; a pass that needs more is laid out again.
+    var capacity = codeWords * 8 + 32768 + 2048 * pass.draws.count
+    var region = try scratch(capacity, held: &held)
     var image: RenderPassImage?
     var attempts = 0
     while image == nil {
@@ -917,25 +974,22 @@ extension MaliDevice {
       } catch {
         if case .noRoom(let needed, _) = error, attempts == 0 {
           attempts += 1
-          held.append(region)
-          capacity = (needed + 4095) & ~4095
-          region = try makeRegion(capacity, window: true)
+          capacity = needed
+          region = try scratch(capacity, held: &held)
           continue
         }
-        held.append(region)
         throw .unsupported("the render pass recipe refused it: \(error)")
       }
     }
-    held.append(region)
     guard let built = image else { throw .invalid("no render pass") }
     put(built.memory, into: region)
-    if renderGroup == nil { renderGroup = try transport.createGroup(vm: vm, ringSizes: [4096, 4096]) }
+    trimTransient(region, used: built.memory.count)
     var jobs: [MaliJob] = []
     probeLastPass = (region.address, region.size, built.streams.map { ($0.address, $0.size) })
     for (queue, s) in built.streams.enumerated() {
-      jobs.append(MaliJob(queue: UInt32(queue), address: s.address, size: UInt32(s.size)))
+      jobs.append(MaliJob(queue: Self.tilerQueue + UInt32(queue), address: s.address, size: UInt32(s.size)))
     }
-    try launch(group: renderGroup!, jobs: jobs, signal: signal)
     renderStarted = true
+    return jobs
   }
 }

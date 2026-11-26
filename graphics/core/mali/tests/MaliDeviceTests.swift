@@ -104,7 +104,7 @@ func trianglePipeline(_ gpu: MaliDevice, _ format: PixelFormat = .rgba8) throws 
     #expect((0..<24).allSatisfy { b[$0] == UInt8($0 + 1) })
   }
 
-  @Test func aDrawIsARenderPassOnTheTwoQueuesSignallingTheTimeline() throws {
+  @Test func aDrawIsARenderPassOnTheFirstTwoQueuesSignallingTheTimeline() throws {
     let (gpu, t) = try device()
     let pipeline = try trianglePipeline(gpu)
     let target = try gpu.makeImage(ImageDescriptor(format: .rgba8, width: 64, height: 64, usage: .renderTarget | .copySource))
@@ -116,7 +116,8 @@ func trianglePipeline(_ gpu: MaliDevice, _ format: PixelFormat = .rgba8) throws 
     try gpu.graphicsQueue.submit(list, wait: 0, signal: 7)
     #expect(t.submits.count == 1)
     let s = t.submits[0]
-    #expect(t.groups[s.group] == [4096, 4096])
+    // One group of three queues: the tiler's, the fragment's and compute's.
+    #expect(t.groups[s.group] == [16384, 16384, 16384])
     #expect(s.jobs.map { $0.queue } == [0, 1])
     #expect(s.signals.count == 1 && s.signals[0].value == 7)
     #expect(gpu.completed == 7)
@@ -240,18 +241,17 @@ func trianglePipeline(_ gpu: MaliDevice, _ format: PixelFormat = .rgba8) throws 
       l.copy(target, to: out)
       return l
     }
-    try gpu.graphicsQueue.submit(list(), wait: 0, signal: 1)
+    try gpu.run(list(), signal: 1)
     t.groupFault = 2
-    #expect(throws: GPUError.self) { try gpu.graphicsQueue.submit(list(), wait: 1, signal: 2) }
-    // The failed list's value is raised, so what waits for it ends, and a later pass goes past it.
+    // The fault is found when the list's value is waited for: the driver raised it, but the steps never added to the chain.
+    #expect(throws: GPUError.self) { try gpu.run(list(), signal: 2) }
     #expect(gpu.completed == 2)
     t.groupFault = 0
-    try gpu.graphicsQueue.submit(list(), wait: 2, signal: 3)
-    // A render group and the compute group of the copies.
-    #expect(t.groups.count == 2 && gpu.completed == 3)
-    // The new render group's first stream initialises the queues again (its first instruction is not a MOVE of the heap).
-    let passes = t.submits.filter { $0.jobs.count == 2 }
-    #expect(passes.count == 3 && passes[2].group != passes[0].group)
+    try gpu.run(list(), signal: 3)
+    // The faulted group was let go of, and the next list made a new one (the pass and the copy on its queues).
+    #expect(t.groups.count == 1 && gpu.completed == 3)
+    #expect(t.submits.count == 3 && t.submits[2].group != t.submits[0].group)
+    #expect(t.submits[2].jobs.map { $0.queue } == [0, 1, 2])
   }
 
   @Test func readbackMemoryAndATargetOnlyTheCPUReadsAreCachedAndMaintained() throws {

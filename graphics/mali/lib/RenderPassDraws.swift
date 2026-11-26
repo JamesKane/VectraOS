@@ -195,6 +195,9 @@ public struct DrawPassRequest: Sendable {
   /// For a probe of the hardware (06 section 6.11.1's next experiment): where the fragment queue, after its clean flush,
   /// loads the first report through the GPU and stores the two 32-bit words it read (the report) at this address, to tell a lost update from a missing flush.
   public var queryReadback: UInt64?
+  /// The pass's place in its submission's chain of steps (StepChain): both streams wait for the step before, and the fragment
+  /// stream adds its one when the pass is done.
+  public var chain: StepChain?
   /// The depth and stencil target; nil for a pass with none (PipelineState.swift).
   public var zs: ZSTarget?
   /// The colour targets after the first (08 section 8.4); with any, a pass can't keep its target's contents.
@@ -273,7 +276,7 @@ extension RenderPass {
     at base: UInt64, capacity: Int, request r: DrawPassRequest, registers: CSRegisterMap, scoreboards: CSScoreboards, arch: Int = 12
   ) throws(RenderError) -> (image: RenderPassImage, records: [DrawRecords], resourceTable: UInt64) {
     guard arch >= 12, arch <= 13 else { throw .arch(arch) }
-    guard !r.draws.isEmpty, r.draws.count <= 16, r.clear.count == 4, r.width >= 1, r.height >= 1, r.width <= 4096,
+    guard !r.draws.isEmpty, r.clear.count == 4, r.width >= 1, r.height >= 1, r.width <= 4096,
       r.height <= 4096, r.layers >= 1, r.layers <= 256
     else { throw .badRequest }
     guard base & 63 == 0 else { throw .descriptor(.misaligned) }
@@ -685,6 +688,7 @@ extension RenderPass {
         b.initialiseSlotState()
         b.requestResources(resources)
       }
+      b.startStep(r.chain)
       b.move64(heapContextRegister, r.heapContext)
       b.emit(CSInstruction.heapSet(addressPair: heapContextRegister))
     }
@@ -789,6 +793,7 @@ extension RenderPass {
       fragment(&b0)
       tail(&b0)
       readbackReport(&b0)
+      b0.endStep(r.chain)
       let s0: CSStream
       do throws(CSBuildError) { s0 = try b0.finish() } catch { throw .stream(error) }
       streams = [s0]
@@ -813,6 +818,7 @@ extension RenderPass {
       fragment(&b1)
       tail(&b1)
       readbackReport(&b1)
+      b1.endStep(r.chain)
       let s1: CSStream
       do throws(CSBuildError) { s1 = try b1.finish() } catch { throw .stream(error) }
       streams = [s0, s1]

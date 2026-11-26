@@ -202,6 +202,9 @@ import Sys
     do throws(GPUError) {
       let checks = try CoreChecks(context.core)
       try checks.all()
+      // What a frame costs (CoreFrames.swift): the budgets of a GL program's frame loop.
+      let frames = try FrameBudgets(context.core, signalled: checks.signalled)
+      if frames.all() != 0 { fail("frame budgets: a frame drew the wrong pixels or failed") }
     } catch {
       switch error {
       case .unsupported(let why): fail("core features: unsupported: " + why)

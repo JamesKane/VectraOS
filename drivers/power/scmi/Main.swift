@@ -15,7 +15,8 @@
 // with clocks or SCMI power domains:
 //   ctl      a command a line: `power DOMAIN on|off`, `clock ID on|off`,
 //            `clock ID rate HZ`, `clock ID rate` (the status then shows
-//            the rate as it is); a write fails if the platform refused
+//            the rate as it is), `perf DOMAIN level [LEVEL]`, `perf
+//            DOMAIN limits`; a write fails if the platform refused
 //            (a rate is read back after, and the status shows that)
 //            and `cppc ADDRESS VALUE WIDTH`: power(8)'s write of a CPU's
 //            desired-performance register (D167), accepted for a register
@@ -263,6 +264,20 @@ final class Findings: @unchecked Sendable {
               if case .rateGet(let id) = c {
                 guard answer.count >= 2 else { throw .short }
                 done = .rate(id: id, hertz: answer[1] == 0 ? answer[0] : UInt32.max)
+              }
+              // A performance level as it is, or as set; a domain's limits (PERFORMANCE_LIMITS_GET: the highest, then the lowest).
+              if case .levelGet(let d) = c {
+                guard answer.count >= 1 else { throw .short }
+                done = .level(domain: d, level: answer[0])
+              }
+              if case .level(let d, _) = c {
+                let got = try t.send(.performance, Message.performanceLevelGet, [d])
+                guard got.count >= 1 else { throw .short }
+                done = .level(domain: d, level: got[0])
+              }
+              if case .limitsGet(let d) = c {
+                guard answer.count >= 2 else { throw .short }
+                done = .limits(domain: d, lowest: answer[1], highest: answer[0])
               }
               // A rate as the platform rounded it.
               if case .rate(let id, _) = c {

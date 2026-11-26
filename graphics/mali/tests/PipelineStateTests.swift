@@ -70,7 +70,7 @@ import Testing
 }
 
 @Test func aDepthTargetHasItsWriteFormatInternalFormatAndClear() throws {
-  for (format, write, internalFormat) in [(DepthFormat.d16, UInt32(1), UInt32(0)), (.d32f, 14, 2)] {
+  for (format, write, internalFormat) in [(DepthFormat.d16, UInt32(1), UInt32(0)), (.d24, 4, 1), (.d32f, 14, 2)] {
     var t = ZSTarget(depthFormat: format, hasStencil: false)
     t.depthAddress = 0x2_0000
     t.depthRowStride = 128

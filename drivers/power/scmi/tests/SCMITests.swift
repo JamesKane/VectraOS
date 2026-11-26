@@ -62,6 +62,28 @@ import Testing
   #expect(!Command.rateGet(id: 5).sameSubject(.clock(id: 5, on: true)))
 }
 
+@Test func perfLinesAskForAPerformanceDomainsLevelAndLimits() {
+  // PERFORMANCE_LEVEL_SET: the domain and the level; PERFORMANCE_LEVEL_GET and LIMITS_GET: the domain.
+  let set = Command("perf 0 level 1000000")
+  #expect(set == .level(domain: 0, level: 1_000_000))
+  #expect(set?.request.proto == .performance && set?.request.message == Message.performanceLevelSet)
+  #expect(set?.request.payload == [0, 1_000_000])
+  #expect(set?.description == "perf 0 level 1000000")
+  let get = Command("perf 0 level")
+  #expect(get == .levelGet(domain: 0))
+  #expect(get?.request.message == Message.performanceLevelGet && get?.request.payload == [0])
+  let limits = Command("perf 0x2 limits")
+  #expect(limits == .limitsGet(domain: 2))
+  #expect(limits?.request.message == Message.performanceLimitsGet && limits?.request.payload == [2])
+  #expect(Command.limits(domain: 2, lowest: 72000, highest: 1_000_000).description == "perf 2 limits 72000 1000000")
+  #expect(Command("perf 0") == nil && Command("perf 0 level x") == nil && Command("perf 0 speed 1") == nil)
+  // A level read replaces the level set, and limits the limits; neither is the other's, nor a clock's.
+  #expect(Command.levelGet(domain: 0).sameSubject(.level(domain: 0, level: 1)))
+  #expect(Command.limits(domain: 0, lowest: 1, highest: 2).sameSubject(.limitsGet(domain: 0)))
+  #expect(!Command.levelGet(domain: 0).sameSubject(.limitsGet(domain: 0)))
+  #expect(!Command.levelGet(domain: 0).sameSubject(.clock(id: 0, on: true)))
+}
+
 @Test func cppcLinesBecomeWrites() {
   #expect(CPPCWrite("cppc 0x659009c 8192 32") == CPPCWrite(address: 0x0659_009C, value: 8192, width: 32))
   #expect(CPPCWrite("cppc 100 0x10 8")?.address == 100)

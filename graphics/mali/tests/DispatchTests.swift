@@ -294,3 +294,27 @@ private let fauWord: UInt64 = 0x20_0000
   #expect(eight.allSlots == 0xFF && eight.rotatingSlots == 0xF8)
   #expect(sbs.allSlots == 0xFFFF && sbs.rotatingSlots == 0xFFF8)
 }
+
+@Test func aStepOfAChainWaitsForTheOneBeforeInvalidatesTheShaderCachesAndAddsOneWhenDone() throws {
+  var b = CSBuilder(address: base, capacityBytes: 4096, registers: regs, scoreboards: sbs)
+  b.startStep(StepChain(address: 0x10_0000, waitAbove: 6))
+  b.endStep(StepChain(address: 0x10_0000, waitAbove: 6))
+  // A first step waits for nothing; a step that doesn't signal adds nothing.
+  b.startStep(StepChain(address: 0x10_0000, waitAbove: nil))
+  b.endStep(StepChain(address: 0x10_0000, waitAbove: 1, signal: false))
+  let loadStore = sbs.slotMask(CSScoreboards.loadStoreSlot)
+  #expect(b.words == [
+    CSInstruction.mov48(68, 0x10_0000), CSInstruction.mov48(70, 6),
+    CSInstruction.syncWait64(address: 68, reference: 70, condition: .greater),
+    CSInstruction.mov32(CSRegisterMap.firstScratch, 0),
+    CSInstruction.flushCache2(l2: .none, lsc: .cleanInvalidate, other: .invalidate, flushIDRegister: CSRegisterMap.firstScratch,
+                              signalSlot: CSScoreboards.loadStoreSlot),
+    CSInstruction.wait(mask: loadStore),
+    CSInstruction.mov48(68, 0x10_0000), CSInstruction.mov48(70, 1),
+    CSInstruction.syncAdd64(address: 68, value: 70, signalSlot: CSScoreboards.loadStoreSlot, scope: .system),
+    CSInstruction.wait(mask: loadStore),
+  ])
+  // SYNC_WAIT64 is opcode 53 with the address pair at [47:40], the reference at [39:32] and "greater" at [31:28].
+  #expect(b.words[2] == 53 << 56 | 68 << 40 | 70 << 32 | 1 << 28)
+  #expect(b.words[8] >> 56 == 51)
+}

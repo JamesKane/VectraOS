@@ -150,6 +150,45 @@ public struct CSBuilder: Sendable {
     wait(mask: scoreboards.slotMask(CSScoreboards.loadStoreSlot))
   }
 
+  // MARK: Steps chained on the GPU (02 section 2.6.4: queues ordered only through sync objects)
+
+  /// Wait until the 64-bit sync object at `address` is above `reference`: the step before this one, on another queue, has
+  /// added its one. Then the shader cores' caches are cleaned and invalidated (the LSC, and the texture unit's and the tile
+  /// readers'), so what that step wrote, which its own tail cleaned out of the L2, is read again; the L2 is the GPU's one
+  /// point of coherence and stays. Registers 68 to 71 are its scratch, free at a stream's start.
+  public mutating func waitForChain(address: UInt64, above reference: UInt64) {
+    move64(Self.chainAddressRegister, address)
+    move64(Self.chainValueRegister, reference)
+    emit(CSInstruction.syncWait64(address: Self.chainAddressRegister, reference: Self.chainValueRegister, condition: .greater))
+    let scratch = CSRegisterMap.firstScratch
+    move32(scratch, 0)
+    emit(CSInstruction.flushCache2(l2: .none, lsc: .cleanInvalidate, other: .invalidate, flushIDRegister: scratch,
+                                   signalSlot: CSScoreboards.loadStoreSlot))
+    wait(mask: scoreboards.slotMask(CSScoreboards.loadStoreSlot))
+  }
+
+  /// Add one to the 64-bit sync object at `address` (system scope): this step is done, after the tail's wait on every slot
+  /// and its clean; the next step's streams wait for it (`waitForChain`).
+  public mutating func signalChain(address: UInt64) {
+    move64(Self.chainAddressRegister, address)
+    move64(Self.chainValueRegister, 1)
+    emit(CSInstruction.syncAdd64(address: Self.chainAddressRegister, value: Self.chainValueRegister,
+                                 signalSlot: CSScoreboards.loadStoreSlot, scope: .system))
+    wait(mask: scoreboards.slotMask(CSScoreboards.loadStoreSlot))
+  }
+
+  static let chainAddressRegister = 68
+  static let chainValueRegister = 70
+
+  /// A step's place in its submission's chain: the stream's start waits for `waitAbove` (nil: the first step, which waits
+  /// for nothing), and its end adds one (`signal`; a render pass's fragment stream, not its tiling stream).
+  public mutating func startStep(_ chain: StepChain?) {
+    if let c = chain, let w = c.waitAbove { waitForChain(address: c.address, above: w) }
+  }
+  public mutating func endStep(_ chain: StepChain?) {
+    if let c = chain, c.signal { signalChain(address: c.address) }
+  }
+
   // MARK: Finishing
 
   public func finish() throws(CSBuildError) -> CSStream {
@@ -158,5 +197,20 @@ public struct CSBuilder: Sendable {
     if address & 63 != 0 { throw .misaligned }
     if words.count > capacityWords { throw .overflow(words: words.count, capacity: capacityWords) }
     return CSStream(address: address, words: words)
+  }
+}
+
+/// A step of a submission ordered after the one before it on the GPU, through one 64-bit sync object of the device's
+/// (`CSBuilder.waitForChain`): no CPU waits between them.
+public struct StepChain: Equatable, Sendable {
+  public var address: UInt64
+  /// The value the object must be above before the step starts (nil: it starts at once).
+  public var waitAbove: UInt64?
+  /// Whether the step adds one to it when it is done.
+  public var signal: Bool
+  public init(address: UInt64, waitAbove: UInt64?, signal: Bool = true) {
+    self.address = address
+    self.waitAbove = waitAbove
+    self.signal = signal
   }
 }
