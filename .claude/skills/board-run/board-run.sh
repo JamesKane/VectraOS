@@ -5,7 +5,8 @@
 # (docs/boards/orangepi-6-plus/README.md, "Booting VectraOS on it"):
 #  1. takes the board's lock, /root/vx-board.lock;
 #  2. captures COM2 into LOG from before the boot;
-#  3. copies IMAGE_DIR's croi/ and loader onto the ESP (nda0p1), keeping
+#  3. copies IMAGE_DIR's croi/ and loader onto the ESP (BOARD_ESP, by GPT id:
+#     the NVMe disks have swapped names, nda0 and nda1), keeping
 #     the previous croi/ as BACKUP_NAME if given and not already there;
 #  4. sets the VectraOS entry (BOOT_ENTRY, default 000A) as BootNext and
 #     reboots;
@@ -39,6 +40,8 @@ board=${BOARD:-root@192.168.0.32}
 alias_=${BOARD_ALIAS:-192.168.0.19}
 tty=${BOARD_TTY:-/dev/cu.usbserial-ABSCDIMD}
 entry=${BOOT_ENTRY:-000A}
+# The partition Boot000A names (efibootmgr -v), by its GPT id.
+esp=${BOARD_ESP:-/dev/gptid/bbec220e-a11b-4b8d-82b0-6aadb2cfbe9f}
 stale_min=${BOARD_STALE_MIN:-20}
 ssh_=(ssh -o HostKeyAlias="$alias_" -o BatchMode=yes -o ConnectTimeout=8)
 scp_=(scp -q -o HostKeyAlias="$alias_" -o BatchMode=yes -o ConnectTimeout=8)
@@ -93,7 +96,7 @@ cat_pid=$!
   "$image/EFI/BOOT/BOOTAA64.EFI" "$board:/tmp/" || { status=copy-failed; exit 1; }
 "${ssh_[@]}" "$board" "set -e
   mkdir -p /tmp/esp
-  mount -t msdosfs /dev/nda0p1 /tmp/esp
+  mount -t msdosfs $esp /tmp/esp
   if [ -n '$backup' ] && [ ! -e /tmp/esp/$backup ]; then cp -R /tmp/esp/croi /tmp/esp/$backup; fi
   cp /tmp/kernel.elf /tmp/bootfs.img /tmp/cmdline /tmp/esp/croi/
   cp /tmp/BOOTAA64.EFI /tmp/esp/EFI/vectra/BOOTAA64.EFI

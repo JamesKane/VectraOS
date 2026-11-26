@@ -389,7 +389,7 @@ Still to read:
 
 The board keeps FreeBSD (AbyssBSD's branch) on its NVMe as its default
 boot entry; ssh as `jkane`, root by `su`. Our loader is `\EFI\vectra\BOOTAA64.EFI` on
-the ESP (`nda0p1`), with `\croi\kernel.elf`, `bootfs.img` and `cmdline`
+the ESP (GPT id `bbec220e-a11b-4b8d-82b0-6aadb2cfbe9f`), with `\croi\kernel.elf`, `bootfs.img` and `cmdline`
 beside it, under its own boot entry, which is never in BootOrder: a boot
 sets it as the one-shot BootNext (`efibootmgr -n -b <entry>`) and
 reboots, so any reset comes back to FreeBSD. It boots as production
@@ -497,17 +497,17 @@ the check now runs on the volume's thread after fs answers.
 The board was set up again since V6, and what follows replaces the
 layout above where they differ.
 
-- **The disks:** nda0, the Crucial P3, holds FreeBSD's root
-  (`/dev/gpt/rootfs`) and the ESP our loader is on (`nda0p1`:
+- **The disks:** the Crucial P3 (nda0 until 2026-11-26; FreeBSD now names it nda1 and the 990 PRO nda0, so name partitions by GPT id or label, never by device) holds FreeBSD's root
+  (`/dev/gpt/rootfs`) and the ESP our loader is on (p1, `/dev/gptid/bbec220e-a11b-4b8d-82b0-6aadb2cfbe9f`:
   `\EFI\vectra\BOOTAA64.EFI`, `\croi\kernel.elf`, `bootfs.img`,
   `cmdline`; the previous build kept beside them as `croi.20261031`
-  and `BOOTAA64.EFI.20261031`). nda1, the 990 PRO, holds AbyssBSD's
+  and `BOOTAA64.EFI.20261031`). The 990 PRO holds AbyssBSD's
   partitions, `vectraesp` and `vectrastore` (another system's, left
-  alone), and since 2026-11-20 `nda1p7`, 64 GiB, named `taisce` with
+  alone), and since 2026-11-20 p7, 64 GiB, named `taisce` with
   Taisce's type (`4b7e1c5a-3d0e-9a4f-8c21-560bd739e412`), its first and
   last MiB zeroed: fs formats it at its first boot. 64 GiB keeps fs's
   bitmaps small (the 931 GiB volume's cost 253 MiB resident).
-- **The boot entry:** `Boot000A VectraOS`, on `nda0p1`, never in
+- **The boot entry:** `Boot000A VectraOS`, on the P3's p1, never in
   BootOrder. FreeBSD's `efibootmgr -c` puts a new entry first in
   BootOrder, so the order is set back after it. A boot is `efibootmgr
   -n -b 000A` and a reboot, as root (passwordless `su` on this image).
