@@ -94,9 +94,11 @@ final class FrameBudgets {
     func us(_ ns: UInt64) -> String { "\(ns / 1000).\(ns / 100 % 10)" }
     print("loinnir-test: frame \(name): \(m.total) us a round trip (fastest \(samples[0].total), slowest \(samples[samples.count - 1].total));"
       + " submit returned after \(m.submit) us: plan \(us(p.planNanoseconds)), layout \(us(p.buildNanoseconds)), driver"
-      + " \(us(p.submitNanoseconds)), waits inside \(us(p.waitNanoseconds)) us (of the plan the draws \(us(p.drawNanoseconds)), of the"
-      + " layout the pass recipe \(us(p.recipeNanoseconds)) and its copy \(us(p.copyNanoseconds))); \(p.steps) steps, \(p.submits) submits,"
+      + " \(us(p.submitNanoseconds)), waits inside \(us(p.waitNanoseconds)) us; \(p.steps) steps, \(p.submits) submits,"
       + " \(p.buffers) buffers made")
+    // A line of its own: the console cuts long ones.
+    print("loinnir-test: frame \(name): of the plan the draws took \(us(p.drawNanoseconds)) us; of the layout the pass recipe"
+      + " \(us(p.recipeNanoseconds)) us and its copy into the GPU's memory \(us(p.copyNanoseconds)) us")
     print("budget name=\(budget) value=\(m.total) unit=us")
     return m.total
   }
