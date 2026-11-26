@@ -13,7 +13,7 @@ src graphics/compiler/passes/Mem2Reg.swift graphics/compiler/passes/Scalarize.sw
 src graphics/compiler/passes/DeadCode.swift graphics/compiler/passes/Pipeline.swift graphics/compiler/passes/ExpandDivision.swift graphics/compiler/passes/ExpandConversions.swift
 src graphics/compiler/ir/LowerStorageImage.swift graphics/compiler/ir/LowerSubgroup.swift graphics/compiler/ir/LowerMath.swift
 src graphics/compiler/passes/ExpandAtomics.swift graphics/compiler/passes/LegalizeNarrow.swift graphics/compiler/spirv/SupportedAlu.swift
-src graphics/compiler/ir/LowerStorageImage.swift graphics/compiler/ir/LowerTexture.swift
+src graphics/compiler/ir/LowerStorageImage.swift graphics/compiler/ir/LowerTexture.swift graphics/compiler/ir/LowerGeometry.swift
 keys shader spir-v compiler ssa ir gpu compute pass mem2reg scalarize
 lang swift
 
@@ -163,6 +163,7 @@ The IR interpreter runs one invocation at a time and has no subgroup; the operat
 GLSL.std.450's Tan, Asin, Acos, Atan, Atan2, Sinh, Cosh, Tanh, Asinh, Acosh and Atanh are written out in the IR's operations in binary32 (a binary16 operand is widened and the result rounded once): tangent as sine over cosine; the arctangent as a polynomial on the argument or its reciprocal, the two-argument arctangent from it, arcsine and arccosine as the Abramowitz and Stegun polynomial with a series near zero; the hyperbolic functions from the exponential, with a series where the identity cancels (sinh and asinh below 1 and 0.25, atanh below 0.25, acosh below 1.25).
 `exp` and `pow` carry the rounding of the exponent's product through (a fused multiply-add gives its low part), which keeps them within about a unit in the last place of exp2 instead of a fraction of the exponent more.
 valhallbackend(2) has the measured errors.
+Radians and Degrees are a multiply by the constant; Length, Distance, Normalize, FaceForward, Reflect and Refract are written out as GLSL.std.450 defines them, each dot product a multiply and fused multiply-adds as OpDot's, a length the square root of it and a normalized vector the vector times its reciprocal square root (so a zero vector gives NaNs); Cross is three multiplies and three fused multiply-adds.
 
 # SEE ALSO
 
