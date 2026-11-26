@@ -67,11 +67,8 @@ private func dump() -> [(name: String, stage: GLSLStage, source: String)] {
         do {
           let p = try link(vertex: v, fragment: f, attributeBindings: [])
           _ = try lowerAndCompile(p, .vertex, run: false)
-          try withKnownIssue("the Valhall backend has no texture access in a vertex shader (glmark2's terrain)") {
-            _ = try lowerAndCompile(p, .vertex)
-          } when: {
-            v.program.variables.contains { $0.storage == .uniform && $0.type.isSampler && $0.read }
-          }
+          // A vertex shader that samples (glmark2's terrain) compiles too.
+          _ = try lowerAndCompile(p, .vertex)
           _ = try lowerAndCompile(p, .fragment)
           if getenv("GLSL_COUNTS") != nil && !fragmentsLinked.contains(fn) {
             let ir = try lowerAndCompile(p, .fragment, run: false)[0].1
