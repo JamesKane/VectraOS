@@ -21,8 +21,7 @@ public enum TimestampStream {
       b.emit(CSInstruction.storeState(address: CSRegisterMap.firstScratch, state: .timestamp))
       b.wait(mask: scoreboards.slotMask(CSScoreboards.loadStoreSlot))
     }
-    b.waitAll()
-    b.cleanCachesForHost()
+    b.stepTail(chain)
     b.endStep(chain)
     return try b.finish()
   }

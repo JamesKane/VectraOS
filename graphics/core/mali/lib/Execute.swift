@@ -104,14 +104,17 @@ extension MaliDevice {
           // A stream on the queue the step before ended on needs no wait: the queue runs its jobs in order, each to its last
           // slot's wait, and the next job starts with the driver's clean and invalidate of the caches. Only a stream on
           // another queue waits on the chain (and a wait costs the GPU some 18 us: loinnir-test's frame budgets).
-          var c = StepChain(address: chain.address, waitAbove: k == 0 ? nil : k - 1)
+          var c = StepChain(address: chain.address, waitAbove: k == 0 ? nil : k - 1, cleansForHost: i == steps.count - 1)
           let queue: UInt32
           if case .render = step {
             queue = Self.tilerQueue + 1
             if chainQueue == queue { c.fragmentWaits = false }
           } else {
             queue = Self.computeQueue
-            if chainQueue == queue { c.waitAbove = nil }
+            if chainQueue == queue {
+              c.waitAbove = nil
+              c.invalidates = k > 0
+            }
           }
           jobs += try self.jobs(step, chain: c, held: &held)
           chainQueue = queue

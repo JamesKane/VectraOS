@@ -183,8 +183,30 @@ public struct CSBuilder: Sendable {
   /// A step's place in its submission's chain: the stream's start waits for `waitAbove` (nil: the first step, which waits
   /// for nothing), and its end adds one (`signal`; a render pass's fragment stream, not its tiling stream).
   public mutating func startStep(_ chain: StepChain?) {
-    if let c = chain, let w = c.waitAbove { waitForChain(address: c.address, above: w) }
+    guard let c = chain else { return }
+    if let w = c.waitAbove {
+      waitForChain(address: c.address, above: w)
+    } else if c.invalidates {
+      // After a step on this queue whose tail didn't clean: its order is the wait, but what it wrote is read again.
+      invalidateShaderCaches()
+    }
   }
+
+  /// The wait's cache maintenance alone (`waitForChain`): the LSC cleaned and invalidated, the texture and tile caches invalidated.
+  public mutating func invalidateShaderCaches() {
+    let scratch = CSRegisterMap.firstScratch
+    move32(scratch, 0)
+    emit(CSInstruction.flushCache2(l2: .none, lsc: .cleanInvalidate, other: .invalidate, flushIDRegister: scratch,
+                                   signalSlot: CSScoreboards.loadStoreSlot))
+    wait(mask: scoreboards.slotMask(CSScoreboards.loadStoreSlot))
+  }
+  /// A step's tail: every slot drained, then (unless a step after it in the submission is the one to, `cleansForHost`) the caches
+  /// cleaned for the host.
+  public mutating func stepTail(_ chain: StepChain?) {
+    waitAll()
+    if chain?.cleansForHost != false { cleanCachesForHost() }
+  }
+
   public mutating func endStep(_ chain: StepChain?) {
     if let c = chain, c.signal { signalChain(address: c.address) }
   }
@@ -210,10 +232,16 @@ public struct StepChain: Equatable, Sendable {
   public var signal: Bool
   /// Whether a render pass's fragment stream waits too (false: the step before ended on the fragment queue, whose order is the wait).
   public var fragmentWaits: Bool
-  public init(address: UInt64, waitAbove: UInt64?, signal: Bool = true, fragmentWaits: Bool = true) {
+  /// Whether the step's tail cleans the L2 and the LSC for the host: the submission's last step does; a step before it doesn't, as
+  /// the GPU's next step reads through the L2, the one point of coherence, after its wait cleaned and invalidated the LSC.
+  public var cleansForHost: Bool
+  /// With no wait: invalidate the shader cores' caches anyway (the step before was on this queue and didn't clean).
+  public var invalidates = false
+  public init(address: UInt64, waitAbove: UInt64?, signal: Bool = true, fragmentWaits: Bool = true, cleansForHost: Bool = true) {
     self.address = address
     self.waitAbove = waitAbove
     self.signal = signal
     self.fragmentWaits = fragmentWaits
+    self.cleansForHost = cleansForHost
   }
 }

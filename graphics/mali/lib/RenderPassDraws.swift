@@ -775,10 +775,7 @@ extension RenderPass {
         b.emit(CSInstruction.heapOperation(.fragmentCompleted, waitMask: fragmentMask, signalSlot: finishSlot))
       }
     }
-    func tail(_ b: inout CSBuilder) {
-      b.waitAll()
-      b.cleanCachesForHost()
-    }
+    func tail(_ b: inout CSBuilder) { b.stepTail(r.chain) }
     // 06 section 6.11.1 item 3: a query's report is zeroed by a store on the fragment queue, followed by a flush of
     // stores, before the pass's fragment work; the clean flush of the tail after it hands the count to the CPU.
     func zeroReports(_ b: inout CSBuilder) {
@@ -828,7 +825,9 @@ extension RenderPass {
       b0.move64(syncValueRegister, 1)
       b0.emit(CSInstruction.syncAdd64(address: syncAddressRegister, value: syncValueRegister, waitMask: tilingMask,
                                       signalSlot: CSScoreboards.deferredSyncSlot, scope: .group))
-      tail(&b0)
+      // The tiling stream writes nothing the host reads (the polygon lists are the fragment work's, through the L2): it drains,
+      // and the fragment stream's tail cleans for both.
+      b0.waitAll()
       let s0: CSStream
       do throws(CSBuildError) { s0 = try b0.finish() } catch { throw .stream(error) }
       let stream1At = alignUp(stream0At + s0.size, 64)
