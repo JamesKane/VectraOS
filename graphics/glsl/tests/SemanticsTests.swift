@@ -39,6 +39,26 @@ private func fragment(_ body: String, prelude: String = "", varyings: [Varying] 
     expectAll(try fragment(body), [0 + 1 + 3 + 4 + 5 + 6, -8, 4, 1 + 2 + 3], "loops")
   }
 
+  @Test func aConstantCountLoopIsUnrolled() throws {
+    let fs = """
+      precision highp float;
+      varying vec4 x;
+      void main() {
+        float w[4];
+        for (int i = 0; i < 4; i++) w[i] = x[i] * float(i);
+        float s = 0.0;
+        for (float f = 3.0; f > 0.0; f -= 1.5) s += f;
+        for (int i = 0; i < 4; i++) { if (w[i] > 100.0) break; s += w[i]; }
+        gl_FragColor = vec4(w[1] + w[3], s, 0.0, 0.0);
+      }
+      """
+    let p = try linkProgram("attribute vec4 p; varying vec4 x; void main() { x = p; gl_Position = p; }", fs)
+    // The first two loops are unrolled; the third breaks, so it stays a loop.
+    #expect(instructionOperands(p.fragmentSPIRV, op: 246).count == 1)
+    let r = try runFragment(fs, varyings: [Varying(decl: "vec4 x", value: [0.5, -2, 3, 1.25])])
+    expectAll(r.map { Array($0.prefix(2)) }, [-2 + 3.75, 4.5 + (0 - 2 + 6 + 3.75)], "unrolled")
+  }
+
   @Test func earlyReturnsFromInlinedFunctions() throws {
     let prelude = """
       float classify(float v) {

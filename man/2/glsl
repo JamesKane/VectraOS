@@ -78,6 +78,7 @@ What the SPIR-V is.
 Each stage is a Vulkan SPIR-V 1.0 module (capability Shader, the Logical addressing and GLSL450 memory models, GLSL.std.450 for the extended instructions) with one entry point, `main` (`GLSLLinkOptions.entryPoint`); a fragment shader's is `OriginUpperLeft`.
 Every user function is inlined into it: GLSL ES has no recursion, so each variable of the program is a Function variable the compiler's mem2reg promotes, a sampler argument names its binding, and the outputs are written in the entry, where the compiler takes them.
 A function that returns before its end is wrapped in a loop that runs once, each return a break of it (and of the loops between, through a flag).
+A `for` loop of appendix A's form with a constant count (an index declared and initialized by a constant, compared with a constant, stepped by one, written nowhere else, the body leaving by no `break`, `continue` or `return`) of at most 32 iterations of a small body is unrolled, the index a constant in each copy, so an array it indexes is promoted to registers.
 A matrix is an array of its columns (the compiler has no matrix types), a matrix times a vector a multiply and fused multiply-adds, a vector times a matrix a dot product a column.
 A pure `&&`, `||` or `?:` of cheap operands is a logical operation or a select, not a branch; one with effects branches, as the language says.
 mediump and lowp values (and the variables and varyings so declared) are decorated `RelaxedPrecision`, for a later 16-bit path; they are computed in binary32.

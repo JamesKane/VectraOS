@@ -60,6 +60,17 @@ extension CodeGen {
         terminated = true
       }
     case .loop(let initializer, let c, let step, let body):
+      if let trips = unrollable(initializer, c, step, body) {
+        // Appendix A's loop with a constant count, unrolled: the index a constant in each copy of the body, so what it
+        // indexes is a constant too.
+        let v = trips.variable
+        for k in trips.values {
+          places[v] = .value(constant(prog.variables[v].type, [k]))
+          statement(body)
+          if terminated { return }
+        }
+        return
+      }
       statements(initializer)
       if terminated { return }
       if let cv = c?.value, !cv[0].bool { return }
@@ -131,6 +142,160 @@ extension CodeGen {
     case .discard:
       emitVoid(SpvOp.kill, [])
       terminated = true
+    }
+  }
+
+  /// A `for` loop to unroll: its index declared and initialized by a constant, compared with a constant, stepped by a
+  /// constant, written nowhere else, the body leaving the loop by no break, continue or return; and few iterations of a
+  /// small body. Its index variable and the values it takes.
+  func unrollable(_ initializer: [Stmt], _ c: Expr?, _ step: Expr?, _ body: Stmt) -> (variable: Int, values: [Scalar])? {
+    guard initializer.count == 1, case .declare(let v, let i?) = initializer[0], let start = i.value?.first,
+      let c = c, let step = step
+    else { return nil }
+    let t = prog.variables[v].type
+    guard t == .int || t == .float else { return nil }
+    // The condition: the index against a constant, either way round.
+    guard case .binary(let op, let l, let r) = c.kind else { return nil }
+    var bound: Scalar
+    var flipped = false
+    if case .variable(v) = l.kind, let x = r.value?.first {
+      bound = x
+    } else if case .variable(v) = r.kind, let x = l.value?.first {
+      bound = x
+      flipped = true
+    } else {
+      return nil
+    }
+    var delta: Scalar
+    switch step.kind {
+    case .increment(let inc, _, let e):
+      guard case .variable(v) = e.kind else { return nil }
+      delta = t == .int ? .i(inc ? 1 : -1) : .f(inc ? 1 : -1)
+    case .assign(let o?, let e, let d):
+      guard case .variable(v) = e.kind, o == .add || o == .sub, let x = d.value?.first else { return nil }
+      switch x {
+      case .i(let n): delta = .i(o == .add ? n : 0 &- n)
+      case .f(let f): delta = .f(o == .add ? f : -f)
+      default: return nil
+      }
+    default: return nil
+    }
+    if writes(v, body) || leaves(body) { return nil }
+    var values: [Scalar] = []
+    var k = start
+    while values.count <= 32 {
+      let a = flipped ? bound : k
+      let b2 = flipped ? k : bound
+      let go: Bool
+      switch (a, b2) {
+      case (.i(let x), .i(let y)):
+        switch op {
+        case .lt: go = x < y
+        case .le: go = x <= y
+        case .gt: go = x > y
+        case .ge: go = x >= y
+        case .ne: go = x != y
+        default: return nil
+        }
+      default:
+        let x = a.float
+        let y = b2.float
+        switch op {
+        case .lt: go = x < y
+        case .le: go = x <= y
+        case .gt: go = x > y
+        case .ge: go = x >= y
+        case .ne: go = x != y
+        default: return nil
+        }
+      }
+      if !go { break }
+      values.append(k)
+      switch (k, delta) {
+      case (.i(let x), .i(let d)): k = .i(x &+ d)
+      default: k = .f(k.float + delta.float)
+      }
+    }
+    if values.count > 32 || values.count * stmtCost(body) > 2048 { return nil }
+    return (v, values)
+  }
+
+  /// The body stores to the variable (or passes it as an out or inout argument).
+  func writes(_ v: Int, _ s: Stmt) -> Bool {
+    func e(_ x: Expr) -> Bool {
+      switch x.kind {
+      case .assign(_, let l, let r): return root(l) == v || e(l) || e(r)
+      case .increment(_, _, let a): return root(a) == v || e(a)
+      case .call(let f, let args):
+        for (p, a) in zip(prog.functions[f].params, args) where prog.variables[p].qualifier != .in && root(a) == v { return true }
+        return args.contains { e($0) }
+      case .swizzle(let a, _), .field(let a, _), .unary(_, let a): return e(a)
+      case .index(let a, let i): return e(a) || e(i)
+      case .binary(_, let a, let b), .comma(let a, let b): return e(a) || e(b)
+      case .select(let a, let b, let c): return e(a) || e(b) || e(c)
+      case .builtin(_, let args), .construct(let args): return args.contains { e($0) }
+      case .declare(_, let i): return e(i)
+      default: return false
+      }
+    }
+    switch s {
+    case .expr(let x): return e(x)
+    case .declare(_, let i): return i.map { e($0) } ?? false
+    case .block(let ss): return ss.contains { writes(v, $0) }
+    case .ifElse(let c, let a, let b): return e(c) || writes(v, a) || (b.map { writes(v, $0) } ?? false)
+    case .loop(let i, let c, let st, let b): return i.contains { writes(v, $0) } || (c.map { e($0) } ?? false) || (st.map { e($0) } ?? false) || writes(v, b)
+    case .doWhile(let b, let c): return writes(v, b) || e(c)
+    case .ret(let x, _): return x.map { e($0) } ?? false
+    default: return false
+    }
+  }
+
+  func root(_ x: Expr) -> Int? {
+    switch x.kind {
+    case .variable(let v): return v
+    case .swizzle(let a, _), .field(let a, _), .index(let a, _): return root(a)
+    default: return nil
+    }
+  }
+
+  /// The statement leaves the loop it is in early: a break or a continue not inside a nested loop, or a return.
+  func leaves(_ s: Stmt) -> Bool {
+    switch s {
+    case .brk, .cont, .ret: return true
+    case .block(let ss): return ss.contains { leaves($0) }
+    case .ifElse(_, let a, let b): return leaves(a) || (b.map { leaves($0) } ?? false)
+    case .loop(_, _, _, let b), .doWhile(let b, _): return containsReturn(b)
+    default: return false
+    }
+  }
+
+  /// About how many instructions a statement makes (an expression's nodes; a call its body's; a loop's body eight
+  /// times).
+  func stmtCost(_ s: Stmt) -> Int {
+    switch s {
+    case .expr(let x): return size(x)
+    case .declare(_, let i): return 1 + (i.map { size($0) } ?? 0)
+    case .block(let ss): return ss.reduce(0) { $0 + stmtCost($1) }
+    case .ifElse(let c, let a, let b): return size(c) + stmtCost(a) + (b.map { stmtCost($0) } ?? 0)
+    case .loop(let i, let c, let st, let b):
+      return 8 * (i.reduce(0) { $0 + stmtCost($1) } + (c.map { size($0) } ?? 0) + (st.map { size($0) } ?? 0) + stmtCost(b))
+    case .doWhile(let b, let c): return 8 * (stmtCost(b) + size(c))
+    case .ret(let x, _): return 1 + (x.map { size($0) } ?? 0)
+    default: return 1
+    }
+  }
+
+  func size(_ x: Expr) -> Int {
+    if x.value != nil { return 1 }
+    switch x.kind {
+    case .constant, .variable: return 1
+    case .swizzle(let a, _), .field(let a, _), .unary(_, let a), .increment(_, _, let a): return 1 + size(a)
+    case .index(let a, let i): return 1 + size(a) + size(i)
+    case .binary(_, let a, let b), .comma(let a, let b), .assign(_, let a, let b): return x.type.components + size(a) + size(b)
+    case .select(let a, let b, let c): return 1 + size(a) + size(b) + size(c)
+    case .builtin(_, let args), .construct(let args): return args.reduce(4) { $0 + size($1) }
+    case .call(let f, let args): return args.reduce(prog.functions[f].body?.reduce(0) { $0 + stmtCost($1) } ?? 1) { $0 + size($1) }
+    case .declare(_, let i): return 1 + size(i)
     }
   }
 
