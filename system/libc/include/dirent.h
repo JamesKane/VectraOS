@@ -26,6 +26,9 @@ struct dirent {
 typedef struct td_dir DIR;
 
 DIR *opendir(const char *path);
+// A directory by its descriptor: ENOSYS so far (fdio opens directories by
+// path).
+DIR *fdopendir(int fd);
 struct dirent *readdir(DIR *dir);
 void rewinddir(DIR *dir);
 int closedir(DIR *dir);

@@ -1,0 +1,173 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: VectraOS port <port@vectraos.invalid>
+Date: Thu, 26 Nov 2026 12:00:00 +0000
+Subject: [PATCH] [VectraOS] A native state for VectraOS (GLMARK2_USE_VECTRAOS)
+
+NativeStateVectraOS: EGL's default display, and a struct
+vectra_egl_window (a size and a title) that VectraOS's EGL makes a window
+of Radharc's from; the struct is <EGL/vectraos.h>'s when the GLES
+library's headers have it, declared here the same otherwise. No full
+screen (Radharc gives the size asked for), no window events. main.cpp
+picks it for GLMARK2_USE_VECTRAOS.
+---
+diff --git a/src/main.cpp b/src/main.cpp
+index d1077fe..3f39e12 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -45,6 +45,8 @@
+ #include "native-state-wayland.h"
+ #elif GLMARK2_USE_DISPMANX
+ #include "native-state-dispmanx.h"
++#elif GLMARK2_USE_VECTRAOS
++#include "native-state-vectraos.h"
+ #elif GLMARK2_USE_WIN32
+ #include "native-state-win32.h"
+ #endif
+@@ -168,6 +170,8 @@ main(int argc, char *argv[])
+     NativeStateWayland native_state;
+ #elif GLMARK2_USE_DISPMANX
+     NativeStateDispmanx native_state;
++#elif GLMARK2_USE_VECTRAOS
++    NativeStateVectraOS native_state;
+ #elif GLMARK2_USE_WIN32
+     NativeStateWin32 native_state;
+ #endif
+diff --git a/src/native-state-vectraos.cpp b/src/native-state-vectraos.cpp
+new file mode 100644
+index 0000000..6eb3793
+--- /dev/null
++++ b/src/native-state-vectraos.cpp
+@@ -0,0 +1,75 @@
++/*
++ * SPDX-License-Identifier: GPL-3.0-or-later
++ *
++ * This file is part of the glmark2 OpenGL (ES) 2.0 benchmark, for VectraOS.
++ *
++ * glmark2 is free software: you can redistribute it and/or modify it under the
++ * terms of the GNU General Public License as published by the Free Software
++ * Foundation, either version 3 of the License, or (at your option) any later
++ * version.
++ */
++#include "native-state-vectraos.h"
++
++#include <cstring>
++
++#include "log.h"
++
++NativeStateVectraOS::NativeStateVectraOS()
++{
++    std::memset(&window_, 0, sizeof(window_));
++}
++
++NativeStateVectraOS::~NativeStateVectraOS()
++{
++}
++
++bool
++NativeStateVectraOS::init_display()
++{
++    return true;
++}
++
++void*
++NativeStateVectraOS::display()
++{
++    return nullptr; /* EGL_DEFAULT_DISPLAY */
++}
++
++bool
++NativeStateVectraOS::create_window(WindowProperties const& properties)
++{
++    /* Radharc gives a window the size asked for; it has no full screen. */
++    if (properties.fullscreen || properties.width <= 0 || properties.height <= 0) {
++        Log::error("Error: VectraOS has no full screen window: give --size\n");
++        return false;
++    }
++    properties_ = properties;
++    window_.width = static_cast<uint32_t>(properties.width);
++    window_.height = static_cast<uint32_t>(properties.height);
++    window_.title = "glmark2";
++    return true;
++}
++
++void*
++NativeStateVectraOS::window(WindowProperties& properties)
++{
++    properties = properties_;
++    return &window_;
++}
++
++void
++NativeStateVectraOS::visible(bool /*v*/)
++{
++}
++
++bool
++NativeStateVectraOS::should_quit()
++{
++    /* EGL gives no window events: a run ends when its benchmarks do. */
++    return false;
++}
++
++void
++NativeStateVectraOS::flip()
++{
++}
+diff --git a/src/native-state-vectraos.h b/src/native-state-vectraos.h
+new file mode 100644
+index 0000000..6de0fcb
+--- /dev/null
++++ b/src/native-state-vectraos.h
+@@ -0,0 +1,52 @@
++/*
++ * SPDX-License-Identifier: GPL-3.0-or-later
++ *
++ * This file is part of the glmark2 OpenGL (ES) 2.0 benchmark, for VectraOS.
++ *
++ * glmark2 is free software: you can redistribute it and/or modify it under the
++ * terms of the GNU General Public License as published by the Free Software
++ * Foundation, either version 3 of the License, or (at your option) any later
++ * version.
++ *
++ * The native state on VectraOS: EGL's default display, and a window of
++ * Radharc's that VectraOS's EGL makes from a struct vectra_egl_window (its
++ * size and title). An off-screen run (--off-screen) still makes one, which
++ * glmark2 never shows.
++ */
++#ifndef GLMARK2_NATIVE_STATE_VECTRAOS_H_
++#define GLMARK2_NATIVE_STATE_VECTRAOS_H_
++
++#include <stdint.h>
++
++#include "native-state.h"
++
++#if __has_include(<EGL/vectraos.h>)
++#include <EGL/vectraos.h>
++#else
++/* VectraOS's EGL native window (graphics/gles's <EGL/vectraos.h>). */
++struct vectra_egl_window {
++    uint32_t width, height;
++    const char *title;
++};
++#endif
++
++class NativeStateVectraOS : public NativeState
++{
++public:
++    NativeStateVectraOS();
++    ~NativeStateVectraOS();
++
++    bool init_display();
++    void* display();
++    bool create_window(WindowProperties const& properties);
++    void* window(WindowProperties& properties);
++    void visible(bool v);
++    bool should_quit();
++    void flip();
++
++private:
++    struct vectra_egl_window window_;
++    WindowProperties properties_;
++};
++
++#endif /* GLMARK2_NATIVE_STATE_VECTRAOS_H_ */

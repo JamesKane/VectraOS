@@ -9,6 +9,7 @@
 #ifndef TD_TIME_H
 #define TD_TIME_H
 
+#include <bits/locale_t.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -41,6 +42,29 @@ int nanosleep(const struct timespec *duration, struct timespec *remaining);
 // duration. It returns the error number (0 when it slept), not -1.
 #define TIMER_ABSTIME 1
 int clock_nanosleep(clockid_t clock, int flags, const struct timespec *request, struct timespec *remaining);
+
+// A broken-down time (C23 §7.29.1, with glibc's two fields after).
+struct tm {
+  int tm_sec;
+  int tm_min;
+  int tm_hour;
+  int tm_mday;
+  int tm_mon;
+  int tm_year;
+  int tm_wday;
+  int tm_yday;
+  int tm_isdst;
+  long tm_gmtoff;
+  const char *tm_zone;
+};
+
+// strftime in the C locale (C23 §7.29.3.5): every conversion, E and O
+// modifiers accepted and ignored; a time zone is the one tm_zone and
+// tm_gmtoff name (UTC when tm_zone is null). strftime_l's locale can
+// only be "C".
+size_t strftime(char *__restrict s, size_t max, const char *__restrict format, const struct tm *__restrict tm);
+size_t strftime_l(char *__restrict s, size_t max, const char *__restrict format, const struct tm *__restrict tm,
+                  locale_t locale);
 
 #ifdef __cplusplus
 }

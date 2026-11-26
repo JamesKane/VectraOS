@@ -1,7 +1,7 @@
 page stat 2
 summary get file status, make directories
-names stat lstat fstat mkdir chmod fchmod
-src system/libc/include/sys/stat.h system/libc/include/sys/types.h system/fdio/native/Exports.swift system/fdio/lib/FDIO.swift
+names stat lstat fstat mkdir chmod fchmod fchmodat statvfs fstatvfs
+src system/libc/include/sys/stat.h system/libc/include/sys/types.h system/fdio/native/Exports.swift system/fdio/lib/FDIO.swift system/libc/include/sys/statvfs.h system/libc/native/files.c
 keys file status mode size directory mkdir permissions
 lang c
 
@@ -34,6 +34,25 @@ int chmod(const char *path, mode_t mode);
 int fchmod(int fd, mode_t mode);
 ```
 
+```c
+#define S_ISCHR(m) (((m) & S_IFMT) == S_IFCHR)
+#define S_ISBLK(m) (((m) & S_IFMT) == S_IFBLK)
+#define S_ISFIFO(m) (((m) & S_IFMT) == S_IFIFO)
+#define S_ISSOCK(m) (((m) & S_IFMT) == S_IFSOCK)
+int fchmodat(int dirfd, const char *path, mode_t mode, int flags);
+
+#include <sys/statvfs.h>
+
+struct statvfs {
+  unsigned long f_bsize, f_frsize;
+  fsblkcnt_t f_blocks, f_bfree, f_bavail;
+  fsfilcnt_t f_files, f_ffree, f_favail;
+  unsigned long f_fsid, f_flag, f_namemax;
+};
+int statvfs(const char *__restrict path, struct statvfs *__restrict buf);
+int fstatvfs(int fd, struct statvfs *buf);
+```
+
 # DESCRIPTION
 
 `stat` fills <st> with the status of the node <path>, `fstat` with that of the open descriptor <fd>.
@@ -61,6 +80,12 @@ It fails with `EEXIST` if the name is in use, `ENOENT` if a directory on the pat
 There are no permissions to change: `chmod` and `fchmod` succeed if the path or descriptor exists, and change nothing.
 
 All return 0, or -1 with `errno` set.
+
+## Relative to a directory, and file systems
+
+`fchmodat` is `chmod` for <path> relative to <dirfd>: `AT_FDCWD` or an absolute <path> only, another <dirfd> failing with `ENOSYS` (fcntl(2)).
+`AT_SYMLINK_NOFOLLOW` fails with `ENOTSUP`: a symbolic link has no mode of its own.
+`statvfs` and `fstatvfs` fail with `ENOSYS`: no file system reports its capacity.
 
 # SEE ALSO
 

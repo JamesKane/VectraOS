@@ -26,6 +26,12 @@ extern "C" {
 #define O_CLOEXEC 02000000
 
 int open(const char *path, int flags, ...);
+// The *at calls' directory: the working one. A call relative to another
+// directory's descriptor fails with ENOSYS so far (native/files.c).
+#define AT_FDCWD (-100)
+#define AT_SYMLINK_NOFOLLOW 0x100
+#define AT_REMOVEDIR 0x200
+int openat(int dirfd, const char *path, int flags, ...);
 int creat(const char *path, mode_t mode);
 
 // open, not variadic: Swift can't call a variadic function, so the

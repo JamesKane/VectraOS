@@ -323,6 +323,10 @@ if(CROI_ARCH STREQUAL arm64)
   # The board's V3 link: its cpu server for this terminal, running for good.
   croi_esp(board-cpu "userboot.next=bin/launcher croi.debug_syscalls=on croi.halt_on_panic=false"
     BOOTFS bootfs-board-cpu)
+  # glmark2 started by userboot, in QEMU (glmark2(8)): built on request, not a test.
+  if(TARGET bootfs-glmark2)
+    croi_esp(glmark2 "userboot.next=bin/glmark2-es2-vectraos${_shutdown} croi.debug_syscalls=on" BOOTFS bootfs-glmark2)
+  endif()
   # The board's desktop: Radharc on its display, and the cpu server.
   croi_esp(board-desktop "userboot.next=bin/launcher croi.debug_syscalls=on croi.halt_on_panic=false"
     BOOTFS bootfs-board-desktop)

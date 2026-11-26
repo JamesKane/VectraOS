@@ -233,6 +233,8 @@ function(croi_tier1 bootfs_var depends_var)
                                   system/fdio/native/Fts.swift system/fdio/native/Spawn.swift
                      CSOURCES system/fdio/native/open.c system/fdio/native/nftw.c
                      USES Fs Node INCLUDES system/trace/c/include)
+  # dlopen (dlfcn(2), system/ld/native): tier 0's, for tier 1's programs that load libraries while they run.
+  croi_tier1_library(Ld SOURCES system/ld/native/Linker.swift system/ld/native/Exports.swift USES Loader Sys)
   # The desktop's libraries (D107): the text stack, the theme, UICore,
   # Radharc's protocol, the plumber's messages and the SDK, from the same
   # sources as tier 0's; then Kit, its platform and its sample.
@@ -553,8 +555,15 @@ function(croi_tier1 bootfs_var depends_var)
                        LIBS ${_app_so} ${_kit_so} ${_t1_so} ${_fdio})
     list(APPEND _shell_outputs ${_out}/${_p})
   endforeach()
+  # glmark2 (D183, cmake/Glmark2.cmake), where its port's source is fetched and patched (ports/glmark2).
+  set(_glmark2)
+  if(EXISTS ${PROJECT_SOURCE_DIR}/.cache/ports/glmark2/src/native-state-vectraos.cpp)
+    include(${PROJECT_SOURCE_DIR}/cmake/Glmark2.cmake)
+    croi_tier1_glmark2()
+    get_property(_glmark2 GLOBAL PROPERTY CROI_TIER1_GLMARK2)
+  endif()
   # Every library tier 1 built, shared, in bootfs's lib/.
-  foreach(_so ${_t1_so} ${_kit_so} ${_app_so} ${_gpu_so} ${_lib}/libRc.so ${_lib}/libCommands.so)
+  foreach(_so ${_t1_so} ${_kit_so} ${_app_so} ${_gpu_so} ${_lib}/libRc.so ${_lib}/libCommands.so ${_lib}/libLd.so)
     get_filename_component(_n ${_so} NAME)
     set_property(GLOBAL APPEND PROPERTY CROI_TIER1_SHARED lib/${_n}=${_so})
     set_property(GLOBAL APPEND PROPERTY CROI_TIER1_SHARED_FILES ${_so})

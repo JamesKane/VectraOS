@@ -215,6 +215,62 @@ struct StreamSink: FormatSink {
 @c(tolower) public func exportedTolower(_ c: Int32) -> Int32 { tolower(c) }
 @c(toupper) public func exportedToupper(_ c: Int32) -> Int32 { toupper(c) }
 
+// MARK: The C locale's forms (<locale.h>: the one locale is "C", so a
+// locale_t changes nothing), and collation, which in it is by byte value.
+
+@c(isalnum_l) public func exportedIsalnumL(_ c: Int32, _ l: OpaquePointer?) -> Int32 { isalnum(c) }
+@c(isalpha_l) public func exportedIsalphaL(_ c: Int32, _ l: OpaquePointer?) -> Int32 { isalpha(c) }
+@c(isblank_l) public func exportedIsblankL(_ c: Int32, _ l: OpaquePointer?) -> Int32 { isblank(c) }
+@c(iscntrl_l) public func exportedIscntrlL(_ c: Int32, _ l: OpaquePointer?) -> Int32 { iscntrl(c) }
+@c(isdigit_l) public func exportedIsdigitL(_ c: Int32, _ l: OpaquePointer?) -> Int32 { isdigit(c) }
+@c(isgraph_l) public func exportedIsgraphL(_ c: Int32, _ l: OpaquePointer?) -> Int32 { isgraph(c) }
+@c(islower_l) public func exportedIslowerL(_ c: Int32, _ l: OpaquePointer?) -> Int32 { islower(c) }
+@c(isprint_l) public func exportedIsprintL(_ c: Int32, _ l: OpaquePointer?) -> Int32 { isprint(c) }
+@c(ispunct_l) public func exportedIspunctL(_ c: Int32, _ l: OpaquePointer?) -> Int32 { ispunct(c) }
+@c(isspace_l) public func exportedIsspaceL(_ c: Int32, _ l: OpaquePointer?) -> Int32 { isspace(c) }
+@c(isupper_l) public func exportedIsupperL(_ c: Int32, _ l: OpaquePointer?) -> Int32 { isupper(c) }
+@c(isxdigit_l) public func exportedIsxdigitL(_ c: Int32, _ l: OpaquePointer?) -> Int32 { isxdigit(c) }
+@c(tolower_l) public func exportedTolowerL(_ c: Int32, _ l: OpaquePointer?) -> Int32 { tolower(c) }
+@c(toupper_l) public func exportedToupperL(_ c: Int32, _ l: OpaquePointer?) -> Int32 { toupper(c) }
+
+@c(strtol_l) public func exportedStrtolL(_ s: UnsafePointer<CChar>,
+                                         _ end: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?, _ base: Int32,
+                                         _ l: OpaquePointer?) -> Int
+{ unsafe strtol(s, end, base) }
+@c(strtoll_l) public func exportedStrtollL(_ s: UnsafePointer<CChar>,
+                                           _ end: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?, _ base: Int32,
+                                           _ l: OpaquePointer?) -> Int64
+{ unsafe strtoll(s, end, base) }
+@c(strtoul_l) public func exportedStrtoulL(_ s: UnsafePointer<CChar>,
+                                           _ end: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?, _ base: Int32,
+                                           _ l: OpaquePointer?) -> UInt
+{ unsafe strtoul(s, end, base) }
+@c(strtoull_l) public func exportedStrtoullL(_ s: UnsafePointer<CChar>,
+                                             _ end: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?, _ base: Int32,
+                                             _ l: OpaquePointer?) -> UInt64
+{ unsafe strtoull(s, end, base) }
+@c(strtod_l) public func exportedStrtodL(_ s: UnsafePointer<CChar>,
+                                         _ end: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?, _ l: OpaquePointer?)
+  -> Double
+{ unsafe strtod(s, end) }
+@c(strtof_l) public func exportedStrtofL(_ s: UnsafePointer<CChar>,
+                                         _ end: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?, _ l: OpaquePointer?)
+  -> Float
+{ unsafe strtof(s, end) }
+
+@c(strcoll) public func exportedStrcoll(_ a: UnsafePointer<CChar>, _ b: UnsafePointer<CChar>) -> Int32 {
+  unsafe strcmp(a, b)
+}
+@c(strcoll_l) public func exportedStrcollL(_ a: UnsafePointer<CChar>, _ b: UnsafePointer<CChar>, _ l: OpaquePointer?)
+  -> Int32
+{ unsafe strcmp(a, b) }
+@c(strxfrm) public func exportedStrxfrm(_ d: UnsafeMutablePointer<CChar>?, _ s: UnsafePointer<CChar>, _ n: UInt) -> UInt {
+  unsafe strxfrm(d, s, n)
+}
+@c(strxfrm_l) public func exportedStrxfrmL(_ d: UnsafeMutablePointer<CChar>?, _ s: UnsafePointer<CChar>, _ n: UInt,
+                                           _ l: OpaquePointer?) -> UInt
+{ unsafe strxfrm(d, s, n) }
+
 // MARK: <math.h> (M6c)
 
 @c(floor) public func exported_floor(_ x: Double) -> Double { floor(x) }
@@ -233,6 +289,12 @@ struct StreamSink: FormatSink {
 @c(log10) public func exported_log10(_ x: Double) -> Double { log10(x) }
 @c(sin) public func exported_sin(_ x: Double) -> Double { sin(x) }
 @c(cos) public func exported_cos(_ x: Double) -> Double { cos(x) }
+@c(tan) public func exported_tan(_ x: Double) -> Double { tan(x) }
+@c(atan) public func exported_atan(_ x: Double) -> Double { atan(x) }
+@c(atan2) public func exported_atan2(_ y: Double, _ x: Double) -> Double { atan2(y, x) }
+@c(asin) public func exported_asin(_ x: Double) -> Double { asin(x) }
+@c(acos) public func exported_acos(_ x: Double) -> Double { acos(x) }
+@c(pow) public func exported_pow(_ x: Double, _ y: Double) -> Double { pow(x, y) }
 @c(floorf) public func exported_floorf(_ x: Float) -> Float { floorf(x) }
 @c(ceilf) public func exported_ceilf(_ x: Float) -> Float { ceilf(x) }
 @c(truncf) public func exported_truncf(_ x: Float) -> Float { truncf(x) }
@@ -249,6 +311,12 @@ struct StreamSink: FormatSink {
 @c(log10f) public func exported_log10f(_ x: Float) -> Float { log10f(x) }
 @c(sinf) public func exported_sinf(_ x: Float) -> Float { sinf(x) }
 @c(cosf) public func exported_cosf(_ x: Float) -> Float { cosf(x) }
+@c(tanf) public func exported_tanf(_ x: Float) -> Float { tanf(x) }
+@c(atanf) public func exported_atanf(_ x: Float) -> Float { atanf(x) }
+@c(atan2f) public func exported_atan2f(_ y: Float, _ x: Float) -> Float { atan2f(y, x) }
+@c(asinf) public func exported_asinf(_ x: Float) -> Float { asinf(x) }
+@c(acosf) public func exported_acosf(_ x: Float) -> Float { acosf(x) }
+@c(powf) public func exported_powf(_ x: Float, _ y: Float) -> Float { powf(x, y) }
 @c(copysign) public func exported_copysign(_ x: Double, _ y: Double) -> Double { copysign(x, y) }
 @c(fmod) public func exported_fmod(_ x: Double, _ y: Double) -> Double { fmod(x, y) }
 @c(remainder) public func exported_remainder(_ x: Double, _ y: Double) -> Double { remainder(x, y) }
@@ -261,3 +329,75 @@ struct StreamSink: FormatSink {
 @c(scalbn) public func exported_scalbn(_ x: Double, _ n: Int32) -> Double { ldexp(x, n) }
 @c(frexp) public func exported_frexp(_ x: Double, _ e: UnsafeMutablePointer<Int32>) -> Double { unsafe frexp(x, e) }
 @c(modf) public func exported_modf(_ x: Double, _ i: UnsafeMutablePointer<Double>) -> Double { unsafe modf(x, i) }
+@c(modff) public func exported_modff(_ x: Float, _ i: UnsafeMutablePointer<Float>) -> Float {
+  var whole = 0.0
+  let fraction = unsafe modf(Double(x), &whole)
+  unsafe i.pointee = Float(whole)
+  return Float(fraction)
+}
+
+// MARK: scanf's family from a string, and strftime (their C entries are
+// native/stdio.c's and native/stdlib.c's)
+
+/// sscanf's pointers from a C va_list (its address).
+@safe struct VaPointers: ScanArguments {
+  let ap: UnsafeMutableRawPointer
+  mutating func pointer() -> UnsafeMutableRawPointer? { unsafe UnsafeMutableRawPointer(bitPattern: td_va_pointer(ap)) }
+}
+
+@c public func td_scan_string(_ s: UnsafePointer<CChar>, _ fmt: UnsafePointer<CChar>, _ ap: UnsafeMutableRawPointer)
+  -> Int32
+{
+  var args = unsafe VaPointers(ap: ap)
+  return unsafe scan(UnsafeRawPointer(s).assumingMemoryBound(to: UInt8.self),
+                     UnsafeRawPointer(fmt).assumingMemoryBound(to: UInt8.self), &args)
+}
+
+/// strftime over struct tm's fields, read by native/stdlib.c: second,
+/// minute, hour, day, month, year (since 1900), weekday, day of the year,
+/// offset east of UTC; and the zone's name.
+@c public func td_strftime(_ s: UnsafeMutablePointer<CChar>, _ max: Int, _ fmt: UnsafePointer<CChar>,
+                           _ fields: UnsafePointer<Int64>, _ zone: UnsafePointer<CChar>?) -> Int
+{
+  var t = BrokenDownTime()
+  t.second = Int(unsafe fields[0])
+  t.minute = Int(unsafe fields[1])
+  t.hour = Int(unsafe fields[2])
+  t.day = Int(unsafe fields[3])
+  t.month = Int(unsafe fields[4])
+  t.year = Int(unsafe fields[5]) + 1900
+  t.weekday = Int(unsafe fields[6])
+  t.yearDay = Int(unsafe fields[7])
+  t.offset = Int(unsafe fields[8])
+  unsafe t.zone = UnsafeRawPointer(zone)?.assumingMemoryBound(to: UInt8.self)
+  return unsafe strftime(UnsafeMutableRawPointer(s).assumingMemoryBound(to: UInt8.self), max,
+                         UnsafeRawPointer(fmt).assumingMemoryBound(to: UInt8.self), t)
+}
+
+@c(rand) public func exportedRand() -> Int32 { rand() }
+@c(srand) public func exportedSrand(_ seed: UInt32) { srand(seed) }
+
+// MARK: More of <string.h>
+
+@c(strcpy) public func exportedStrcpy(_ d: UnsafeMutablePointer<CChar>, _ s: UnsafePointer<CChar>)
+  -> UnsafeMutablePointer<CChar>
+{ unsafe strcpy(d, s) }
+@c(strncat) public func exportedStrncat(_ d: UnsafeMutablePointer<CChar>, _ s: UnsafePointer<CChar>, _ n: UInt)
+  -> UnsafeMutablePointer<CChar>
+{ unsafe strncat(d, s, n) }
+@c(strspn) public func exportedStrspn(_ s: UnsafePointer<CChar>, _ set: UnsafePointer<CChar>) -> UInt {
+  unsafe strspn(s, set)
+}
+@c(strcspn) public func exportedStrcspn(_ s: UnsafePointer<CChar>, _ set: UnsafePointer<CChar>) -> UInt {
+  unsafe strcspn(s, set)
+}
+@c(strpbrk) public func exportedStrpbrk(_ s: UnsafePointer<CChar>, _ set: UnsafePointer<CChar>) -> UnsafePointer<CChar>? {
+  unsafe strpbrk(s, set)
+}
+@c(strstr) public func exportedStrstr(_ h: UnsafePointer<CChar>, _ n: UnsafePointer<CChar>) -> UnsafePointer<CChar>? {
+  unsafe strstr(h, n)
+}
+@c(strtok_r) public func exportedStrtokR(_ s: UnsafeMutablePointer<CChar>?, _ sep: UnsafePointer<CChar>,
+                                         _ state: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>)
+  -> UnsafeMutablePointer<CChar>?
+{ unsafe strtok_r(s, sep, state) }

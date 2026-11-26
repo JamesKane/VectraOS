@@ -1,0 +1,40 @@
+page getrusage 2
+summary the CPU time a process or thread has used
+names getrusage
+src system/libc/include/sys/resource.h system/libc/native/resource.c
+keys rusage cpu time user system process thread
+lang c
+
+# SYNOPSIS
+
+```c
+#include <sys/resource.h>
+
+#define RUSAGE_SELF 0
+#define RUSAGE_CHILDREN (-1)
+#define RUSAGE_THREAD 1
+
+struct rusage {
+  struct timeval ru_utime;
+  struct timeval ru_stime;
+  long ru_maxrss;  // and the rest of POSIX's and Linux's fields
+};
+
+int getrusage(int who, struct rusage *usage);
+```
+
+# DESCRIPTION
+
+`getrusage` fills <usage> for the calling process (`RUSAGE_SELF`) or thread (`RUSAGE_THREAD`, Linux's).
+`ru_utime` is the CPU time it has run, as the kernel counts it (object_get_info's `CROI_INFO_TASK_RUNTIME`, object(2)); every other field is 0.
+`RUSAGE_CHILDREN` gives zeros.
+It returns 0, or -1 with `errno` set to `EINVAL` for another <who>.
+
+# SEE ALSO
+
+time(2), task(2)
+
+# BUGS
+
+croi doesn't split a task's time into user and system time, so all of it is `ru_utime` and `ru_stime` is 0.
+No child's time is kept once it has gone, and nothing counts faults, context switches or memory.
