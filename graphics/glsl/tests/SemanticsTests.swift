@@ -273,6 +273,34 @@ private func fragment(_ body: String, prelude: String = "", varyings: [Varying] 
     expectAll(got, [1 + 2 + 6, 3, 7 + 3 + 4, 0.25 + 100 + 3 + 500], "uniforms")
   }
 
+  @Test func wholeUniformStructuresAndSamplerParameters() throws {
+    let fs = """
+      precision highp float;
+      struct S { vec2 a; bool flag; mat2 m; };
+      struct M { sampler2D tex; vec4 tint; };
+      uniform S s;
+      uniform M mats[2];
+      varying vec4 x;
+      vec4 shade(M m, vec2 uv) { return texture2D(m.tex, uv) * m.tint; }
+      float pick(S v) { return v.flag ? v.m[1][1] + v.a.x : -1.0; }
+      void main() {
+        S copy = s;
+        copy.a.x += 1.0;
+        gl_FragColor = vec4(pick(copy), pick(s), shade(mats[1], x.xy).x, shade(mats[0], x.xy).y);
+      }
+      """
+    let texel: (UInt64, [Float], Int) -> Float = { image, _, k in Float(image) * 10 + Float(k) }
+    let got = try runFragment(fs, varyings: [Varying(decl: "vec4 x", value: [0.5, -2, 3, 1.25])], uniforms: { u in
+      u.set("s.a", [2, 0])
+      u.set("s.flag", ints: [1])
+      u.set("s.m", [0, 0, 0, 5])
+      u.set("mats[0].tint", [1, 2, 3, 4])
+      u.set("mats[1].tint", [0.5, 1, 1, 1])
+    }, texel: texel)
+    // mats[0].tex is binding 1 (slot 11), mats[1].tex binding 2 (slot 12).
+    expectAll(got, [8, 7, 120 * 0.5, 111 * 2], "structures and samplers")
+  }
+
   @Test func theBlockFollowsStd140() throws {
     let fs = """
       precision mediump float;
