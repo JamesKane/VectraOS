@@ -347,14 +347,17 @@ func indexedPipeline(_ gpu: MaliDevice) throws -> GPUPipeline { try trianglePipe
       r.draw(pipeline, root: 0x1000, vertices: 3)
     }
     try gpu.graphicsQueue.submit(cleared, wait: 2, signal: 3)
+    // The last pass's own block (the submissions' memory is the arena's, which holds earlier passes' blocks too).
+    let pass = try #require(gpu.probeLastPass)
     var modes: [UInt32] = []
-    for (_, words) in zip(t.boundAtSubmit, t.memory.suffix(t.boundAtSubmit.count)) {
-      for i in 0..<(words.count - 32) where words[i + 8] == 63 | 63 << 16 && words[i + 11] >> 24 != 0 {
+    for (b, words) in zip(t.boundAtSubmit, t.memory.suffix(t.boundAtSubmit.count))
+    where b.address <= pass.block && pass.block < b.address + UInt64(b.size) {
+      let first = Int(pass.block - b.address) / 4
+      for i in first..<min(first + pass.bytes / 4, words.count - 32) where words[i + 8] == 63 | 63 << 16 && words[i + 11] >> 24 != 0 {
         modes.append(words[i] | (words[i + 6] != 0 || words[i + 7] != 0 ? 0x100 : 0))
       }
     }
-    // The last pass's framebuffer is the last found: the submissions' memory is the arena's, taken in order.
-    #expect(modes.last == 0, "mode never and no descriptors")
+    #expect(modes.first == 0, "mode never and no descriptors")
   }
 
   @Test func aStorageImageIsADescriptorInTable2AndTheShadersHandleNamesIt() throws {

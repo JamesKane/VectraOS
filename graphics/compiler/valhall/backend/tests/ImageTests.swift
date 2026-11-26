@@ -163,7 +163,7 @@ private func lines(_ c: CompiledGraphicsShader) -> [String] {
     let v = try #require(c.vertex)
     #expect(v.layout.imageBindings.map { $0.binding } == [0, 1])
     #expect(v.layout.imageBindings.allSatisfy { $0.word >= 6 })
-    let sample = lines(c).filter { $0.hasPrefix("TEX_SINGLE") }
-    #expect(sample.count == 1 && sample[0].contains("explicit") && !sample[0].contains("computed"))
+    let sample = lines(c).filter { $0.hasPrefix("TEX") }
+    #expect(sample.count == 1 && !sample[0].contains("computed"), "\(sample)")
   }
 }

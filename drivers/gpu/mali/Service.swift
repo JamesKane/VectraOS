@@ -913,6 +913,8 @@ public struct CSFService<Backend: CSFBackend> {
     // The jobs go to their rings and the doorbells ring now. The rest of a pump (the firmware's events, the completions, the
     // tick) is the interrupt threads', unless the scheduler wants it now: a group off its slot, a reset, a submission waiting.
     _ = issuePending()
+    // An empty job completes at once, on the scheduler's list.
+    for d in scheduler.drainCompletions() { complete(d) }
     if !pending.isEmpty || scheduler.wantsRun { pump() }
     let took = scheduler.link.nanoseconds &- start
     if submitTimes.count < 256 { submitTimes.append(took) } else { submitTimes[submitCount % 256] = took }
