@@ -36,8 +36,8 @@
 // from word 0 of a fragment shader's block: `pushWord` follows them). A sample or a fetch computes both handles as
 // the word plus the array index, and names them in the wide form of the handle source `H` (12b.2.1: word 0 the
 // sampler, word 1 the texture), so the heap may be any size. A fetch of an image with no sampler names the
-// driver's dummy sampler: `dummySamplerWord` holds its handle (12b.2.1: a valid sampler in every stage). Vertex
-// shaders do not sample. Implicit levels run with helper lanes alive: the shaders have no `discard` flow, and a
+// driver's dummy sampler: `dummySamplerWord` holds its handle (12b.2.1: a valid sampler in every stage). A vertex
+// shader samples the same heap, its handles after its own words, an implicit level its base level. Implicit levels run with helper lanes alive: the shaders have no `discard` flow, and a
 // demote is a DISCARD that flags the lane.
 //
 // FAU block (both): a vertex shader's holds the viewport (six words: scale x, offset x, scale y, offset y,

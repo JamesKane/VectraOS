@@ -295,6 +295,8 @@ public struct GroupScheduler<Link: FirmwareLink> {
   var lastTick: UInt64?
   var ticking = false
   var tickRequested = false
+  /// Whether `run` has work now (a tick asked for, a reset due): a submit to a resident group needs no run otherwise.
+  public var wantsRun: Bool { tickRequested || resetPending }
   var resetPending = false
   /// Why the reset pending was asked for, in the order the requests came (requests merge, 03 section 3.9.1).
   var resetCauses: [String] = []

@@ -240,6 +240,7 @@ extension MaliDevice {
         queryCells = []
         usesHeap = false
         dyn = DynamicValues()
+        dynVersion &+= 1
         zs = nil
         if let ds = info.depthStencil {
           guard let image = images[ds.view.image.handle] else { throw .invalid("an image that isn't this device's") }
@@ -319,14 +320,17 @@ extension MaliDevice {
         target = nil
         zs = nil
       case .setViewport(let x, let y, let w, let h):
+        dynVersion &+= 1
         guard target != nil else { throw .invalid("a viewport outside a pass") }
         dyn.viewport = DrawViewport(x: x, y: y, width: w, height: h)
       case .setScissor(let x, let y, let w, let h):
+        dynVersion &+= 1
         guard target != nil else { throw .invalid("a scissor outside a pass") }
         dyn.scissor = PipelineMapping.scissorBox(x: Int(x), y: Int(y), width: Int(w), height: Int(h), targetWidth: planSize.width, targetHeight: planSize.height)
       // Viewports and scissors from `first`, each with its depth range: the first is the draw's own, the rest the scissor array's
       // (RenderPassDraws) for a vertex shader that picks one.
       case .setViewports(let first, let vs):
+        dynVersion &+= 1
         guard target != nil else { throw .invalid("a viewport outside a pass") }
         for (k, v) in vs.enumerated() {
           let at = Int(first) + k
@@ -336,6 +340,7 @@ extension MaliDevice {
           if at == 0 { dyn.viewport = viewport }
         }
       case .setScissors(let first, let rs):
+        dynVersion &+= 1
         guard target != nil else { throw .invalid("a scissor outside a pass") }
         for (k, r) in rs.enumerated() {
           let at = Int(first) + k
@@ -345,21 +350,29 @@ extension MaliDevice {
           dyn.scissors[at] = box
           if at == 0 { dyn.scissor = box }
         }
-      case .setBlendConstants(let k): dyn.constants = k
+      case .setBlendConstants(let k):
+        dynVersion &+= 1
+        dyn.constants = k
       case .setStencilReference(let faces, let v):
+        dynVersion &+= 1
         if faces.rawValue & 1 != 0 { dyn.frontReference = v }
         if faces.rawValue & 2 != 0 { dyn.backReference = v }
       case .setStencilCompareMask(let faces, let v):
+        dynVersion &+= 1
         if faces.rawValue & 1 != 0 { dyn.frontCompareMask = v }
         if faces.rawValue & 2 != 0 { dyn.backCompareMask = v }
       case .setStencilWriteMask(let faces, let v):
+        dynVersion &+= 1
         if faces.rawValue & 1 != 0 { dyn.frontWriteMask = v }
         if faces.rawValue & 2 != 0 { dyn.backWriteMask = v }
       case .setDepthBias(let c, let clamp, let slope):
+        dynVersion &+= 1
         dyn.biasConstant = c
         dyn.biasClamp = clamp
         dyn.biasSlope = slope
-      case .setLineWidth(let w): dyn.lineWidth = w
+      case .setLineWidth(let w):
+        dynVersion &+= 1
+        dyn.lineWidth = w
       case .draw(let p, let root, let vertices, let instances, let firstVertex, let firstInstance):
         // A draw of too few vertices for its topology, or of no instances, makes no primitive (appendDraw).
         if instances == 0 { break }
@@ -517,7 +530,35 @@ extension MaliDevice {
     // Rasterizer discard: nothing is rasterized, and the vertex stage has no output but the position, so there is nothing to run.
     if state.raster.rasterizerDiscard { return }
     _ = record
-    var pipelineState = PipelineMapping.drawState(state, dyn, width: planSize.width, height: planSize.height)
+    // What the draw's pipeline, the pass's dynamic values and its size make (the pipeline state, the blends and their shaders):
+    // the last draw's while those are the same, as they are for most draws of a pass.
+    let constants = state.dynamic.contains(.blendConstants) ? dyn.constants : state.constants
+    let cached = drawCache.first { $0.pipeline == p.handle && $0.version == dynVersion && $0.width == planSize.width
+      && $0.height == planSize.height && $0.constants == constants }
+    var pipelineState: DrawPipelineState
+    var blendShaders: [Int: [UInt64]] = [:]
+    var extraBlends: [BlendDescriptor] = []
+    if let c = cached {
+      pipelineState = c.state
+      blend = c.blend
+      extraBlends = c.extra
+      blendShaders = c.shaders
+    } else {
+      pipelineState = PipelineMapping.drawState(state, dyn, width: planSize.width, height: planSize.height)
+      // The blend of each target with the constants in force (09 section 9.7.1): a target the blender can't do has a blend shader,
+      // which the pass's block holds (RenderPass.build), the fragment shader calls, and reads the constants from its FAU.
+      let targets = PipelineMapping.blendTargets(state, constants: constants)
+      blend = targets[0].descriptor
+      extraBlends = targets.dropFirst().map { $0.descriptor }
+      for (i, t) in targets.enumerated() {
+        guard let spec = t.shader, i == 0 || fs.colourTargets.contains(i) else { continue }
+        guard fs.layout.blendConstantWord >= 0 else { throw .invalid("a draw that needs a blend shader of a fragment shader that doesn't call one") }
+        blendShaders[i] = try blendShader(spec).code
+      }
+      if drawCache.count >= 16 { drawCache.removeFirst() }
+      drawCache.append(DrawCache(pipeline: p.handle, version: dynVersion, width: planSize.width, height: planSize.height,
+                                 constants: constants, state: pipelineState, blend: blend, extra: extraBlends, shaders: blendShaders))
+    }
     pipelineState.scissorArrayLength = probeScissorArrayLength
     pipelineState.scissorProbe = probeScissorMode
     if let vs = probeViewports {
@@ -545,32 +586,15 @@ extension MaliDevice {
     pipelineState.scissorArrayFill = probeScissorArrayFill.map { ScissorBox(minX: $0.0, minY: $0.1, maxX: $0.2, maxY: $0.3) }
     // Too few vertices for the topology makes no primitive.
     if indirect == nil && vertices < pipelineState.minimumVertices { return }
-    // The blend of each target with the constants in force (09 section 9.7.1): a target the blender can't do has a blend shader, which
-    // the pass's block holds (RenderPass.build), the fragment shader calls, and reads the constants from its FAU.
-    let constants = state.dynamic.contains(.blendConstants) ? dyn.constants : state.constants
-    let targets = PipelineMapping.blendTargets(state, constants: constants)
-    blend = targets[0].descriptor
-    let extraBlends = targets.dropFirst().map { $0.descriptor }
-    var blendShaders: [Int: [UInt64]] = [:]
-    for (i, t) in targets.enumerated() {
-      guard let spec = t.shader, i == 0 || fs.colourTargets.contains(i) else { continue }
-      guard fs.layout.blendConstantWord >= 0 else { throw .invalid("a draw that needs a blend shader of a fragment shader that doesn't call one") }
-      blendShaders[i] = try blendShader(spec).code
-    }
-    let heapDraw = !fs.layout.imageBindings.isEmpty || fs.layout.dummySamplerWord >= 0
+    // The fragment or the vertex shader samples the heap (the vertex stage reads the same table, RenderPassDraws).
+    let heapDraw = !fs.layout.imageBindings.isEmpty || fs.layout.dummySamplerWord >= 0 || !vs.layout.imageBindings.isEmpty
+      || vs.layout.dummySamplerWord >= 0
     usesHeap = usesHeap || heapDraw
     // A binding's element 0: the textures' array is binding 0 and the samplers' binding 1 (Loinnir's, and the one
     // layout of every pipeline).
-    var handles: [BindingHandle] = heapDraw
-      ? [
-        BindingHandle(set: 0, binding: 0, handle: DescriptorHeap.handle(index: Heap.textureBase)),
-        BindingHandle(set: 0, binding: 1, handle: DescriptorHeap.handle(index: Heap.samplerBase)),
-      ] : []
     // Binding 2 is the storage images' array, table 2 of the resource table, and bindings 3 and 4 the texel buffers', after it in the
-    // same table (MaliTexelBuffers.swift).
-    for (binding, base) in [(2, Heap.storageBase), (3, Heap.texelBufferBase), (4, Heap.storageTexelBufferBase)] {
-      handles.append(BindingHandle(set: 0, binding: binding, handle: ResourceTable.handle(table: DescriptorHeap.storageTableNumber, index: base)))
-    }
+    // same table (MaliTexelBuffers.swift): the same handles for every draw, made once.
+    let handles = heapDraw ? bindingHandles.heap : bindingHandles.none
     var draw = PassDraw(
       vertexShader: vs, fragmentShader: fs, vertexCount: vertices, instanceCount: instances,
       push: [UInt32(truncatingIfNeeded: root), UInt32(truncatingIfNeeded: root >> 32)], blend: blend,
@@ -582,7 +606,7 @@ extension MaliDevice {
     draw.firstInstance = firstInstance
     draw.indirect = indirect
     draw.occlusionQuery = query
-    draw.extraBlends = Array(extraBlends)
+    draw.extraBlends = extraBlends
     draw.blendShaders = blendShaders
     draw.blendConstants = [constants.red, constants.green, constants.blue, constants.alpha]
     draw.state = pipelineState

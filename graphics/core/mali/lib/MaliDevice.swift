@@ -154,6 +154,20 @@ final class QueryRecord {
   }
 }
 
+/// A draw's pipeline state and blends as a pipeline, the pass's dynamic values (their version), its size and the blend constants
+/// made them.
+struct DrawCache {
+  var pipeline: UInt64
+  var version: Int
+  var width: Int
+  var height: Int
+  var constants: BlendConstants
+  var state: DrawPipelineState
+  var blend: BlendDescriptor
+  var extra: [BlendDescriptor]
+  var shaders: [Int: [UInt64]]
+}
+
 enum PipelineRecord {
   case compute(ComputeShader, FauLayout)
   case graphics(vertex: VertexShader, fragment: FragmentShader, format: PixelFormat, blend: BlendDescriptor, state: GraphicsState)
@@ -228,6 +242,22 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   var storageGeneration = 0
   var heapCopy: (region: Region, generation: Int)?
   var storageCopy: (region: Region, generation: Int)?
+  /// What the last draws of a few pipelines made (Execute.swift's appendDraw), and the count of changes to a pass's dynamic
+  /// values (each `set` command, each pass) that says whether it still holds.
+  var drawCache: [DrawCache] = []
+  var dynVersion = 0
+  /// The heap's handles a draw's FAU block names: with the textures and samplers, and without.
+  let bindingHandles: (heap: [BindingHandle], none: [BindingHandle]) = {
+    var storage: [BindingHandle] = []
+    for (binding, base) in [(2, Heap.storageBase), (3, Heap.texelBufferBase), (4, Heap.storageTexelBufferBase)] {
+      storage.append(BindingHandle(set: 0, binding: binding, handle: ResourceTable.handle(table: DescriptorHeap.storageTableNumber, index: base)))
+    }
+    let heap = [
+      BindingHandle(set: 0, binding: 0, handle: DescriptorHeap.handle(index: Heap.textureBase)),
+      BindingHandle(set: 0, binding: 1, handle: DescriptorHeap.handle(index: Heap.samplerBase)),
+    ]
+    return (heap + storage, storage)
+  }()
   /// The submissions' memory (Arena.swift), and the steps' thread storage and workgroup memory.
   var arena = TransientArena()
   var threadStorage: Region?

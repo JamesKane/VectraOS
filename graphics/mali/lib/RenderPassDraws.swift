@@ -356,7 +356,9 @@ extension RenderPass {
       if d.fragmentShader.writesStencil && z?.stencilTest == true { z!.stencilFromShader = true }
       return z
     }
-    for d in r.draws { drawZSDAt.append(zsState(d) != nil ? place(DepthStencilDescriptor.size, DepthStencilDescriptor.alignment) : -1) }
+    // Each draw's state, made once (a pass may have hundreds of draws).
+    let zsStates = r.draws.map { zsState($0) }
+    for z in zsStates { drawZSDAt.append(z != nil ? place(DepthStencilDescriptor.size, DepthStencilDescriptor.alignment) : -1) }
     let samplesAt = place(SamplePatterns.tableBytes, 64)
     let tableAt = r.heapAddress == nil && r.storageAddress == nil ? -1 : place(DescriptorHeap.tableEntries * ResourceTable.entrySize, ResourceTable.alignment)
     var shaders: [(code: [UInt64], spd: Int, at: Int)] = []
@@ -580,6 +582,8 @@ extension RenderPass {
         s.blend = try BlendDescriptor.register(address: va(blendAt[n]), count: targetCount)
         s.tilerContext = va(tilerAt)
         s.fragmentSRT = resourcePointer
+        // A vertex shader that samples reads the same resource table (the heap as table 1).
+        if !d.vertexShader.layout.imageBindings.isEmpty || d.vertexShader.layout.dummySamplerWord >= 0 { s.vertexSRT = resourcePointer }
         s.vertexSPD = va(shaders[vslot[n]].spd)
         s.fragmentSPD = va(shaders[fslot[n]].spd)
         s.vertexTSD = va(tsdAt)
@@ -613,7 +617,7 @@ extension RenderPass {
         } else if d.vertexShader.storesViewportIndex && d.state.scissorProbe == 7 {
           // The first scissor's box itself (the probe makes its maximum y 256 or more: read as an array, a length byte of 1 or more).
         }
-        s.depthStencil = va(zsState(d) != nil ? drawZSDAt[n] : zsdAt)
+        s.depthStencil = va(zsStates[n] != nil ? drawZSDAt[n] : zsdAt)
         s.tilerFlags = PrimitiveFlags(
           mode: d.state.mode, indexType: d.indices?.size.rawValue ?? 0, lowDepthCull: d.state.depthStencil?.depthClip ?? true,
           highDepthCull: d.state.depthStencil?.depthClip ?? true, primitiveRestart: d.state.primitiveRestart,
@@ -637,7 +641,7 @@ extension RenderPass {
         flags.cullBack = triangles && d.state.cullBack
         if r.zs != nil {
           // 6.10.2: early or late, from the shader and the state.
-          let zsd = zsState(d)
+          let zsd = zsStates[n]
           var storage = false
           for b in d.fragmentShader.layout.imageBindings where b.binding == 2 { storage = true }
           let ops = PixelOperations.derive(
@@ -875,7 +879,7 @@ extension RenderPass {
         m.store(words: try resolve.words(), at: rtAt + g + 64 * (targetCount + k))
       }
       }
-      for (n, d) in r.draws.enumerated() { if let z = zsState(d) { m.store(words: z.words, at: drawZSDAt[n]) } }
+      for n in r.draws.indices { if let z = zsStates[n] { m.store(words: z.words, at: drawZSDAt[n]) } }
       if tableAt >= 0 {
         m.store(
           bytes: try DescriptorHeap.resourceTable(
@@ -907,7 +911,9 @@ extension RenderPass {
       let fs = d.fragmentShader
       let vp = d.state.viewport ?? DrawViewport(x: 0, y: 0, width: Float(r.width), height: Float(r.height))
       let viewport = ViewportTransform(x: vp.x, y: vp.y, width: vp.width, height: vp.height, minDepth: vp.minDepth, maxDepth: vp.maxDepth)
-      let vblock = vs.layout.block(viewport: viewport, push: d.push, viewportTable: viewportsAt[n] >= 0 ? va(viewportsAt[n]) : 0)
+      let handles = d.images.map { (set: $0.set, binding: $0.binding, handle: $0.handle) }
+      let vblock = vs.layout.block(viewport: viewport, push: d.push, images: handles, dummySampler: d.dummySampler,
+                                   viewportTable: viewportsAt[n] >= 0 ? va(viewportsAt[n]) : 0)
       for (i, w) in vblock.enumerated() { m.store(w, at: vfauAt[n] + 8 * i) }
       if viewportsAt[n] >= 0 {
         var transforms: [ViewportTransform] = []
@@ -918,7 +924,6 @@ extension RenderPass {
         m.store(words: ViewportTable.words(transforms), at: viewportsAt[n])
       }
       if scissorsAt[n] >= 0 { m.store(words: ScissorArray(state: d.state, width: r.width, height: r.height).words(stride: d.state.scissorProbe == 3 ? 16 : 8), at: scissorsAt[n]) }
-      let handles = d.images.map { (set: $0.set, binding: $0.binding, handle: $0.handle) }
       let fblock = fs.layout.block(push: d.push, images: handles, dummySampler: d.dummySampler, blendConstants: d.blendConstants)
       for (i, w) in fblock.enumerated() { m.store(w, at: ffauAt[n] + 8 * i) }
       func withShader(_ b: BlendDescriptor, _ target: Int) -> [UInt32] {
@@ -936,20 +941,25 @@ extension RenderPass {
     }
     for (n, s) in shaders.enumerated() {
       // Each shader's program descriptor: the stage of the draws that use it.
+      // (The last draw that uses it says, as each draw of a shader has the same; found from the end, not by a walk of every draw.)
       var stage = ShaderProgramDescriptor.Stage.vertex
       var cls = RegisterClass.r64
       var preload: UInt16 = 0
-      for (k, d) in r.draws.enumerated() {
-        if vslot[k] == n {
-          stage = .vertex
-          cls = d.vertexShader.registerClass
-          preload = d.vertexShader.preloadMask
-        }
+      var k = r.draws.count - 1
+      while k >= 0 {
         if fslot[k] == n {
           stage = .fragment
-          cls = d.fragmentShader.registerClass
-          preload = d.fragmentShader.preloadMask
+          cls = r.draws[k].fragmentShader.registerClass
+          preload = r.draws[k].fragmentShader.preloadMask
+          break
         }
+        if vslot[k] == n {
+          stage = .vertex
+          cls = r.draws[k].vertexShader.registerClass
+          preload = r.draws[k].vertexShader.preloadMask
+          break
+        }
+        k -= 1
       }
       let spd = ShaderProgramDescriptor(
         stage: stage, registerClass: cls, preloadMask: preload, binary: va(s.at), coverageBitmaskType: stage == .fragment ? 1 : 0)

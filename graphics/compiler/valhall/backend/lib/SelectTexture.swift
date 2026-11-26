@@ -76,7 +76,9 @@ extension Selector {
   }
 
   mutating func selectTexture(_ i: Inst) throws(BackendError) {
-    guard !isVertex else { throw BackendError.unsupported("a texture access in a vertex shader") }
+    // A vertex shader samples as a fragment shader does, from the same heap, but has no derivatives: an implicit level is the
+    // base level (12b: LOD mode none), and a bias has nothing to bias.
+    if isVertex && TexFlags.kind(i.imm) == TexFlags.bias { throw BackendError.unsupported("a biased texture access in a vertex shader") }
     for g in texGroups where g.block == cur && g.imm == i.imm && g.args == i.args && g.payload == i.payload {
       loc[i.result] = .part(g.reg, texPosition(g.mask, i.imm2))
       return
@@ -166,7 +168,7 @@ extension Selector {
         inst.put("lod", "grdesc")
       } else {
         switch kind {
-        case TexFlags.implicit: inst.put("lod", "computed")
+        case TexFlags.implicit: inst.put("lod", isVertex ? "none" : "computed")
         case TexFlags.bias: inst.put("lod", "computed_bias")
         default: inst.put("lod", i.imm & TexFlags.hasLevel != 0 ? "explicit" : "none")
         }
