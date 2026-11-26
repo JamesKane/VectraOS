@@ -11,6 +11,15 @@ import Synchronization
 @_extern(c, "libc_suite_affinity") func libcSuiteAffinity() -> Int32
 @_extern(c, "libc_suite_tls_mark") func libcSuiteTlsMark()
 @_extern(c, "libc_suite_tls_marked") func libcSuiteTlsMarked() -> Int32
+// LibcSuiteText.c's checks.
+@_extern(c, "libc_suite_locale") func libcSuiteLocale() -> Int32
+@_extern(c, "libc_suite_scan") func libcSuiteScan() -> Int32
+@_extern(c, "libc_suite_asprintf") func libcSuiteAsprintf() -> Int32
+@_extern(c, "libc_suite_strftime") func libcSuiteStrftime() -> Int32
+@_extern(c, "libc_suite_setjmp") func libcSuiteSetjmp() -> Int32
+@_extern(c, "libc_suite_getopt") func libcSuiteGetopt() -> Int32
+@_extern(c, "libc_suite_usage") func libcSuiteUsage() -> Int32
+@_extern(c, "libc_suite_no_files") func libcSuiteNoFiles() -> Int32
 // The dispatch table (native/dispatch.c, D128).
 @_extern(c, "td_libc_dispatch_protected") func libcDispatchProtected() -> Int32
 @_extern(c, "td_memcpy_baseline") func memcpyBaseline(_ d: UnsafeMutableRawPointer, _ s: UnsafeRawPointer, _ n: Int)
@@ -41,7 +50,23 @@ enum LibcSuite {
         tls()
         check(libcSuiteMappings() != 0, "mmap, munmap and mprotect: anonymous mappings, and what they refuse")
         check(libcSuiteAffinity() != 0, "sched_setaffinity and pthread_setaffinity_np keep the thread to its CPUs")
+        text()
         print("swift: libc passed")
+    }
+
+    /// What C++'s iostreams and ported C programs take from the libc
+    /// (LibcSuiteText.c): the C locale, sscanf, asprintf, strftime,
+    /// setjmp, getopt_long, getrusage and rand, and file streams with no
+    /// fdio to open files (fdio-test has them with one).
+    static func text() {
+        check(libcSuiteLocale() != 0, "the C locale: setlocale, localeconv, locale objects, the *_l forms, collation")
+        check(libcSuiteScan() != 0, "sscanf: each conversion, width and length, its failures and EOF")
+        check(libcSuiteAsprintf() != 0, "asprintf")
+        check(libcSuiteStrftime() != 0, "strftime: every conversion, ISO weeks, a zone, a full buffer")
+        check(libcSuiteSetjmp() != 0, "setjmp and longjmp through frames")
+        check(libcSuiteGetopt() != 0, "getopt_long: short, long, prefixes, flags, unknowns, --")
+        check(libcSuiteUsage() != 0, "getrusage's CPU time grows; gettimeofday; rand repeats for a seed")
+        check(libcSuiteNoFiles() != 0, "file streams and the *at calls with no fdio: ENOENT, ESPIPE, ENOSYS")
     }
 
     /// A C string's bytes equal `text`'s.

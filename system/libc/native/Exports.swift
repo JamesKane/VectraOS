@@ -367,3 +367,31 @@ struct StreamSink: FormatSink {
   return unsafe strftime(UnsafeMutableRawPointer(s).assumingMemoryBound(to: UInt8.self), max,
                          UnsafeRawPointer(fmt).assumingMemoryBound(to: UInt8.self), t)
 }
+
+@c(rand) public func exportedRand() -> Int32 { rand() }
+@c(srand) public func exportedSrand(_ seed: UInt32) { srand(seed) }
+
+// MARK: More of <string.h>
+
+@c(strcpy) public func exportedStrcpy(_ d: UnsafeMutablePointer<CChar>, _ s: UnsafePointer<CChar>)
+  -> UnsafeMutablePointer<CChar>
+{ unsafe strcpy(d, s) }
+@c(strncat) public func exportedStrncat(_ d: UnsafeMutablePointer<CChar>, _ s: UnsafePointer<CChar>, _ n: UInt)
+  -> UnsafeMutablePointer<CChar>
+{ unsafe strncat(d, s, n) }
+@c(strspn) public func exportedStrspn(_ s: UnsafePointer<CChar>, _ set: UnsafePointer<CChar>) -> UInt {
+  unsafe strspn(s, set)
+}
+@c(strcspn) public func exportedStrcspn(_ s: UnsafePointer<CChar>, _ set: UnsafePointer<CChar>) -> UInt {
+  unsafe strcspn(s, set)
+}
+@c(strpbrk) public func exportedStrpbrk(_ s: UnsafePointer<CChar>, _ set: UnsafePointer<CChar>) -> UnsafePointer<CChar>? {
+  unsafe strpbrk(s, set)
+}
+@c(strstr) public func exportedStrstr(_ h: UnsafePointer<CChar>, _ n: UnsafePointer<CChar>) -> UnsafePointer<CChar>? {
+  unsafe strstr(h, n)
+}
+@c(strtok_r) public func exportedStrtokR(_ s: UnsafeMutablePointer<CChar>?, _ sep: UnsafePointer<CChar>,
+                                         _ state: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>)
+  -> UnsafeMutablePointer<CChar>?
+{ unsafe strtok_r(s, sep, state) }

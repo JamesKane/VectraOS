@@ -152,3 +152,91 @@ public func strxfrm(_ d: UnsafeMutablePointer<CChar>?, _ s: UnsafePointer<CChar>
   }
   return length
 }
+
+/// Copies s, its NUL too, to d (§7.26.2.3).
+public func strcpy(_ d: UnsafeMutablePointer<CChar>, _ s: UnsafePointer<CChar>) -> UnsafeMutablePointer<CChar> {
+  var i = 0
+  repeat {
+    unsafe d[i] = s[i]
+    i += 1
+  } while unsafe s[i - 1] != 0
+  return unsafe d
+}
+
+/// Appends at most n chars of s, then a NUL, to d (§7.26.3.2).
+public func strncat(_ d: UnsafeMutablePointer<CChar>, _ s: UnsafePointer<CChar>, _ n: UInt) -> UnsafeMutablePointer<CChar> {
+  let start = Int(unsafe strlen(d))
+  var i = 0
+  while UInt(i) < n, unsafe s[i] != 0 {
+    unsafe d[start + i] = s[i]
+    i += 1
+  }
+  unsafe d[start + i] = 0
+  return unsafe d
+}
+
+/// Whether byte b is in the NUL-terminated set.
+@inline(__always) func inSet(_ b: UInt8, _ set: UnsafePointer<CChar>) -> Bool {
+  var k = 0
+  while true {
+    let c = unsafe byte(set, k)
+    if c == 0 { return false }
+    if c == b { return true }
+    k += 1
+  }
+}
+
+/// The length of s's start made of set's chars (§7.26.5.7).
+public func strspn(_ s: UnsafePointer<CChar>, _ set: UnsafePointer<CChar>) -> UInt {
+  var i = 0
+  while unsafe byte(s, i) != 0 && inSet(byte(s, i), set) { i += 1 }
+  return UInt(i)
+}
+
+/// The length of s's start made of chars not in set (§7.26.5.4).
+public func strcspn(_ s: UnsafePointer<CChar>, _ set: UnsafePointer<CChar>) -> UInt {
+  var i = 0
+  while unsafe byte(s, i) != 0 && !inSet(byte(s, i), set) { i += 1 }
+  return UInt(i)
+}
+
+/// The first char of s in set, or nil (§7.26.5.5).
+public func strpbrk(_ s: UnsafePointer<CChar>, _ set: UnsafePointer<CChar>) -> UnsafePointer<CChar>? {
+  let n = Int(unsafe strcspn(s, set))
+  return unsafe s[n] == 0 ? nil : s + n
+}
+
+/// The first place needle occurs in haystack, or nil; haystack itself for
+/// an empty needle (§7.26.5.8).
+public func strstr(_ haystack: UnsafePointer<CChar>, _ needle: UnsafePointer<CChar>) -> UnsafePointer<CChar>? {
+  let m = Int(unsafe strlen(needle))
+  var i = 0
+  while true {
+    var k = 0
+    while unsafe k < m && haystack[i + k] == needle[k] { k += 1 }
+    if k == m { return unsafe haystack + i }
+    if unsafe haystack[i] == 0 { return nil }
+    i += 1
+  }
+}
+
+/// The next token of s (or of the string strtok_r left off in, when s is
+/// nil), delimited by sep's chars (POSIX's strtok_r; §7.26.5.9 for strtok).
+public func strtok_r(_ s: UnsafeMutablePointer<CChar>?, _ sep: UnsafePointer<CChar>,
+                     _ state: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>) -> UnsafeMutablePointer<CChar>?
+{
+  guard var p = unsafe s ?? state.pointee else { return nil }
+  unsafe p += Int(strspn(p, sep))
+  if unsafe p[0] == 0 {
+    unsafe state.pointee = nil
+    return nil
+  }
+  let n = Int(unsafe strcspn(p, sep))
+  if unsafe p[n] == 0 {
+    unsafe state.pointee = nil
+  } else {
+    unsafe p[n] = 0
+    unsafe state.pointee = p + n + 1
+  }
+  return unsafe p
+}

@@ -36,6 +36,7 @@ module SwiftVectraOSLibc [system] {
   header "strings.h"
   header "sys/auxv.h"
   header "sys/param.h"
+  header "sys/resource.h"
   header "sys/stat.h"
   header "sys/statvfs.h"
   header "sys/time.h"

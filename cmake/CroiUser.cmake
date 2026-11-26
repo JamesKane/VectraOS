@@ -96,7 +96,7 @@ function(croi_user_floor)
     ${_libc}/native/Exports.swift ${_libc}/native/Streams.swift)
   set(_libc_c ${_libc}/native/errno.c ${_libc}/native/stdio.c ${_libc}/native/stdlib.c ${_libc}/native/files.c
     ${_libc}/native/dispatch.c ${_libc}/native/tiers.c ${_libc}/native/locale.c
-    ${_libc}/native/getopt.c ${_libc}/native/setjmp-${CROI_ARCH}.S)
+    ${_libc}/native/getopt.c ${_libc}/native/resource.c ${_libc}/native/setjmp-${CROI_ARCH}.S)
   set(_pthread_swift
     ${_libc}/pthread/lib/Condition.swift ${_libc}/pthread/lib/Keys.swift ${_libc}/pthread/lib/Mutex.swift
     ${_libc}/pthread/lib/Once.swift ${_libc}/pthread/lib/RWLock.swift ${_libc}/pthread/lib/Threads.swift
