@@ -911,10 +911,10 @@ extension RenderPass {
       let fs = d.fragmentShader
       let vp = d.state.viewport ?? DrawViewport(x: 0, y: 0, width: Float(r.width), height: Float(r.height))
       let viewport = ViewportTransform(x: vp.x, y: vp.y, width: vp.width, height: vp.height, minDepth: vp.minDepth, maxDepth: vp.maxDepth)
-      let handles = d.images.map { (set: $0.set, binding: $0.binding, handle: $0.handle) }
-      let vblock = vs.layout.block(viewport: viewport, push: d.push, images: handles, dummySampler: d.dummySampler,
-                                   viewportTable: viewportsAt[n] >= 0 ? va(viewportsAt[n]) : 0)
-      for (i, w) in vblock.enumerated() { m.store(w, at: vfauAt[n] + 8 * i) }
+      // The blocks are stored in place (the vertex shader's nonPerspective, base vertex and base instance words are zero, as
+      // `block` leaves them for a draw that gives none).
+      vs.layout.store(into: &m, at: vfauAt[n], viewport: viewport, push: d.push, images: d.images, dummySampler: d.dummySampler,
+                      viewportTable: viewportsAt[n] >= 0 ? va(viewportsAt[n]) : 0)
       if viewportsAt[n] >= 0 {
         var transforms: [ViewportTransform] = []
         for k in 0..<max(d.state.viewports.count, 1) {
@@ -924,8 +924,8 @@ extension RenderPass {
         m.store(words: ViewportTable.words(transforms), at: viewportsAt[n])
       }
       if scissorsAt[n] >= 0 { m.store(words: ScissorArray(state: d.state, width: r.width, height: r.height).words(stride: d.state.scissorProbe == 3 ? 16 : 8), at: scissorsAt[n]) }
-      let fblock = fs.layout.block(push: d.push, images: handles, dummySampler: d.dummySampler, blendConstants: d.blendConstants)
-      for (i, w) in fblock.enumerated() { m.store(w, at: ffauAt[n] + 8 * i) }
+      fs.layout.store(into: &m, at: ffauAt[n], push: d.push, images: d.images, dummySampler: d.dummySampler,
+                      blendConstants: d.blendConstants)
       func withShader(_ b: BlendDescriptor, _ target: Int) -> [UInt32] {
         var b = b
         if b.mode == .shader, let p = blendCodeAt[n][target] { b.shaderAddress = UInt32(truncatingIfNeeded: va(p)) }

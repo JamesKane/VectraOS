@@ -179,6 +179,41 @@ public struct GraphicsFauLayout: Equatable, Sendable {
   }
 }
 
+extension GraphicsFauLayout {
+  /// The block for a draw, stored at `offset` of a block whose bytes are zero there: `block`'s words, with no array made (a pass
+  /// stores one for each stage of each of its draws).
+  public func store(
+    into m: inout MemoryImage, at offset: Int, viewport: ViewportTransform? = nil, push: [UInt32] = [], images: [BindingHandle] = [],
+    dummySampler: UInt32 = 0, blendConstants: [Float] = [], viewportTable: UInt64 = 0
+  ) {
+    func put(_ word: Int, _ v: UInt32) { m.store(v, at: offset + 4 * word) }
+    if viewportWord >= 0, let v = viewport {
+      put(viewportWord, v.scale.x.bitPattern)
+      put(viewportWord + 1, v.offset.x.bitPattern)
+      put(viewportWord + 2, v.scale.y.bitPattern)
+      put(viewportWord + 3, v.offset.y.bitPattern)
+      put(viewportWord + 4, v.scale.z.bitPattern)
+      put(viewportWord + 5, v.offset.z.bitPattern)
+    }
+    if viewportTableWord >= 0 {
+      put(viewportTableWord, UInt32(truncatingIfNeeded: viewportTable))
+      put(viewportTableWord + 1, UInt32(truncatingIfNeeded: viewportTable >> 32))
+    }
+    if blendConstantWord >= 0 {
+      for i in 0..<4 { put(blendConstantWord + i, i < blendConstants.count ? blendConstants[i].bitPattern : 0) }
+    }
+    for b in imageBindings {
+      for g in images where g.set == b.set && g.binding == b.binding { put(b.word, g.handle) }
+    }
+    if dummySamplerWord >= 0 { put(dummySamplerWord, dummySampler) }
+    var i = 0
+    while i < pushWords {
+      put(pushWord + i, i < push.count ? push[i] : 0)
+      i += 1
+    }
+  }
+}
+
 /// How generic varyings sit in a vertex's generic block: one 16-byte slot a location (valhall 14.3.6 leaves the
 /// layout to the two stages' compiler; this one needs no link between them).
 public enum VaryingLayout {

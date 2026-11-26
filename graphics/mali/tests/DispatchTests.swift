@@ -318,3 +318,22 @@ private let fauWord: UInt64 = 0x20_0000
   #expect(b.words[2] == 53 << 56 | 68 << 40 | 70 << 32 | 1 << 28)
   #expect(b.words[8] >> 56 == 51)
 }
+
+@Test func aGraphicsBlockStoredInPlaceIsTheBlocksWords() {
+  var l = GraphicsFauLayout()
+  l.viewportWord = 0
+  l.viewportTableWord = 6
+  l.imageBindings = [ImageBinding(set: 0, binding: 0, word: 8), ImageBinding(set: 0, binding: 1, word: 9)]
+  l.dummySamplerWord = 10
+  l.pushWord = 11
+  l.pushWords = 3
+  l.words = 14
+  let viewport = ViewportTransform(x: 0, y: 0, width: 64, height: 32, minDepth: 0, maxDepth: 1)
+  let images = [BindingHandle(set: 0, binding: 0, handle: 0x0100_0010), BindingHandle(set: 0, binding: 1, handle: 0x0100_0000)]
+  let words = l.block(viewport: viewport, push: [7, 8], images: images.map { ($0.set, $0.binding, $0.handle) }, dummySampler: 5,
+                      viewportTable: 0x1_2345_6780)
+  var m = MemoryImage()
+  m.extend(to: 64 + 8 * l.slots)
+  l.store(into: &m, at: 64, viewport: viewport, push: [7, 8], images: images, dummySampler: 5, viewportTable: 0x1_2345_6780)
+  for (i, w) in words.enumerated() { #expect(m.load64(at: 64 + 8 * i) == w, "slot \(i)") }
+}
