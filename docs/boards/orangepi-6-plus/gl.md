@@ -59,6 +59,55 @@ Windowed, 800x600 under sway on the big cores (the owner's screenshot,
 FreeBSD 15.1 with Mesa 26.2.2): jellyfish 4,029 to 4,161 FPS, about 4,100,
 ending frames by swaps, not `glFinish`.
 
+## Ours: the first run, 2026-11-26 (gl at 32939ecf)
+
+`esp-board-glmark2`: glmark2 off-screen at 800x600 over our GLES on the
+core's Mali backend, on whatever core the scheduler gives it (no pinning
+yet). The ratio is ours over the reference; the target is 0.98.
+
+| Scene | Reference | Ours | Ratio |
+|---|---:|---:|---:|
+| build use-vbo=false | 1610 | 1705 | 1.06 |
+| build use-vbo=true | 3523 | 2678 | 0.76 |
+| texture nearest | 4887 | 3242 | 0.66 |
+| texture linear | 4925 | 3181 | 0.65 |
+| texture mipmap | 4892 | 3208 | 0.66 |
+| shading gouraud | 2223 | 2115 | 0.95 |
+| shading blinn-phong-inf | 2212 | 2209 | 1.00 |
+| shading phong | 1560 | 1942 | 1.24 |
+| shading cel | 1541 | 1937 | 1.26 |
+| bump high-poly | 892 | 1152 | 1.29 |
+| bump normals | 5506 | 3494 | 0.63 |
+| bump height | 4782 | 3263 | 0.68 |
+| effect2d 3x3 | 5678 | 3134 | 0.55 |
+| effect2d 5x3 | 4091 | 2640 | 0.65 |
+| pulsar | 4742 | 3436 | 0.72 |
+| desktop blur | 753 | 96 | 0.13 |
+| desktop shadow | 2256 | 107 | 0.05 |
+| buffer map | 400 | 990 | 2.48 |
+| buffer subdata | 391 | 989 | 2.53 |
+| buffer interleaved map | 431 | 1150 | 2.67 |
+| ideas | 973 | 423 | 0.43 |
+| jellyfish | 2615 | 1610 | 0.62 |
+| terrain | 95 | unsupported | |
+| shadow | 1749 | glmark2 killed (-1028) | |
+
+The rest did not run. What it shows:
+
+- **A floor of about 0.31 ms a frame** holds the light scenes near 3,200
+  FPS where Panfrost does 0.18 to 0.21 ms. The core's own frame budgets
+  put an 800x600 clear and draw at 122 us of GPU time against 66 us for
+  64x64: the frame's write-back, uncompressed, where Panfrost's render
+  targets are AFBC; then about 48 us of CPU before the GPU starts and 25
+  us to wake the waiting thread.
+- **desktop** is about 10 ms a frame: it draws each window into a
+  framebuffer of its own and samples it, many passes a frame, so
+  something is paid per pass far beyond a pass's GPU cost.
+- **ideas** is many draws a frame: the per-draw CPU cost.
+- **terrain**: GL reports `GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS` 0 though
+  the backend now samples in the vertex stage.
+- The heavy scenes (phong, cel, high-poly, buffer) beat the reference.
+
 ## The shaders glmark2 compiles
 
 `MESA_SHADER_DUMP_PATH` on the same run, every scene at 0.3 s: 69 distinct
