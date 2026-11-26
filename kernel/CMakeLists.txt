@@ -444,6 +444,12 @@ set(_virtio_blk ${CMAKE_CURRENT_BINARY_DIR}/virtioblk.elf)
 croi_user_program(${_virtio_blk} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/block/virtio-blk/Main.swift
                   ${PROJECT_SOURCE_DIR}/drivers/block/virtio-blk/lib/Block.swift
                   ${PROJECT_SOURCE_DIR}/drivers/block/virtio-blk/lib/Disk.swift)
+# bin/virtio-snd: the audio class over a virtio sound device, audio(3)'s
+# directory (D179, D180).
+set(_virtio_snd ${CMAKE_CURRENT_BINARY_DIR}/virtiosnd.elf)
+croi_user_program(${_virtio_snd} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/audio/virtio-snd/Main.swift
+                  ${PROJECT_SOURCE_DIR}/drivers/audio/virtio-snd/lib/Sound.swift
+                  ${PROJECT_SOURCE_DIR}/drivers/audio/virtio-snd/lib/Engine.swift)
 # bin/nvme: the block class over an NVMe controller, sd(3)'s directory.
 set(_nvme ${CMAKE_CURRENT_BINARY_DIR}/nvme.elf)
 croi_user_program(${_nvme} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/block/nvme/Main.swift
@@ -713,7 +719,7 @@ set(_bootfs_entries bin/m2=${_m2} bin/sys-test=${_sys_test} bin/dl-test=${_dl_te
           etc/manifests/b.manifest=${_manifests}/b.manifest
           etc/manifests/launch-test.manifest=${_launch_test_manifest} ${_time_bootfs}
           bin/bootfs=${_bootfs_service} etc/manifests/bootfs.manifest=${_manifests}/bootfs.manifest
-          bin/devmgr=${_devmgr} bin/edu=${_edu} bin/virtio-input=${_virtio_input} bin/virtio-net=${_virtio_net} bin/rge=${_rge} bin/virtio-blk=${_virtio_blk} bin/nvme=${_nvme} bin/sdhci=${_sdhci} bin/xhci=${_xhci} bin/ehci=${_ehci} bin/scmi=${_scmi} bin/k1-syscon=${_k1_syscon} bin/sky1-reset=${_sky1_reset} bin/k1-emac=${_k1_emac} bin/k1-pinctrl=${_k1_pinctrl} bin/k1-gpio=${_k1_gpio} bin/cdns-gpio=${_cdns_gpio} bin/k1-pcie=${_k1_pcie} bin/k1-pcie-phy=${_k1_pcie_phy} bin/k1-usb2-phy=${_k1_usb2_phy} bin/k1-i2c=${_k1_i2c} bin/cdns-i2c=${_cdns_i2c} bin/p1=${_p1} bin/rx8900=${_rx8900} bin/k1-tsensor=${_k1_tsensor} bin/regulator-fixed=${_regulator_fixed} bin/mali=${_mali} bin/virtio-gpu=${_virtio_gpu} bin/linlon=${_linlon} bin/dptx=${_dptx} etc/drivers=${_drivers_index}
+          bin/devmgr=${_devmgr} bin/edu=${_edu} bin/virtio-input=${_virtio_input} bin/virtio-net=${_virtio_net} bin/rge=${_rge} bin/virtio-blk=${_virtio_blk} bin/virtio-snd=${_virtio_snd} bin/nvme=${_nvme} bin/sdhci=${_sdhci} bin/xhci=${_xhci} bin/ehci=${_ehci} bin/scmi=${_scmi} bin/k1-syscon=${_k1_syscon} bin/sky1-reset=${_sky1_reset} bin/k1-emac=${_k1_emac} bin/k1-pinctrl=${_k1_pinctrl} bin/k1-gpio=${_k1_gpio} bin/cdns-gpio=${_cdns_gpio} bin/k1-pcie=${_k1_pcie} bin/k1-pcie-phy=${_k1_pcie_phy} bin/k1-usb2-phy=${_k1_usb2_phy} bin/k1-i2c=${_k1_i2c} bin/cdns-i2c=${_cdns_i2c} bin/p1=${_p1} bin/rx8900=${_rx8900} bin/k1-tsensor=${_k1_tsensor} bin/regulator-fixed=${_regulator_fixed} bin/mali=${_mali} bin/virtio-gpu=${_virtio_gpu} bin/linlon=${_linlon} bin/dptx=${_dptx} etc/drivers=${_drivers_index}
           etc/manifests/devmgr.manifest=${_devmgr_manifest}
           bin/kbdfs=${_kbdfs} etc/manifests/kbdfs.manifest=${PROJECT_SOURCE_DIR}/services/kbdfs/kbdfs.manifest
           bin/mouse=${_mouse} etc/manifests/mouse.manifest=${PROJECT_SOURCE_DIR}/services/mouse/mouse.manifest
@@ -873,6 +879,14 @@ list(FILTER _sdhci_entries INCLUDE REGEX "^(bin/(launcher|devmgr|edu|virtio-.*|r
 croi_bootfs(bootfs-sdhci-test "Building bootfs for boot-sdhci"
   ${_sdhci_entries} bin/sd-test=${_sd_test}
   etc/manifests/sd-test.manifest=${PROJECT_SOURCE_DIR}/drivers/block/sdhci/tests/native/sd-test.manifest)
+# bootfs-audio-test.img: devmgr, its drivers and the services its manifest
+# mounts, run until bin/audio-test ends: boot-audio, a sound device in
+# QEMU's virtio-sound-pci (D179).
+set(_audio_test ${CMAKE_CURRENT_BINARY_DIR}/audiotest.elf)
+croi_user_program(${_audio_test} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/audio/virtio-snd/tests/native/Main.swift)
+croi_bootfs(bootfs-audio-test "Building bootfs for boot-audio"
+  ${_sdhci_entries} bin/audio-test=${_audio_test}
+  etc/manifests/audio-test.manifest=${PROJECT_SOURCE_DIR}/drivers/audio/virtio-snd/tests/native/audio-test.manifest)
 add_custom_target(cpu-keys
   COMMAND ${VX} cpu-keys ${CMAKE_BINARY_DIR}/cpu ${CROI_CPU_PEERS}
   BYPRODUCTS ${CMAKE_BINARY_DIR}/cpu/terminal ${CMAKE_BINARY_DIR}/cpu/node.keys ${CMAKE_BINARY_DIR}/cpu/node.pub

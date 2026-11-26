@@ -16,7 +16,7 @@ documentation only (provenance.md).
 
 | Source | Commit or date | Paths |
 |---|---|---|
-| AbyssBSD (`../AbyssBSD`) | `bfc0b05` (2026-10-09) | `docs/boards/orangepi-6-plus/README.md`, `gpu.md`, `npu.md`, `vpu.md` |
+| AbyssBSD (`../AbyssBSD-workspace/AbyssBSD`) | `bfc0b05` (2026-10-09) | `docs/boards/orangepi-6-plus/README.md`, `gpu.md`, `npu.md`, `vpu.md` |
 | croi's notes (this tree) | — | `docs/kernel/roadmap.md` "Review: board requirements (2026-10-09)", `design/boot.md` "Bring-up aids", `design/iommu.md` |
 
 ## The short version

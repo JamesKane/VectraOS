@@ -454,6 +454,12 @@ croi_launcher_test(venus UNTIL compose-test
 # at /dev/sdM0 and /dev/sdM1.
 croi_launcher_test(sdhci UNTIL sd-test TIMEOUT 180
   OPTIONS --sd ${CMAKE_BINARY_DIR}/qemu-sdhci/sd.img --emmc ${CMAKE_BINARY_DIR}/qemu-sdhci/emmc.img)
+# Sound (audio(3), D179): bin/audio-test plays and records through bin/virtio-snd
+# on a virtio-sound-pci (an output and an input stream) at slot 0x1a, through
+# the IOMMU, on QEMU's silent backend, which takes and gives frames at the
+# device's rate.
+croi_launcher_test(audio TIMEOUT 180
+  QEMU -audiodev none,id=snd0 -device virtio-sound-pci,audiodev=snd0,addr=0x1a,iommu_platform=on,disable-legacy=on)
 # The lock screen (D118): bin/lock-test locks, types a wrong and the right
 # password, uses Control-Alt-Delete, waits a minute for the lock, and
 # kills Radharc while locked.

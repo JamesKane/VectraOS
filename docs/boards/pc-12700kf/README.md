@@ -16,7 +16,7 @@ document or the machine.
 
 | Source | Commit or date | Paths |
 |---|---|---|
-| AbyssBSD (`../AbyssBSD`) | `bfc0b05` (2026-10-09) | `desktop/docs/PHASE4.md` §1.1, §5 |
+| AbyssBSD (`../AbyssBSD-workspace/AbyssBSD`) | `bfc0b05` (2026-10-09) | `desktop/docs/PHASE4.md` §1.1, §5 |
 | The machine, over SSH | 2026-10-16 | FreeBSD 15.1-RELEASE (`releng/15.1-n283562`) |
 
 ## The machine

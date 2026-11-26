@@ -5,8 +5,9 @@ do audio and asks what semi-professional musicians and gamers need from
 each. It then proposes one audio subsystem for VectraOS that serves
 both groups with the same mechanism.
 
-Nothing here is decided. §11 lists the decisions it needs, and §12 the
-open questions. It fills in what the roadmap already commits: V6f item
+Two of its decisions are taken (2026-11-26): the graph (D179) and the
+buffer as the hardware's (D180). §11 lists the rest, and §12 the open
+questions. It fills in what the roadmap already commits: V6f item
 3 (an audio class fed by a ring, HDA with the ALC269, DisplayPort
 audio), V9 (audio output for the reference game, virtio-snd, HDA on
 amd64), V14's player and V15's mixer and per-application taps
@@ -129,7 +130,7 @@ its own drivers, so it can hold every driver to the same budget.
 
 ### 2.5 Consoles
 
-From the NeoDarwin API study (`../NeoDarwin-api-study/platforms/consoles-modern-SUMMARY.md`)
+From the NeoDarwin API study (`../NeoDarwin-workspace/NeoDarwin-api-study/platforms/consoles-modern-SUMMARY.md`)
 and the public PS5 and Xbox material:
 
 - **A system mixer with a fixed period** (NDSP's 4.9 ms, the Switch's
@@ -629,15 +630,12 @@ keeps to a few minutes (the owner rejects long-running checks).
 ## 11. Decisions this needs
 
 1. **The audio graph** (one path, no exclusive mode, direct links,
-   usages, links as files, skipped late clients). The design's core;
-   amends nothing but fills D82's audio row.
+   usages, links as files, skipped late clients): decided, D179.
 2. **The device timeline:** the display timeline generalised for audio
    clocks (§6.1), one object type for both.
 3. **Joining a scheduling context across processes** (§6.2), with its
    right and its admission rule.
-4. **The DMA buffer is the hardware's, not a ring:** a driver lends it
-   to the audio service, as hardware queues are never the one ring
-   (principle 6's scope stated).
+4. **The DMA buffer is the hardware's, not a ring:** decided, D180.
 5. **UMP as the one MIDI format.**
 6. **Third-party plug-ins and D4,** together with foreign.md's 10.1.
 7. **The service's name** (D12), if it gets one.
@@ -678,5 +676,5 @@ keeps to a few minutes (the owner rejects long-running checks).
 - Android, AAudio and MMAP documentation.
 - `../fuchsia/sdk/fidl/fuchsia.hardware.audio`, `../fuchsia/src/media/audio/audio_core`.
 - `../9front/sys/man/3/audio`, `../9front/sys/src/cmd/audio/mixfs`.
-- `../NeoDarwin-api-study/platforms/consoles-modern-SUMMARY.md`.
+- `../NeoDarwin-workspace/NeoDarwin-api-study/platforms/consoles-modern-SUMMARY.md`.
 - `../chinese-wall/specs/sky1-audio` (00, 02, 03).

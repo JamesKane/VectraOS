@@ -200,6 +200,7 @@ services/radharc/tests/gpu/	all	-	boot-venus,boot-board	man
 drivers/net/	all	NetClassTests,K1EmacTests	boot-launch,boot-cpu,boot-board,boot-devicetree-bus	man
 drivers/block/	all	BlockTests,FsTests,VirtioTests	boot-launch,boot-cpu,boot-persist,boot-board,boot-sdhci	man
 drivers/block/sdhci/	all	SdhciTests,BlockTests	boot-sdhci	man
+drivers/audio/	all	AudioTests	boot-audio	man,loc
 data/fonts/	all	RadharcTests	boot-smoke,framebuffer-pixels,boot-launch,boot-kit,boot-rio,boot-rio-kvm,boot-vt,boot-desktop,desktop-pixels,boot-sdk	-
 text/fonts/	all	RadharcTests	boot-smoke,framebuffer-pixels,boot-launch,boot-desktop,desktop-pixels,boot-sdk	-
 fs/taisce/	all	TaisceTests,FsTests,SettingsTests	boot-launch,boot-cpu,boot-persist,boot-unlock,boot-swarm-unlock	-

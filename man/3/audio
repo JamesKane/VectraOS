@@ -1,0 +1,71 @@
+page audio 3
+summary sound devices: the audio class's directory
+src drivers/audio/lib/Format.swift drivers/audio/lib/Cycle.swift drivers/audio/lib/Stream.swift drivers/audio/lib/Unit.swift
+keys audio sound pcm playback capture speaker microphone volume audiostat period underrun overrun audio class
+
+# SYNOPSIS
+
+```text
+/dev/audio/N/ctl
+/dev/audio/N/stat
+/dev/audio/N/volume
+/dev/audio/N/data
+```
+
+# DESCRIPTION
+
+Each sound device is a directory, the files of 9front's audio(3): a driver of the `audio` class serves it, and devmgr(8) binds the first at `/dev/audio/0`, the next at `/dev/audio/1`, and so on; virtio-snd(3)'s are the first.
+A device has a playback stream, a capture stream, or both.
+
+: `ctl`
+  Reads as `speed` with the rate in frames a second, `format` with the sample format and the channels, and `period` with the frames in a period, a line each.
+  It takes those lines, each changing both streams, and `start` and `stop`, each followed by `out` or `in` or by nothing for both.
+  A format either stream can't take fails with `not supported`; a period that isn't a power of two from 32 to 8192, or a buffer larger than the device's, fails with `bad arg in system call`.
+  A change stops a running stream, and the stream is set up in the new format when it next starts.
+: `stat`
+  Read only.
+  Its first line is 9front's: `bufsize` (the playback buffer's bytes), `buffered` (bytes written and not yet played), `offset` (bytes played) and `time` (the monotonic clock, in nanoseconds, when the device last finished a period), padded as 9front pads them.
+  Then a line each: `device` and the driver's name; for each stream the device has, `out` or `in`, `formats` and the sample formats it takes, `rates` and its rates, `channels` and its range; `format`, `speed`, `period`, `periods` (the buffer's), `lead` (the periods handed to the device at a time) and `delay` (frames between the buffer and the converter); and for each stream, `out` or `in`, its state (`stopped`, `running` or `stopping`), `runs` (times started), `periods` (played or recorded) and `underruns` or `overruns`.
+: `volume`
+  Reads as 9front's `speed` and `delay`, the frames buffered ahead of the device.
+  It takes `speed`, as `ctl` does; a line naming an amplifier the device lacks fails with `not supported`.
+: `data`
+  Written, the frames played; read, the frames recorded.
+  Frames are interleaved, little-endian, in the format `ctl` says: 9front's, 16-bit stereo at 44,100 frames a second, unless the device can't take it, when it starts in the nearest the device can.
+  A write's offset is ignored.
+
+Sample formats are named as 9front names them: `s8`, `u8`, `s16`, `s24` (24 bits in 32), `s32` and `f32`.
+
+Each stream is one cyclic buffer, the driver's, in the device's memory and layout: 8 periods of 1024 frames unless `ctl` sets the period.
+The device takes its periods in turn, 2 of them at a time, and each is played or recorded in place.
+A write copies into the periods the device doesn't hold, starts the stream if it is stopped, and waits for room as the device plays; it returns once every byte is in the buffer.
+A period handed to the device before its frames are written plays silence where unwritten, an underrun if the stream goes on after it.
+After its last written frames, a stream plays 2 periods of silence and stops by itself, so `stat` says `out stopped` once everything written has been heard.
+A read starts capture if it is stopped and returns what has been recorded, waiting for the first period.
+A reader that falls the buffer behind loses the oldest periods, an overrun; a stream whose reader overruns twice with no read between stops by itself, and the next read starts it again with only what is recorded from then on.
+A write or read waits at most 2 seconds for a device that takes no period, and then fails with `i/o error`.
+
+The data file's reads and writes are served apart from `ctl`, `stat` and `volume`, so a waiting write doesn't hold them up.
+
+# EXAMPLES
+
+```rc
+% cat /dev/audio/0/ctl
+speed 44100
+format s16 2
+period 1024
+% cat tone.pcm >/dev/audio/0/data
+% echo speed 48000 >/dev/audio/0/ctl
+% cat /dev/audio/0/stat
+```
+
+# SEE ALSO
+
+virtio-snd(3), devmgr(8), audio-test(8), intro(3)
+
+# BUGS
+
+`data` takes no ring (node(5)): its frames are copied by message, once, between the client and the buffer.
+A blocked read of `data` and a write from another client wait for each other.
+No driver has amplifiers yet, so `volume` has no levels.
+Nothing mixes streams: two writers of one device's `data` share its one stream.

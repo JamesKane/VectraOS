@@ -883,7 +883,7 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
       if let msi { _ = msi.release() }
       for h in made ?? [] { startup.add(raw: h.handle, info: h.info) }
     }
-    var ethers = 0, displays = 0, gpus = 0, links = 0, clocks = 0
+    var ethers = 0, audios = 0, displays = 0, gpus = 0, links = 0, clocks = 0
     // Each sd(3) letter's units so far (D106): sdF0, sdF1, ...
     var disks: [(letter: String, count: Int)] = []
     // The power class first: its tree is other hosts' /dev/scmi. Then the
@@ -1050,6 +1050,14 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
           if let ether = try? host.open("ether") {
             _ = tree.mount("net/ether\(ethers)", ether.takeChannel())
             ethers += 1
+          }
+        }
+        // A sound device's audio(3) directory, at dev/audio/<n> (D82, D179).
+        if let d = e.driver, same(d.deviceClass, "audio") {
+          var host = NodeIPC.NodeClient(channel: try launcher.channel(to: service))
+          if let audio = try? host.open("audio") {
+            _ = tree.mount("dev/audio/\(audios)", audio.takeChannel())
+            audios += 1
           }
         }
         // A display's host tree (D120), at dev/display<n>: its `display`

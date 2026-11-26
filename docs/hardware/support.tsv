@@ -31,6 +31,7 @@ virtio-input	component	qemu-q35,qemu-virt-arm64,qemu-virt-rv64	all	planned	no	V2
 virtio-net	component	qemu-q35,qemu-virt-arm64,qemu-virt-rv64	all	planned	no	V3	D15	-	-	-	-	-	the V3 link's network in QEMU; required once V3 lands
 virtio-blk	component	qemu-q35,qemu-virt-arm64,qemu-virt-rv64	all	planned	no	V4	D106	-	-	-	-	-	Taisce's disk in QEMU (sd(3)); required once V4 lands
 virtio-gpu	component	qemu-q35,qemu-virt-arm64,qemu-virt-rv64	all	planned	no	V5	D55	-	-	-	-	-	Loinnir through Venus until a native driver
+virtio-snd	component	qemu-q35,qemu-virt-arm64,qemu-virt-rv64	all	experimental	no	V6f	D179	-	-	boot-audio	-	-	the audio class's device in QEMU (audio(3), virtio-snd(3))
 radxa-q8b	platform	-	arm64	planned	-	V8	D5,D69	yes	-	-	-	-	Radxa Dragon Q8B; moved to V8 by D69 (the CDSP and Adreno need it); docs/boards and AbyssBSD's notes
 q8b-geni-uart	component	radxa-q8b	arm64	planned	yes	V8	D15,D69	-	-	-	-	-	GENI UART, with a register-level model test (QEMU has no GENI), in V8 (D69)
 q8b-smp	component	radxa-q8b	arm64	planned	yes	V8	D5,D69	-	-	-	-	-	heterogeneous cores

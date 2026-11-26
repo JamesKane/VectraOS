@@ -201,6 +201,13 @@ let ipc: [Target] = [
   .target(name: "DPTX", path: "drivers/display/dptx/lib", swiftSettings: tier0),
   .testTarget(name: "DPTXTests", dependencies: ["DPTX", "DisplayDevice"], path: "drivers/display/dptx/tests"),
   .testTarget(name: "InputTests", dependencies: ["InputDevice"], path: "drivers/input/tests"),
+  // The audio class (D179, D180): a device as audio(3)'s directory over its
+  // cyclic buffers, and virtio-snd's messages and engine (bin/virtio-snd).
+  .target(name: "AudioDevice", dependencies: ["IPC", "Node", "Sys"], path: "drivers/audio/lib", swiftSettings: tier0),
+  .target(name: "VirtioSnd", dependencies: ["AudioDevice", "DriverHost", "Node", "Sys", "Virtio"],
+          path: "drivers/audio/virtio-snd/lib", swiftSettings: tier0),
+  .testTarget(name: "AudioTests", dependencies: ["AudioDevice", "VirtioSnd", "IPC", "Node", "Sys"],
+              path: "drivers/audio/tests"),
   // USB's descriptors, xHCI's endpoint rules and a DWC3's setup (bin/xhci
   // compiles them in).
   .target(name: "USB", path: "drivers/usb/lib", swiftSettings: tier0),
