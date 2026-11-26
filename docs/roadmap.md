@@ -44,7 +44,8 @@ here, and its history, step by step, is in git and `docs/decisions/`.
   (D179, D180), and its clock is a counter (D181); audio(3)'s class and
   virtio-snd(3) play and record in boot-audio, and the audio service,
   audio(4), mixes push streams into the leased device in
-  boot-audio-service. Next: HDA.
+  boot-audio-service; hda(3) does both on QEMU's HD Audio. Next: the
+  Sky1's HDA on the board.
 - **Paused:** V6b, the Orange Pi RV2 (the owner, 2026-11-20). Its
   kernel runs on the board's harts from our own devicetree (D154), V3's
   link and the native suite pass there, 8 of its budgets over their
@@ -244,9 +245,13 @@ checked on the board through the cpu image and a warm boot.
    directory over each stream's cyclic buffer, and virtio-snd(3), tested
    by boot-audio. Then the clock as a counter (D181) and the audio
    service, audio(4): push streams mixed into the device it leases, on
-   an admitted deadline, tested by boot-audio-service. Next: HDA against
-   QEMU's `ich9-intel-hda` before the Sky1's; the service's resampler,
-   per-stream formats, usages and capture after it.
+   an admitted deadline, tested by boot-audio-service. Then hda(3),
+   tested in QEMU against `ich9-intel-hda` (boot-audio-hda,
+   boot-audio-service-hda), with the Sky1's word-only registers, polled
+   RIRB, stream reset and DMA window in it. Next: the Sky1's controller
+   on the board (its clocks, reset and `RSVL` pool, and the ALC269),
+   DisplayPort audio; the service's resampler, per-stream formats,
+   usages and capture.
 4. **Display:** the other DisplayPort outputs, HBR3, MST and hotplug
    acted on.
 5. **Before the large devices,** the backlog's adoptions (below the

@@ -450,6 +450,10 @@ set(_virtio_snd ${CMAKE_CURRENT_BINARY_DIR}/virtiosnd.elf)
 croi_user_program(${_virtio_snd} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/audio/virtio-snd/Main.swift
                   ${PROJECT_SOURCE_DIR}/drivers/audio/virtio-snd/lib/Sound.swift
                   ${PROJECT_SOURCE_DIR}/drivers/audio/virtio-snd/lib/Engine.swift)
+# bin/hda: the audio class over an HD Audio controller and its codec (D179).
+file(GLOB _hda_lib CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/drivers/audio/hda/lib/*.swift)
+set(_hda ${CMAKE_CURRENT_BINARY_DIR}/hda.elf)
+croi_user_program(${_hda} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/audio/hda/Main.swift ${_hda_lib})
 # bin/nvme: the block class over an NVMe controller, sd(3)'s directory.
 set(_nvme ${CMAKE_CURRENT_BINARY_DIR}/nvme.elf)
 croi_user_program(${_nvme} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/block/nvme/Main.swift
@@ -719,7 +723,7 @@ set(_bootfs_entries bin/m2=${_m2} bin/sys-test=${_sys_test} bin/dl-test=${_dl_te
           etc/manifests/b.manifest=${_manifests}/b.manifest
           etc/manifests/launch-test.manifest=${_launch_test_manifest} ${_time_bootfs}
           bin/bootfs=${_bootfs_service} etc/manifests/bootfs.manifest=${_manifests}/bootfs.manifest
-          bin/devmgr=${_devmgr} bin/edu=${_edu} bin/virtio-input=${_virtio_input} bin/virtio-net=${_virtio_net} bin/rge=${_rge} bin/virtio-blk=${_virtio_blk} bin/virtio-snd=${_virtio_snd} bin/nvme=${_nvme} bin/sdhci=${_sdhci} bin/xhci=${_xhci} bin/ehci=${_ehci} bin/scmi=${_scmi} bin/k1-syscon=${_k1_syscon} bin/sky1-reset=${_sky1_reset} bin/k1-emac=${_k1_emac} bin/k1-pinctrl=${_k1_pinctrl} bin/k1-gpio=${_k1_gpio} bin/cdns-gpio=${_cdns_gpio} bin/k1-pcie=${_k1_pcie} bin/k1-pcie-phy=${_k1_pcie_phy} bin/k1-usb2-phy=${_k1_usb2_phy} bin/k1-i2c=${_k1_i2c} bin/cdns-i2c=${_cdns_i2c} bin/p1=${_p1} bin/rx8900=${_rx8900} bin/k1-tsensor=${_k1_tsensor} bin/regulator-fixed=${_regulator_fixed} bin/mali=${_mali} bin/virtio-gpu=${_virtio_gpu} bin/linlon=${_linlon} bin/dptx=${_dptx} etc/drivers=${_drivers_index}
+          bin/devmgr=${_devmgr} bin/edu=${_edu} bin/virtio-input=${_virtio_input} bin/virtio-net=${_virtio_net} bin/rge=${_rge} bin/virtio-blk=${_virtio_blk} bin/virtio-snd=${_virtio_snd} bin/hda=${_hda} bin/nvme=${_nvme} bin/sdhci=${_sdhci} bin/xhci=${_xhci} bin/ehci=${_ehci} bin/scmi=${_scmi} bin/k1-syscon=${_k1_syscon} bin/sky1-reset=${_sky1_reset} bin/k1-emac=${_k1_emac} bin/k1-pinctrl=${_k1_pinctrl} bin/k1-gpio=${_k1_gpio} bin/cdns-gpio=${_cdns_gpio} bin/k1-pcie=${_k1_pcie} bin/k1-pcie-phy=${_k1_pcie_phy} bin/k1-usb2-phy=${_k1_usb2_phy} bin/k1-i2c=${_k1_i2c} bin/cdns-i2c=${_cdns_i2c} bin/p1=${_p1} bin/rx8900=${_rx8900} bin/k1-tsensor=${_k1_tsensor} bin/regulator-fixed=${_regulator_fixed} bin/mali=${_mali} bin/virtio-gpu=${_virtio_gpu} bin/linlon=${_linlon} bin/dptx=${_dptx} etc/drivers=${_drivers_index}
           etc/manifests/devmgr.manifest=${_devmgr_manifest}
           bin/kbdfs=${_kbdfs} etc/manifests/kbdfs.manifest=${PROJECT_SOURCE_DIR}/services/kbdfs/kbdfs.manifest
           bin/mouse=${_mouse} etc/manifests/mouse.manifest=${PROJECT_SOURCE_DIR}/services/mouse/mouse.manifest
@@ -864,7 +868,7 @@ croi_bootfs(bootfs-board-wedge "Building bootfs for a wedged board run"
 # there is no network yet for the board image's net.
 if(CROI_ARCH STREQUAL rv64)
   set(_devicetree_entries ${_bootfs_entries})
-  list(FILTER _devicetree_entries INCLUDE REGEX "^(bin/(launcher|devmgr|edu|virtio-.*|rge|nvme|sdhci|xhci|ehci|scmi|k1-syscon|sky1-reset|k1-emac|k1-pinctrl|k1-gpio|k1-pcie|k1-pcie-phy|k1-usb2-phy|k1-i2c|p1|k1-tsensor|regulator-fixed|mali|linlon|dptx|kbdfs|mouse|console|proc)|etc/drivers|etc/manifests/(devmgr|kbdfs|mouse|console|proc)\\.manifest)=")
+  list(FILTER _devicetree_entries INCLUDE REGEX "^(bin/(launcher|devmgr|edu|virtio-.*|hda|rge|nvme|sdhci|xhci|ehci|scmi|k1-syscon|sky1-reset|k1-emac|k1-pinctrl|k1-gpio|k1-pcie|k1-pcie-phy|k1-usb2-phy|k1-i2c|p1|k1-tsensor|regulator-fixed|mali|linlon|dptx|kbdfs|mouse|console|proc)|etc/drivers|etc/manifests/(devmgr|kbdfs|mouse|console|proc)\\.manifest)=")
   croi_bootfs(bootfs-devicetree "Building bootfs for boot-devicetree-bus"
     ${_devicetree_entries} bin/dt-test=${_dt_test}
     etc/manifests/dt-test.manifest=${PROJECT_SOURCE_DIR}/drivers/bus/dt/tests/native/dt-test.manifest)
@@ -875,7 +879,7 @@ endif()
 set(_sd_test ${CMAKE_CURRENT_BINARY_DIR}/sdtest.elf)
 croi_user_program(${_sd_test} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/block/sdhci/tests/native/Main.swift)
 set(_sdhci_entries ${_bootfs_entries})
-list(FILTER _sdhci_entries INCLUDE REGEX "^(bin/(launcher|devmgr|edu|virtio-.*|rge|nvme|sdhci|xhci|ehci|scmi|k1-syscon|sky1-reset|k1-emac|k1-pinctrl|k1-gpio|k1-pcie|k1-pcie-phy|k1-usb2-phy|k1-i2c|p1|k1-tsensor|regulator-fixed|mali|linlon|dptx|kbdfs|mouse|console|proc)|etc/drivers|etc/manifests/(devmgr|kbdfs|mouse|console|proc)\\.manifest)=")
+list(FILTER _sdhci_entries INCLUDE REGEX "^(bin/(launcher|devmgr|edu|virtio-.*|hda|rge|nvme|sdhci|xhci|ehci|scmi|k1-syscon|sky1-reset|k1-emac|k1-pinctrl|k1-gpio|k1-pcie|k1-pcie-phy|k1-usb2-phy|k1-i2c|p1|k1-tsensor|regulator-fixed|mali|linlon|dptx|kbdfs|mouse|console|proc)|etc/drivers|etc/manifests/(devmgr|kbdfs|mouse|console|proc)\\.manifest)=")
 croi_bootfs(bootfs-sdhci-test "Building bootfs for boot-sdhci"
   ${_sdhci_entries} bin/sd-test=${_sd_test}
   etc/manifests/sd-test.manifest=${PROJECT_SOURCE_DIR}/drivers/block/sdhci/tests/native/sd-test.manifest)
@@ -895,6 +899,18 @@ croi_user_program(${_audio_service} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/serv
 set(_audio_service_test ${CMAKE_CURRENT_BINARY_DIR}/audioservicetest.elf)
 croi_user_program(${_audio_service_test} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/audio/tests/native/Main.swift)
 croi_bootfs(bootfs-audio-service-test "Building bootfs for boot-audio-service"
+  ${_sdhci_entries} bin/audio=${_audio_service}
+  etc/manifests/audio.manifest=${PROJECT_SOURCE_DIR}/services/audio/audio.manifest
+  bin/audio-service-test=${_audio_service_test}
+  etc/manifests/audio-service-test.manifest=${PROJECT_SOURCE_DIR}/services/audio/tests/native/audio-service-test.manifest)
+# bootfs-audio-hda-test.img: the audio image again, for boot-audio-hda: the
+# same bin/audio-test through bin/hda on QEMU's ich9-intel-hda.
+croi_bootfs(bootfs-audio-hda-test "Building bootfs for boot-audio-hda"
+  ${_sdhci_entries} bin/audio-test=${_audio_test}
+  etc/manifests/audio-test.manifest=${PROJECT_SOURCE_DIR}/drivers/audio/virtio-snd/tests/native/audio-test.manifest)
+# bootfs-audio-service-hda-test.img: the audio service's image again, for
+# boot-audio-service-hda: the service over bin/hda.
+croi_bootfs(bootfs-audio-service-hda-test "Building bootfs for boot-audio-service-hda"
   ${_sdhci_entries} bin/audio=${_audio_service}
   etc/manifests/audio.manifest=${PROJECT_SOURCE_DIR}/services/audio/audio.manifest
   bin/audio-service-test=${_audio_service_test}

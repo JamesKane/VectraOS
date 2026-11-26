@@ -1,6 +1,7 @@
 # Lines with `unsafe` per driver unit (D172, `vx loc --check`).
 # unit<TAB>lines. A count over its row fails; a count under it fails too, so
 # lower the row. A unit with no row has zero: a new driver starts there.
+drivers/audio/hda	7
 drivers/audio/lib	8
 drivers/audio/virtio-snd	13
 drivers/block/lib	23

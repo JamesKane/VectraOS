@@ -15,7 +15,7 @@ keys audio sound pcm playback capture speaker microphone volume audiostat period
 
 # DESCRIPTION
 
-Each sound device is a directory, the files of 9front's audio(3): a driver of the `audio` class serves it, and devmgr(8) binds the first at `/dev/audio/0`, the next at `/dev/audio/1`, and so on; virtio-snd(3)'s are the first.
+Each sound device is a directory, the files of 9front's audio(3): a driver of the `audio` class serves it, and devmgr(8) binds the first at `/dev/audio/0`, the next at `/dev/audio/1`, and so on; virtio-snd(3)'s and hda(3)'s are the first.
 A device has a playback stream, a capture stream, or both.
 
 : `ctl`
@@ -66,7 +66,7 @@ period 1024
 
 # SEE ALSO
 
-virtio-snd(3), audio(4), audio-lease-lease(5), devmgr(8), audio-test(8), intro(3)
+virtio-snd(3), hda(3), audio(4), audio-lease-lease(5), devmgr(8), audio-test(8), intro(3)
 
 # BUGS
 
