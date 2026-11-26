@@ -4,7 +4,8 @@
 // libGLESv2.so, whose names reach libGLES.so (gles(3), egl(3)). C because that is GL's interface. On a 64 by 64
 // RGBA8888 pbuffer with depth it checks, reading back with glReadPixels:
 //   - a clear;
-//   - a triangle from a vertex buffer in a uniform colour, exact inside and outside, edges not judged;
+//   - a triangle from a vertex buffer in a uniform colour, exact inside and outside, edges not judged, by a GLSL program
+//     and by its SPIR-V binary;
 //   - a textured quad: an RGB texture (nearest) and an RGBA one whose mipmaps glGenerateMipmap made, read at level 1;
 //   - the depth test: the nearer of two triangles drawn first is all that shows;
 //   - blending: half-transparent white over black, within 1;
@@ -14,8 +15,8 @@
 // and on a window of Radharc's, where there is a compositor: frames swapped at interval 1 and at 0.
 // Then the budgets: `gl.frame_us.empty` (a clear and glFinish) and `gl.frame_us.draw` (a clear, one draw and
 // glFinish), each the median of 200 frames. It prints `gl-test: ok: gl NAME` for each check that passed and exits 0
-// only if all did. Its shaders are user/tier1/gl-shaders' SPIR-V (vx shaders makes shaders.h), given to
-// glShaderBinary: the library's GLSL front end is another's.
+// only if all did. Its programs are GLSL ES 1.00, compiled by the library's front end; the triangle is drawn again by
+// the same program as SPIR-V given to glShaderBinary (user/tier1/gl-shaders; vx shaders makes shaders.h).
 
 #include <stdint.h>
 #include <stdio.h>
@@ -75,6 +76,74 @@ static GLuint program(const uint32_t *vs, size_t vs_bytes, const uint32_t *fs, s
 }
 
 #define PROGRAM(v, f) program(v, sizeof v, f, sizeof f)
+
+static GLuint compile(GLenum type, const char *source) {
+  GLuint s = glCreateShader(type);
+  glShaderSource(s, 1, &source, NULL);
+  glCompileShader(s);
+  GLint ok = 0;
+  glGetShaderiv(s, GL_COMPILE_STATUS, &ok);
+  if (!ok) {
+    char log[512] = {0};
+    glGetShaderInfoLog(s, sizeof log, NULL, log);
+    printf("gl-test: FAILED: a shader didn't compile: %s\n", log);
+    failures++;
+  }
+  return s;
+}
+
+/// A program of GLSL ES 1.00 sources, its attributes at 0 (position) and 1 (the other, if any).
+static GLuint glsl(const char *vs, const char *fs, const char *second) {
+  GLuint p = glCreateProgram(), v = compile(GL_VERTEX_SHADER, vs), f = compile(GL_FRAGMENT_SHADER, fs);
+  glAttachShader(p, v);
+  glAttachShader(p, f);
+  glBindAttribLocation(p, 0, "position");
+  if (second) glBindAttribLocation(p, 1, second);
+  glLinkProgram(p);
+  GLint linked = 0;
+  glGetProgramiv(p, GL_LINK_STATUS, &linked);
+  if (!linked) {
+    char log[512] = {0};
+    glGetProgramInfoLog(p, sizeof log, NULL, log);
+    printf("gl-test: FAILED: a GLSL program didn't link: %s\n", log);
+    failures++;
+  }
+  glDeleteShader(v);
+  glDeleteShader(f);
+  return p;
+}
+
+// gl-shaders' three programs, as GLSL ES: the transform (x and y scaled, then moved) and a uniform colour; a texture by
+// the colour; a colour for each vertex.
+static const char flat_vs[] =
+    "attribute vec4 position;\n"
+    "uniform vec4 transform;\n"
+    "void main() { gl_Position = vec4(position.xy * transform.xy + transform.zw, position.zw); }\n";
+static const char flat_fs[] =
+    "precision mediump float;\n"
+    "uniform vec4 color;\n"
+    "void main() { gl_FragColor = color; }\n";
+static const char textured_vs[] =
+    "attribute vec4 position;\n"
+    "attribute vec2 texcoord;\n"
+    "uniform vec4 transform;\n"
+    "varying vec2 uv;\n"
+    "void main() { uv = texcoord; gl_Position = vec4(position.xy * transform.xy + transform.zw, position.zw); }\n";
+static const char textured_fs[] =
+    "precision mediump float;\n"
+    "uniform vec4 color;\n"
+    "uniform sampler2D tex;\n"
+    "varying vec2 uv;\n"
+    "void main() { gl_FragColor = texture2D(tex, uv) * color; }\n";
+static const char shaded_vs[] =
+    "attribute vec4 position;\n"
+    "attribute vec4 vertexColor;\n"
+    "varying vec4 shade;\n"
+    "void main() { shade = vertexColor; gl_Position = position; }\n";
+static const char shaded_fs[] =
+    "precision mediump float;\n"
+    "varying vec4 shade;\n"
+    "void main() { gl_FragColor = shade; }\n";
 
 /// The transform (x and y scaled, then moved) and the colour of the flat and textured programs.
 static void uniforms(GLuint p, float sx, float sy, float tx, float ty, float r, float g, float b, float a) {
@@ -150,7 +219,7 @@ static const uint8_t *want_triangle(int x, int y) {
   return NULL;
 }
 
-static void test_triangle(void) {
+static void triangle(const char *name, GLuint program) {
   glClearColor(0, 0, 0, 1);
   glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
   static const float tri[] = {-1, -1, 0, 1, 1, -1, 0, 1, -1, 1, 0, 1};
@@ -160,10 +229,18 @@ static void test_triangle(void) {
   glBufferData(GL_ARRAY_BUFFER, sizeof tri, tri, GL_STATIC_DRAW);
   glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, 16, 0);
   glEnableVertexAttribArray(0);
-  uniforms(flat, 1, 1, 0, 0, 0, 1, 0, 1);
+  uniforms(program, 1, 1, 0, 0, 0, 1, 0, 1);
   glDrawArrays(GL_TRIANGLES, 0, 3);
-  if (judge("triangle", want_triangle, 0) && check_gl("triangle")) printf("gl-test: ok: gl triangle\n");
+  if (judge(name, want_triangle, 0) && check_gl(name)) printf("gl-test: ok: gl %s\n", name);
   glDeleteBuffers(1, &b);
+}
+
+/// The triangle by a GLSL ES program, and by the same program given as SPIR-V.
+static void test_triangle(void) {
+  triangle("triangle", flat);
+  GLuint binary = PROGRAM(flat_vert, flat_frag);
+  triangle("spir-v binary", binary);
+  glDeleteProgram(binary);
 }
 
 // The RGB texture's four texels, one a quadrant, drawn over the whole target with nearest filtering.
@@ -473,9 +550,9 @@ int main(void) {
   printf("gl-test: %s, %s\n", glGetString(GL_RENDERER), glGetString(GL_VERSION));
   if (!eglGetProcAddress("glDrawArrays") || !eglGetProcAddress("eglSwapBuffers")) fail("eglGetProcAddress");
 
-  flat = PROGRAM(flat_vert, flat_frag);
-  textured = PROGRAM(textured_vert, textured_frag);
-  shaded = PROGRAM(shaded_vert, shaded_frag);
+  flat = glsl(flat_vs, flat_fs, NULL);
+  textured = glsl(textured_vs, textured_fs, "texcoord");
+  shaded = glsl(shaded_vs, shaded_fs, "vertexColor");
   static const float full[] = {-1, -1, 0, 1, 3, -1, 0, 1, -1, 3, 0, 1};
   glGenBuffers(1, &full_buffer);
   glBindBuffer(GL_ARRAY_BUFFER, full_buffer);

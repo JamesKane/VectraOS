@@ -1,0 +1,45 @@
+page gl-test 8
+summary draw through OpenGL ES 2.0 and EGL's C interface into a pbuffer and a window, read it back and judge it, and time a frame
+src user/tier1/gl-test.c user/tier1/gl-test.manifest user/tier1/gl-test-board.manifest user/tier1/gl-shaders/flat.vert
+src user/tier1/gl-shaders/flat.frag user/tier1/gl-shaders/textured.vert user/tier1/gl-shaders/textured.frag
+src user/tier1/gl-shaders/shaded.vert user/tier1/gl-shaders/shaded.frag user/tier1/gl-shaders/uniforms.vert
+src user/tier1/gl-shaders/uniforms.frag user/tier1/gl-shaders/shaders.h
+keys gl opengl gles egl test c tier 1 pbuffer window triangle texture mipmap depth blend render to texture client arrays budget frame ok
+lang c
+
+# SYNOPSIS
+
+```text
+echo start gl-test >/svc/launcher/ctl
+```
+
+# DESCRIPTION
+
+gl-test is a program of tier 1, in C: OpenGL ES 2.0 and EGL as a port uses them, linked against `libEGL.so` and `libGLESv2.so` (gles(2), egl(2)).
+It exists only in images whose build had the tier 1 toolchain.
+boot-venus starts it as a service after Radharc, and compose-test judges its exit code; the board's images have it as an app, which board-test starts and judges on a GPU that offers the `csf` capset.
+
+It initializes the default display, chooses an RGBA8888 config with 24 bits of depth for a pbuffer, checks that a GL ES 3 context is refused, and makes a 64 by 64 pbuffer and a GL ES 2.0 context current, printing the EGL version and `GL_RENDERER`.
+Its programs are GLSL ES 1.00 compiled by the library's front end (glsl(2)), each attribute bound with `glBindAttribLocation`.
+Each check reads the pbuffer back with `glReadPixels` and judges it pixel by pixel, printing how many pixels it judged and how many were wrong, then `gl-test: ok: gl <check>`:
+
+- `clear`: a clear to red, everywhere.
+- `triangle`: the lower-left half from a vertex buffer in a uniform colour, exact inside and outside, a pixel either side of the edge not judged; and `spir-v binary`: the same, by the program as SPIR-V given to `glShaderBinary` (user/tier1/gl-shaders, which vx shaders makes into `shaders.h`).
+- `texture`: a 2 by 2 RGB texture (its rows padded by the unpack alignment) drawn over the target with nearest filtering, each quadrant its texel; then a 4 by 4 RGBA texture whose mipmaps `glGenerateMipmap` made, drawn into a 2 by 2 viewport with the nearest mip level, each pixel level 1's texel within 1.
+- `depth`: two triangles over the target, the nearer (z -0.5) drawn first in red and the farther (z 0.5) in blue: red everywhere.
+- `blend`: white at alpha 0.5 over black with `GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA`: grey 128 within 1.
+- `render to texture`: a 32 by 32 texture of a framebuffer object cleared blue with a green triangle drawn on it, then sampled over the pbuffer by a second pass.
+- `many draws`: 20 draws in one frame, each a column of its own grey (more than one pass of the Mali backend takes), each column judged within 1.
+- `client arrays`: positions as floats and colours as normalized bytes from the program's memory, drawn from vertex 1.
+
+It then times frames: `gl.frame_us.empty` is a clear and `glFinish`, and `gl.frame_us.draw` a clear, one draw and `glFinish`, each the median of 200 after 10 that warm up, printed as `gl-test: budget name=... value=... unit=us limit=...` (200 and 250, under glmark2's fastest frames on the board).
+Last, where there is a compositor, it opens a window of Radharc's through `eglCreateWindowSurface`, swaps 60 frames at a swap interval of 1 and 60 at 0, printing the time each 60 took, and reads a cleared pixel back (`gl-test: ok: gl window`); with no window it prints `gl-test: skipped: gl window`.
+It exits 0, after `gl-test: all checks passed`, only if every check that ran passed.
+
+# SEE ALSO
+
+gles(2), egl(2), glsl(2), vulkan-test(8)
+
+# BUGS
+
+The window check reads back what was drawn, not what Radharc composed.

@@ -343,17 +343,12 @@ function(croi_tier1 bootfs_var depends_var)
   # OpenGL ES 2.0 and EGL (D183; gles(3), egl(3)): GLES (graphics/gles: the state machine, its native platform, and
   # eglGetProcAddress's table in C) as libGLES.so, and the C names programs link or dlopen as libGLESv2.so and libEGL.so
   # (c/libGLESv2.c, c/libEGL.c: each name calls libGLES.so's), so every name a program opens reaches the one library.
-  # The GLSL front end (graphics/glsl) is in it where it is built.
+  # Its shaders compile with the GLSL front end (above).
   file(GLOB _gles_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/graphics/gles/lib/*.swift
        ${PROJECT_SOURCE_DIR}/graphics/gles/lib/generated/*.swift ${PROJECT_SOURCE_DIR}/graphics/gles/native/*.swift)
-  file(GLOB _glsl_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/graphics/glsl/lib/*.swift)
-  set(_gles_uses GPUCore VulkanLowering ShaderCompiler GPUCoreMali MaliCore ValhallBackend ValhallISA GPUCoreVulkan Vulkan
+  set(_gles_uses GLSL GPUCore VulkanLowering ShaderCompiler GPUCoreMali MaliCore ValhallBackend ValhallISA GPUCoreVulkan Vulkan
                  VulkanLoader VenusClient VenusDriver Venus GPUClient GPUDevice VX Plumber Radharc Kbdfs UICore AccessTree Themes
                  NdbFile TextLayout PixelKernels Light GlyphAtlas MSDF Raster Shape OpenType TDUnicode IPC Node Ring Sys Trace)
-  if(_glsl_t1)
-    croi_tier1_library(GLSL SOURCES ${_glsl_t1})
-    list(APPEND _gles_uses GLSL)
-  endif()
   croi_tier1_library(GLES SOURCES ${_gles_t1} CSOURCES graphics/gles/c/procs.c USES ${_gles_uses}
                      INCLUDES ${_gpu_c_includes} system/trace/c/include)
   set(_gles_include ${PROJECT_SOURCE_DIR}/graphics/gles/include)
@@ -483,6 +478,10 @@ function(croi_tier1 bootfs_var depends_var)
     list(APPEND _gpu_so ${_core_so})
     list(REMOVE_DUPLICATES _gpu_so)
   endif()
+  # gl-test (gl-test(8), D183): GL ES 2.0 and EGL in C through libEGL.so and libGLESv2.so; boot-venus runs it, and the
+  # board's images start it (board-test).
+  croi_tier1_c(gl-test SOURCES ${_src}/gl-test.c LIBS ${_gles_so} INCLUDES graphics/gles/include user/tier1/gl-shaders
+               DEPENDS ${_src}/gl-shaders/shaders.h)
   # spawn-test: posix_spawn and waitpid (boot-cpu runs it through rc).
   croi_tier1_c(spawn-test SOURCES ${_src}/spawn-test.c)
   # D127's rows (tools/peer-bench) for the board's images: the program, and
@@ -597,13 +596,14 @@ function(croi_tier1 bootfs_var depends_var)
     get_property(_glmark2 GLOBAL PROPERTY CROI_TIER1_GLMARK2)
   endif()
   # Every library tier 1 built, shared, in bootfs's lib/.
-  foreach(_so ${_t1_so} ${_kit_so} ${_app_so} ${_gpu_so} ${_lib}/libRc.so ${_lib}/libCommands.so ${_lib}/libLd.so)
+  foreach(_so ${_t1_so} ${_kit_so} ${_app_so} ${_gpu_so} ${_gles_so} ${_lib}/libRc.so ${_lib}/libCommands.so ${_lib}/libLd.so)
     get_filename_component(_n ${_so} NAME)
     set_property(GLOBAL APPEND PROPERTY CROI_TIER1_SHARED lib/${_n}=${_so})
     set_property(GLOBAL APPEND PROPERTY CROI_TIER1_SHARED_FILES ${_so})
   endforeach()
   set_property(GLOBAL PROPERTY CROI_TIER1_VULKAN_TEST ${_vulkan_test})
   set_property(GLOBAL PROPERTY CROI_TIER1_VULKAN_PRESENT ${_vulkan_present})
+  set_property(GLOBAL PROPERTY CROI_TIER1_GL_TEST ${_out}/gl-test)
   set_property(GLOBAL PROPERTY CROI_TIER1_RIO ${_out}/rio)
   set_property(GLOBAL PROPERTY CROI_TIER1_RIO_TEST ${_out}/rio-test)
   set_property(GLOBAL PROPERTY CROI_TIER1_VT ${_out}/vt)
@@ -624,7 +624,7 @@ function(croi_tier1 bootfs_var depends_var)
   list(REMOVE_DUPLICATES _t1_shared_files)
   list(APPEND _entries ${_t1_shared})
   list(APPEND _files ${_t1_shared_files})
-  add_custom_target(tier1 ALL DEPENDS ${_files} ${_out}/kit-test ${_out}/vulkan-test ${_vulkan_test} ${_vulkan_present} ${_shell_outputs})
+  add_custom_target(tier1 ALL DEPENDS ${_files} ${_out}/kit-test ${_out}/vulkan-test ${_vulkan_test} ${_vulkan_present} ${_out}/gl-test ${_shell_outputs})
   set(${bootfs_var} ${_entries} PARENT_SCOPE)
   set(${depends_var} ${_files} PARENT_SCOPE)
   # The top level boots each (CMakeLists.txt).

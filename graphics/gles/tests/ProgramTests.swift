@@ -124,6 +124,62 @@ extension GLTests {
     #expect(h.error() == GL_INVALID_VALUE)
   }
 
+  /// A GLSL ES program, compiled and linked by the front end, its uniforms found by name, and drawn on the Mali backend.
+  @Test func aGLSLProgramDraws() throws {
+    let mali = try MaliDevice(transport: FakeTransport())
+    let h = Harness(mali, depth: .depth32f, flipped: true)
+    let vs = """
+      attribute vec4 position;
+      attribute vec2 texcoord;
+      uniform mat4 mvp;
+      varying vec2 uv;
+      void main() { uv = texcoord; gl_Position = mvp * position; }
+      """
+    let fs = """
+      precision mediump float;
+      uniform sampler2D tex;
+      uniform vec4 tint;
+      varying vec2 uv;
+      void main() { gl_FragColor = texture2D(tex, uv) * tint + vec4(gl_FragCoord.y * 0.0); }
+      """
+    func shader(_ type: GLenum, _ source: String) -> GLuint {
+      let s = gles_glCreateShader(type)
+      source.withCString { p in
+        var ptr: UnsafePointer<GLchar>? = p
+        gles_glShaderSource(s, 1, &ptr, nil)
+      }
+      gles_glCompileShader(s)
+      var ok: GLint = 0
+      gles_glGetShaderiv(s, GL_COMPILE_STATUS, &ok)
+      #expect(ok == 1)
+      return s
+    }
+    let p = gles_glCreateProgram()
+    gles_glAttachShader(p, shader(GL_VERTEX_SHADER, vs))
+    gles_glAttachShader(p, shader(GL_FRAGMENT_SHADER, fs))
+    gles_glBindAttribLocation(p, 3, "texcoord")
+    gles_glLinkProgram(p)
+    #expect(h.linked(p), "\(h.log(p))")
+    #expect(gles_glGetAttribLocation(p, "texcoord") == 3)
+    gles_glUseProgram(p)
+    let identity: [Float] = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
+    gles_glUniformMatrix4fv(gles_glGetUniformLocation(p, "mvp"), 1, 0, identity)
+    gles_glUniform4f(gles_glGetUniformLocation(p, "tint"), 1, 1, 1, 1)
+    #expect(h.error() == GL_NO_ERROR)
+    h.fullTriangle()
+    gles_glVertexAttribPointer(3, 2, GL_FLOAT, 0, 16, nil)
+    gles_glEnableVertexAttribArray(3)
+    gles_glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+    gles_glDrawArrays(GL_TRIANGLES, 0, 3)
+    gles_glFinish()
+    #expect(h.error() == GL_NO_ERROR)
+    // The driver words of a window: y flipped in the vertex stage.
+    let program = h.gl.program!
+    #expect(program.interface.driverWords == 0)
+    #expect(program.block!.load(as: Float.self) == -1)
+    #expect(program.block!.load(fromByteOffset: 8, as: Float.self) == 64)
+  }
+
   @Test func theMaliBackendTakesThePipelines() throws {
     nonisolated(unsafe) var said: [String] = []
     unsafe glesLog = { unsafe said.append($0) }

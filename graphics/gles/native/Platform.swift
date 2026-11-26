@@ -136,7 +136,11 @@ final class NativeWindow: GLWindow {
         }
       }
       // A swap interval of 0: the compositor takes this frame or none.
-      guard wait else { return .notTaken }
+      guard wait else {
+        // Its credit comes back with a frame, if one is asked for.
+        loop.loop.requestFrame(id)
+        return .notTaken
+      }
       guard waited < presentGiveUp else { return .lost }
       loop.loop.requestFrame(id)
       self.wait(nanoseconds: 2_000_000)

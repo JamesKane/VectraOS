@@ -60,6 +60,9 @@ public struct ProgramInterface: Sendable, Equatable {
   /// The vertex stage writes GL's clip space, which the library makes the core's (`coreClipSpace`); false where the front
   /// end already did.
   public var glClipSpace: Bool
+  /// Where the 32 bytes of driver words are in the uniform block (the GLSL front end's, glsl(2)): the y scales of
+  /// gl_Position, gl_FragCoord and gl_PointCoord and gl_DepthRange, which each draw writes for its target. nil: none.
+  public var driverWords: Int? = nil
   public init(vertexSPIRV: [UInt32], fragmentSPIRV: [UInt32], attributes: [ActiveAttribute], uniforms: [ActiveUniform],
               uniformBlockBytes: Int, log: String = "", glClipSpace: Bool = true) {
     self.vertexSPIRV = vertexSPIRV

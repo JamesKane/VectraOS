@@ -302,9 +302,14 @@ extension GLContext {
   }
 
   /// The viewport of GL's, in the core's coordinates of `target`.
-  func coreViewport(_ t: RenderTarget) -> Viewport {
+  /// A program whose vertex stage flips y itself (the driver words' positionYScale of -1) is drawn into a window with
+  /// the viewport upright, at the window's rows from the top.
+  func coreViewport(_ t: RenderTarget, shaderFlips: Bool) -> Viewport {
     let (n, f) = depthRange
     let x = Float(viewport.x), w = Float(viewport.width), h = Float(viewport.height)
+    if t.flipped && shaderFlips {
+      return Viewport(x: x, y: Float(t.height) - Float(viewport.y) - h, width: w, height: h, minDepth: n, maxDepth: f)
+    }
     if t.flipped {
       return Viewport(x: x, y: Float(t.height) - Float(viewport.y), width: w, height: -h, minDepth: n, maxDepth: f)
     }
@@ -321,9 +326,9 @@ extension GLContext {
   }
 
   /// Records the pass's state where it differs from GL's now.
-  func recordDynamicState(_ t: RenderTarget) {
+  func recordDynamicState(_ t: RenderTarget, shaderFlips: Bool = false) {
     guard var p = frame.pass else { return }
-    let v = coreViewport(t)
+    let v = coreViewport(t, shaderFlips: shaderFlips)
     if p.viewport != v {
       frame.list.setViewports([v])
       p.viewport = v
@@ -564,6 +569,15 @@ extension GLContext {
       unsafe vertexRange(first: first, count: count, indices: indexPointer, type: glIndexType)
     }
     unsafe root.pointer.storeBytes(of: root.address + UInt64(rootBytes), toByteOffset: RootBlock.setsOffset, as: UInt64.self)
+    if let at = program.interface.driverWords, let block = unsafe program.block, at + 28 <= program.blockBytes {
+      // The driver words for this target: GL's rows kept (off-screen), or flipped (a window, first row its top).
+      let (n, f) = depthRange
+      let words: [Float] = target.flipped ? [-1, -1, Float(target.height), 1, n, f, f - n] : [1, 1, 0, -1, n, f, f - n]
+      for (k, w) in words.enumerated() where unsafe block.load(fromByteOffset: at + 4 * k, as: Float.self) != w {
+        unsafe block.storeBytes(of: w, toByteOffset: at + 4 * k, as: Float.self)
+        program.blockDirty = true
+      }
+    }
     if program.blockDirty || program.blockStamp != frame.ring.recycles || program.blockAddress == 0 {
       let u = try frame.ring.allocate(program.blockBytes)
       unsafe u.pointer.copyMemory(from: program.block!, byteCount: program.blockBytes)
@@ -589,7 +603,7 @@ extension GLContext {
 
     let pipeline = try self.pipeline(program, layout, topology, target)
     openPass(target, reads: reads)
-    recordDynamicState(target)
+    recordDynamicState(target, shaderFlips: program.interface.driverWords != nil)
     if let m = indexMemory {
       frame.list.drawIndexed(pipeline, root: root.address, indices: m, indexOffset: indexOffset, indexType: indexType,
                              count: UInt32(drawCount))

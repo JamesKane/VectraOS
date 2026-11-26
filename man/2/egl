@@ -1,0 +1,66 @@
+page egl 2
+summary EGL 1.5 over the core: the one display, its configs, pbuffers, windows of Radharc's, GL ES 2.0 contexts, and the C names in libEGL.so
+names egl EGL libEGL.so vectra_egl_window EGLNativeWindowType GLPlatform GLWindow WindowPresent glPlatform
+names eglGetDisplay eglGetPlatformDisplay eglInitialize eglChooseConfig eglCreateWindowSurface eglCreatePbufferSurface
+names eglCreateContext eglMakeCurrent eglSwapBuffers eglSwapInterval eglGetProcAddress eglCreateSync
+src graphics/gles/lib/EGL.swift graphics/gles/lib/ExportsEGL.swift graphics/gles/native/Platform.swift
+src graphics/gles/c/libEGL.c graphics/gles/c/procs.c graphics/gles/include/EGL/egl.h graphics/gles/include/EGL/eglext.h
+src graphics/gles/include/EGL/eglplatform.h graphics/gles/tests/EGLTests.swift
+keys egl opengl gles display config surface pbuffer window context swap interval present radharc fence tier 1
+lang c
+
+# SYNOPSIS
+
+```c
+#include <EGL/egl.h>
+
+struct vectra_egl_window {   // EGLNativeWindowType is a pointer to one
+  uint32_t width, height;
+  const char *title;
+};
+// linked against libEGL.so, or opened by name: libEGL.so, libEGL.so.1
+```
+
+# DESCRIPTION
+
+EGL is the library of gles(2)'s other half: its C names are in `libEGL.so`, each calling `libGLES.so`'s, so EGL and GL share one state.
+`eglGetProcAddress` gives every `gl*` and `egl*` name the library has, the extensions' included, and NULL for another.
+
+There is one display: `eglGetDisplay` gives it whatever it is asked for (`EGL_DEFAULT_DISPLAY`), and so does `eglGetPlatformDisplay`, whatever the platform.
+`eglInitialize` opens the GPU's core device, once: the Mali backend where the GPU class offers the `csf` capset, else the core's Vulkan backend over Venus (it prints `gles: OpenGL ES over the core's <backend> backend, on <name>`); it reports version 1.5.
+`eglTerminate` gives back what isn't current.
+
+The configs are RGBA8888, RGB888 and RGB565 colour, each with depth 0, 16 or 24 bits and stencil 0 or 8 where the device has a target of that depth and stencil (on Mali: no stencil with depth, since it has no combined target), each a window and a pbuffer, renderable and conformant for OpenGL ES 2 only, single-sampled, swap intervals 0 and 1.
+Every colour config's image is the device's `rgba8` (a window's `bgra8`); a config without alpha reads alpha 1, and a 565 config reports its bits.
+`eglChooseConfig` matches and sorts as EGL 1.5's table 3.4 says: at least for sizes, exact for the config's id, caveat, buffer type, level and swap intervals, a mask for the surface type and renderable type (whose default, OpenGL ES 1's bit, no config has: ask for `EGL_OPENGL_ES2_BIT`); then more colour bits of the channels asked for, a smaller buffer, less depth, less stencil, a lower id.
+
+A pbuffer is an image of `EGL_WIDTH` by `EGL_HEIGHT` (1 by 1 if not given) and a depth and stencil image as its config has; its swap ends and submits what was drawn.
+
+A window surface is a window of Radharc's, opened through the SDK (sdk(2)) for the `vectra_egl_window` given as the native window: its width, height (in points) and title.
+Its surface is the window's size in pixels when it first appears, and three of the core's present images (gpucore(2)'s `makePresentImage`) given to the window, as the Vulkan layer's swapchain is (vulkansurface(2)).
+`eglSwapBuffers` ends the frame's pass, adds the copy a staged device needs (Venus), submits, and presents the image to the window naming the timeline value its drawing signals, so nothing waits on the CPU where the device gives its timeline as a handle (Mali); elsewhere it waits for that value first.
+At a swap interval of 1 (the default) a swap waits for the window's credit, its last frame shown.
+At 0 a swap never waits for the compositor: a frame it can't take now isn't shown (it asks for the next frame), and the next is drawn into the same image.
+The next frame is drawn into an image the compositor reads no more.
+Its contents after a swap are undefined (`EGL_SWAP_BEHAVIOR` is `EGL_BUFFER_DESTROYED`).
+
+`eglCreateContext` makes a GL ES 2.0 context (`EGL_CONTEXT_CLIENT_VERSION` 2); any other version is `EGL_BAD_MATCH`, and only `EGL_OPENGL_ES_API` binds.
+A context shares buffers, textures, renderbuffers, shaders and programs with the context it is made sharing; framebuffers and vertex arrays are its own.
+`eglMakeCurrent` takes one surface for drawing and reading (another for reading is `EGL_BAD_MATCH`), or none (`EGL_KHR_surfaceless_context`); a context's first sets its viewport and scissor to the surface's size.
+A surface or context destroyed while current goes when it is released.
+`eglWaitClient` and `eglWaitGL` are `glFinish`; `eglReleaseThread` releases the current context.
+
+A fence (`eglCreateSync` of `EGL_SYNC_FENCE`) submits the open list and is the timeline value it signals; `eglClientWaitSync` waits for it, `eglWaitSync` returns at once (the GPU's work is in one queue, in order).
+
+`eglQueryString` gives `VectraOS`, `1.5 VectraOS`, `OpenGL_ES` and the extensions `EGL_KHR_create_context EGL_KHR_surfaceless_context EGL_KHR_fence_sync`; of no display, `EGL_EXT_client_extensions EGL_EXT_platform_base`.
+
+# SEE ALSO
+
+gles(2), gpucore(2), vulkansurface(2), sdk(2), radharc(4), gl-test(8)
+
+# BUGS
+
+EGL's state, and the current context, are the process's, not each thread's.
+A window that changes size keeps its surface's size.
+Pixmap surfaces, `eglBindTexImage`, `eglCopyBuffers` and EGL images are refused.
+A window's image is presented opaque, whatever its config's alpha.

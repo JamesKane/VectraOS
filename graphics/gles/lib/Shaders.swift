@@ -162,8 +162,12 @@ struct VertexLayout: Hashable {
     attributeLocations = []
     attributeComponents = []
     for a in i.attributes.sorted(by: { $0.location < $1.location }) {
-      attributeLocations.append(a.location)
-      attributeComponents.append(componentCount(a.type))
+      // A matrix is a column at each location from its own.
+      let columns = a.type == GL_FLOAT_MAT2 ? 2 : a.type == GL_FLOAT_MAT3 ? 3 : a.type == GL_FLOAT_MAT4 ? 4 : 1
+      for c in 0..<columns {
+        attributeLocations.append(a.location + UInt32(c))
+        attributeComponents.append(columns > 1 ? columns : componentCount(a.type))
+      }
     }
     vertexWords = i.vertexSPIRV
     fragmentBytes = try bytes(lower(spirv: i.fragmentSPIRV, stage: .fragment, entryPoint: "main", layout: lowering))
