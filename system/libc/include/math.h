@@ -2,8 +2,9 @@
 
 // <math.h> for C programs on croi (M6c, system/libc/math): what our libm
 // has, from C23 §7.12. The exact functions round correctly; exp, exp2,
-// log, log2, log10, sin and cos are within an ulp of the true value; the
-// float versions are the double ones rounded. No long double functions yet.
+// log, log2, log10, sin, cos, tan, atan, atan2, asin, acos and pow are
+// within an ulp of the true value; the float versions are the double ones
+// rounded. No long double functions yet.
 
 #pragma once
 
@@ -53,6 +54,12 @@ double log2(double x);
 double log10(double x);
 double sin(double x);
 double cos(double x);
+double tan(double x);
+double atan(double x);
+double atan2(double y, double x);
+double asin(double x);
+double acos(double x);
+double pow(double x, double y);
 float floorf(float x);
 float ceilf(float x);
 float truncf(float x);
@@ -69,6 +76,12 @@ float log2f(float x);
 float log10f(float x);
 float sinf(float x);
 float cosf(float x);
+float tanf(float x);
+float atanf(float x);
+float atan2f(float y, float x);
+float asinf(float x);
+float acosf(float x);
+float powf(float x, float y);
 double copysign(double x, double y);
 double fmod(double x, double y);
 double remainder(double x, double y);

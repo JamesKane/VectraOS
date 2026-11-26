@@ -26,7 +26,10 @@ rounded, with the variadic entries and `va_list` readers in C
 (`native/stdio.c`); `TODHCHAI_FORMAT_CASES` and `TODHCHAI_STRTOD_CASES` run
 more cases. Its libm (`system/libc/math`, `<math.h>`): exact functions bit
 for bit with glibc, transcendentals within an ulp of the truth (glibc's
-80-bit functions, `TODHCHAI_MATH_CASES`). Since M6d, long double:
+80-bit functions, `TODHCHAI_MATH_CASES`). The transcendentals are
+exp, exp2, log, log2, log10, sin, cos and tan (`Transcendental.swift`),
+atan, atan2, asin and acos (`Inverse.swift`) and pow (`Power.swift`),
+each with its float form. Since M6d, long double:
 `strtold` and printf's `%L`, in x87's format on amd64 and binary128's
 elsewhere (`Big` and `Digits` are value-generic over their capacity;
 binary128 is tested against glibc's `strtof128`/`strfromf128` through the

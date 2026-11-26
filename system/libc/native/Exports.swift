@@ -289,6 +289,12 @@ struct StreamSink: FormatSink {
 @c(log10) public func exported_log10(_ x: Double) -> Double { log10(x) }
 @c(sin) public func exported_sin(_ x: Double) -> Double { sin(x) }
 @c(cos) public func exported_cos(_ x: Double) -> Double { cos(x) }
+@c(tan) public func exported_tan(_ x: Double) -> Double { tan(x) }
+@c(atan) public func exported_atan(_ x: Double) -> Double { atan(x) }
+@c(atan2) public func exported_atan2(_ y: Double, _ x: Double) -> Double { atan2(y, x) }
+@c(asin) public func exported_asin(_ x: Double) -> Double { asin(x) }
+@c(acos) public func exported_acos(_ x: Double) -> Double { acos(x) }
+@c(pow) public func exported_pow(_ x: Double, _ y: Double) -> Double { pow(x, y) }
 @c(floorf) public func exported_floorf(_ x: Float) -> Float { floorf(x) }
 @c(ceilf) public func exported_ceilf(_ x: Float) -> Float { ceilf(x) }
 @c(truncf) public func exported_truncf(_ x: Float) -> Float { truncf(x) }
@@ -305,6 +311,12 @@ struct StreamSink: FormatSink {
 @c(log10f) public func exported_log10f(_ x: Float) -> Float { log10f(x) }
 @c(sinf) public func exported_sinf(_ x: Float) -> Float { sinf(x) }
 @c(cosf) public func exported_cosf(_ x: Float) -> Float { cosf(x) }
+@c(tanf) public func exported_tanf(_ x: Float) -> Float { tanf(x) }
+@c(atanf) public func exported_atanf(_ x: Float) -> Float { atanf(x) }
+@c(atan2f) public func exported_atan2f(_ y: Float, _ x: Float) -> Float { atan2f(y, x) }
+@c(asinf) public func exported_asinf(_ x: Float) -> Float { asinf(x) }
+@c(acosf) public func exported_acosf(_ x: Float) -> Float { acosf(x) }
+@c(powf) public func exported_powf(_ x: Float, _ y: Float) -> Float { powf(x, y) }
 @c(copysign) public func exported_copysign(_ x: Double, _ y: Double) -> Double { copysign(x, y) }
 @c(fmod) public func exported_fmod(_ x: Double, _ y: Double) -> Double { fmod(x, y) }
 @c(remainder) public func exported_remainder(_ x: Double, _ y: Double) -> Double { remainder(x, y) }
