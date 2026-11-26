@@ -460,6 +460,10 @@ croi_launcher_test(sdhci UNTIL sd-test TIMEOUT 180
 # device's rate.
 croi_launcher_test(audio TIMEOUT 180
   QEMU -audiodev none,id=snd0 -device virtio-sound-pci,audiodev=snd0,addr=0x1a,iommu_platform=on,disable-legacy=on)
+# The audio service (D179, D181): bin/audio-service-test plays two push streams
+# at once through bin/audio, which leases the same device.
+croi_launcher_test(audio-service TIMEOUT 180
+  QEMU -audiodev none,id=snd0 -device virtio-sound-pci,audiodev=snd0,addr=0x1a,iommu_platform=on,disable-legacy=on)
 # The lock screen (D118): bin/lock-test locks, types a wrong and the right
 # password, uses Control-Alt-Delete, waits a minute for the lock, and
 # kills Radharc while locked.

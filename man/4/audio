@@ -1,0 +1,65 @@
+page audio 4
+summary the audio service: push streams mixed into the sound device
+src services/audio/Main.swift services/audio/lib/Mix.swift services/audio/audio.manifest
+keys audio sound service mixer push stream playback quantum lease deadline
+
+# SYNOPSIS
+
+```text
+/svc/audio/audio
+/svc/audio/status
+```
+
+# DESCRIPTION
+
+audio mixes its clients' sounds into the machine's first sound device, `/dev/audio/0` (audio(3)), so that any number of programs play at once.
+Each channel opened at `audio` is a push stream: what is written to it is played, mixed with every other stream.
+A stream's frames are 9front's format, 16-bit stereo little-endian, at the device's rate (44,100 frames a second on a device that takes 9front's format).
+A stream queues up to 64 KiB, about 370 ms at 44.1 kHz; a write is taken whole, and one that doesn't fit waits until the queue has room.
+A client may attach a ring to the channel (node(5)), and its writes are taken the same way.
+Reading `audio` gives nothing.
+When a stream's channel closes, what it queued is played out, and then it goes.
+
+While nothing plays, the service holds no device and the device is stopped.
+At a stream's first frames it leases the device's playback stream through its `lease` (audio-lease-lease(5)), with the device's period set to 256 frames, the quantum.
+A mixing thread then mixes a quantum of every stream into the device's buffer for each period the device finishes, waking on the device's counter, writing 2 periods ahead of the 2 the device holds.
+The mix is summed as 32-bit floats and clipped to the device's format: `s16`, `s32` or `f32`, its first two channels left and right, a mono device taking their average.
+A stream with less than a quantum queued gives what it has, and the rest of that quantum is silence: an underrun of that stream, counted, which no other stream hears.
+After a second in which nothing plays, the service gives the lease back, and the device stops.
+
+The mixing thread runs on a deadline, 1 ms of each 5.8 ms, admitted under the system resource its manifest asks for (`resource system`), and lent by the device's counter as it wakes the thread.
+Without the resource, or refused admission, it runs as an ordinary thread.
+
+: `status`
+  Read only, a line each: `device` and its path; `state` (`idle` or `playing`); `format`, the device's sample format, channels and `speed`; `quantum` in frames; `ahead`, the periods written past the device's; `leases` (taken so far), `cycles` (the mixer's wakes) and `late` (periods the device took before the mixer had written them); `profile`, the deadline's admission; a `failed` line saying why the last lease couldn't be taken, if it couldn't; `streams` (open now), `quanta` (mixed) and `audible` (those in which some stream gave frames); then for each stream, `stream` and its number, `frames` (mixed), `buffered` (bytes queued), `underruns`, and `closing` once its channel has closed.
+
+# EXAMPLES
+
+```rc
+% cat tone.pcm >/svc/audio/audio
+% cat /svc/audio/status
+device /dev/audio/0
+state idle
+format s16 2 speed 44100
+quantum 256
+ahead 2
+leases 1 cycles 163 late 0
+profile deadline 1 ms of each 5.8 ms, admitted
+streams 0 quanta 260 audible 87
+```
+
+# FILES
+
+: `/dev/audio/0`
+  The device, audio(3), its `lease` held while anything plays.
+
+# SEE ALSO
+
+audio(3), audio-lease-lease(5), virtio-snd(3), audio-service-test(8)
+
+# BUGS
+
+Streams must be at the device's rate: there is no resampler, and no way to say a stream's format.
+Only the first device is used, and only for playback; there is no capture, no volume, and no usage or link.
+With no device, what is written is dropped a second at a time.
+Streams are found by no program's name: any channel at `audio` is a stream, and the service can't tell whose.

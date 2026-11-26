@@ -19,6 +19,7 @@ The driver asks the device for its streams and drives the first output stream as
 A stream's formats and rates are those of the device that audio(3) names.
 Each stream's cyclic buffer, up to 256 KiB, is memory the device reaches through its own DMA, and each period of it handed to the device is one transfer: a header naming the stream, the period's bytes in place, and the status the device writes.
 The device finishes transfers in order as it plays or records them, and each one finished is the stream's position.
+The buffer is the memory audio(3)'s `lease` lends, the same VMO the device reads.
 Setting a stream up is `SET_PARAMS` and `PREPARE`; starting it, `START`; stopping it, `STOP` and `RELEASE`, after which the device gives back what it held, and the next start sets it up again.
 Control requests are answered in turn, each waited for by polling its queue, for at most a second.
 The device's events are counted, `PCM_XRUN` apart, and nothing else is done with them.

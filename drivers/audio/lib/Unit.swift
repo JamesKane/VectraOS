@@ -10,6 +10,8 @@
 //              amplifiers (none here yet)
 //     data     playback when written, capture when read, in the format
 //              ctl set: interleaved little-endian frames
+//     lease    vectraos.audio.lease (D181): the playback stream lent to
+//              one lessee, the audio service, while its channel is open
 //
 // One format serves both directions, 9front's (16-bit stereo at 44.1 kHz)
 // unless the device can't take it. A write of data copies into the
@@ -71,6 +73,10 @@ public final class AudioUnit: @unchecked Sendable {
   }
 
   func serve(_ channel: consuming Handle, at node: Int) throws(Status) {
+    if node == AudioNode.lease {
+      try control.add(AudioLeaseIPC.LeaseServer(channel: channel, impl: AudioLeaseSession(unit: self)))
+      return
+    }
     let dispatcher = node == AudioNode.data ? data : control
     try dispatcher.add(NodeIPC.NodeServer(channel: channel, impl: AudioSession(unit: self, node: node)))
   }
@@ -108,7 +114,7 @@ public final class AudioUnit: @unchecked Sendable {
     s += "lead \(Self.lead)\ndelay \(hardware.externalDelay)\n"
     for (d, stream) in [(AudioDirection.output, output), (.input, input)] {
       guard let snap = stream?.snapshot else { continue }
-      let state = snap.state == .stopped ? "stopped" : snap.state == .stopping ? "stopping" : "running"
+      let state = snap.leased ? "lent" : snap.state == .stopped ? "stopped" : snap.state == .stopping ? "stopping" : "running"
       let c = snap.cycle
       s += "\(d.name) \(state) runs \(snap.runs) periods \(snap.played)"
       s += d == .output ? " underruns \(c?.underruns ?? 0)\n" : " overruns \(c?.overruns ?? 0)\n"
@@ -140,6 +146,7 @@ public final class AudioUnit: @unchecked Sendable {
           throw .invalid
         }
         guard !streams.isEmpty else { throw .unsupported }
+        guard !streams.contains(where: { s in s.lock.withLock { s.leased } }) else { throw .denied }
         for s in streams {
           if AudioText.same(verb, "stop") {
             s.stop()
@@ -184,6 +191,7 @@ public final class AudioUnit: @unchecked Sendable {
   /// A format and period for both directions: each stream the device has
   /// must take it.
   func configure(_ f: PCMFormat, periodFrames p: Int) throws(NodeIPC.NodeError) {
+    if let o = output, o.lock.withLock({ o.leased }) { throw .denied }
     for d in [AudioDirection.output, .input] {
       if let c = hardware.capabilities(d), !c.allows(f) { throw .unsupported }
     }
@@ -216,11 +224,13 @@ enum AudioNode {
   static let stat = 2
   static let volume = 3
   static let data = 4
-  static let names = ["", "ctl", "stat", "volume", "data"]
+  static let lease = 5
+  static let names = ["", "ctl", "stat", "volume", "data", "lease"]
 
   static func stat(_ node: Int) -> NodeIPC.Stat {
-    NodeIPC.Stat(qid: NodeIPC.Qid(path: UInt64(node) + 1, version: 0, kind: node == 0 ? .directory : .file),
-                 name: names[node], size: 0, modified: 0, attributes: [])
+    let kind: NodeIPC.NodeKind = node == 0 ? .directory : node == lease ? .service : .file
+    return NodeIPC.Stat(qid: NodeIPC.Qid(path: UInt64(node) + 1, version: 0, kind: kind),
+                        name: names[node], size: 0, modified: 0, attributes: [])
   }
 
   static func child(_ name: String) -> Int? {
@@ -272,6 +282,7 @@ struct AudioSession: NodeIPC.NodeHandler {
           case AudioNode.stat: results.append(.data(text(unit.statText, offset, max)))
           case AudioNode.volume: results.append(.data(text(unit.volumeText, offset, max)))
           case AudioNode.data: results.append(.data(try unit.read(max: Swift.min(Int(max), NodeIPC.maxIO))))
+          case AudioNode.lease: throw .unsupported
           default: throw .isDirectory
           }
         case .write(_, let data):
@@ -286,6 +297,7 @@ struct AudioSession: NodeIPC.NodeHandler {
             guard data.count <= NodeIPC.maxIO else { throw .invalid }
             results.append(.wrote(try unit.write(data)))
           case AudioNode.stat: throw .denied
+          case AudioNode.lease: throw .unsupported
           default: throw .isDirectory
           }
         case .watch:
@@ -334,4 +346,42 @@ struct AudioSession: NodeIPC.NodeHandler {
   func clunk(_ fids: [UInt32]) throws(NodeIPC.NodeError) { throw .unsupported }
 
   func clone(_ channel: consuming Handle) { _ = try? unit.serve(channel, at: node) }
+}
+
+/// One channel at `lease` (D181): its lend, and the lease's end when the
+/// channel closes (the server, and with it the session, goes).
+final class AudioLeaseSession: AudioLeaseIPC.LeaseHandler, @unchecked Sendable {
+  let unit: AudioUnit
+  let lock = Lock()
+  var lent = false
+
+  init(unit: AudioUnit) { self.unit = unit }
+
+  deinit {
+    if lent { unit.output?.endLease() }
+  }
+
+  func lend() throws(AudioLeaseIPC.LeaseError) -> AudioLeaseIPC.Lent {
+    guard let output = unit.output else { throw .unsupported }
+    guard !lock.withLock({ lent }) else { throw .busy }
+    let vmo: Handle
+    do throws(NodeIPC.NodeError) {
+      vmo = try output.lend()
+    } catch {
+      throw error == .exists ? .busy : error == .unsupported ? .unsupported : .io
+    }
+    lock.withLock { lent = true }
+    let (f, p) = unit.lock.withLock { (unit.format, unit.periodFrames) }
+    var sample: UInt32 = 0
+    for (i, s) in SampleFormat.all.enumerated() where s == f.sample { sample = UInt32(i) }
+    let layout = AudioLeaseIPC.Layout(periods: UInt32(AudioUnit.periods), periodFrames: UInt32(p),
+                                      lead: UInt32(AudioUnit.lead), sample: sample, channels: UInt32(f.channels),
+                                      rate: f.rate)
+    return AudioLeaseIPC.Lent(buffer: vmo, layout: layout)
+  }
+
+  func clock() throws(AudioLeaseIPC.LeaseError) -> AudioLeaseIPC.Clock {
+    guard lock.withLock({ lent }), let c = unit.output?.clock() else { throw .notLent }
+    return AudioLeaseIPC.Clock(counter: c)
+  }
 }

@@ -1,0 +1,36 @@
+page audio-service-test 8
+summary check that the audio service mixes push streams into the sound device it leases
+src services/audio/tests/native/Main.swift services/audio/tests/native/audio-service-test.manifest
+keys audio sound service mixer push stream lease test qemu virtio-sound-pci
+
+# SYNOPSIS
+
+```text
+userboot.next=bin/launcher launcher.until=audio-service-test
+```
+
+# DESCRIPTION
+
+audio-service-test is the last service of the audio service's image, `bootfs-audio-service-test.img`, which holds devmgr(8) with its drivers, audio(4) and the services their manifests mount.
+The boot-audio-service test boots it in QEMU with a virtio-sound-pci, through the IOMMU, on QEMU's silent backend (`-audiodev none`), which takes frames at the device's rate.
+The launcher runs until audio-service-test ends and exits with its code (launcher(8)).
+
+It waits up to 30 seconds for devmgr to bind the device at `/dev/audio/0`, prints audio's `status`, a line each, `audio-service-test: status: <line>`, and checks that the service is idle with no lease taken and that the device is stopped.
+It opens two streams at `/svc/audio/audio` and writes half a second of a different tone to each, 8 KiB at a time in turns, and checks that both take every byte, that the device's `stat` says `out lent` meanwhile, and that the lent device's `data` refuses a write; it checks that the service holds two streams.
+It waits up to 10 seconds for the service to be idle again after its first lease, and checks that the closed streams are gone, that the mixer ran a cycle and mixed an audible quantum for each 256 frames of the tones, that it all took at least 1.2 seconds (the half second played and the second of silence before the lease is given back), and that the device's `stat` says it stopped.
+Then it plays a tenth of a second through a new stream and checks that a second lease is taken and given back.
+A line for each check is `audio-service-test: ok:` or `audio-service-test: FAILED:` and what it checks; its last line is `audio-service-test: passed` or `audio-service-test: <n> failed`.
+It exits 0 if every check passed.
+
+# FILES
+
+: `build/<arch>/esp-audio-service-test`
+  The ESP boot-audio-service boots: the loader, the kernel, the audio service's image and a command line that powers off when audio-service-test ends.
+
+# SEE ALSO
+
+audio(4), audio(3), audio-lease-lease(5), audio-test(8), launcher(8)
+
+# BUGS
+
+What was mixed isn't heard or compared: QEMU's silent backend drops it.

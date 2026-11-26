@@ -1,0 +1,7 @@
+# API baseline for vectraos.audio.lease.Lease, written by idlc. Commit it; idlc checks changes against it.
+protocol vectraos.audio.lease.Lease version 1
+struct Clock (Handle)
+struct Layout (UInt32,UInt32,UInt32,UInt32,UInt32,UInt32)
+struct Lent (Handle,Layout)
+method clock call since 1 params () result Clock throws LeaseError
+method lend call since 1 params () result Lent throws LeaseError

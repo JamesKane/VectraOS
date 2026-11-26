@@ -264,6 +264,12 @@ import Virtio
 
   public func stop(_ d: AudioDirection) { release(d) }
 
+  /// The buffer's VMO, the one the device reads through its pin.
+  public func lend(_ d: AudioDirection) throws(NodeIPC.NodeError) -> Handle {
+    guard let vmo = memory.vmo(bus: bufferBus[Self.index(d)]) else { throw .unsupported }
+    return vmo
+  }
+
   // MARK: The interrupt
 
   /// Ends the transfers and events the device has finished: periods

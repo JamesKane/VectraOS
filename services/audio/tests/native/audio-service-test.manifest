@@ -1,0 +1,7 @@
+# bin/audio-service-test (launcher.until=audio-service-test): push streams
+# through the audio service, and the device it leases.
+service audio-service-test
+program audio-service-test
+use audio
+use devmgr
+mount /dev devmgr/dev

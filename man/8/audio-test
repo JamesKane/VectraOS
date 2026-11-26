@@ -16,7 +16,7 @@ The boot-audio test boots it in QEMU with a virtio-sound-pci, an output and an i
 The launcher runs until audio-test ends and exits with its code (launcher(8)).
 
 It waits up to 30 seconds for virtio-snd(3) to bring the device up or fail, and prints the driver's `status`, a line each, `audio-test: status: <line>`.
-It checks that the driver found an output and an input stream with no control request failed, that devmgr binds the device at `/dev/audio/0` with `ctl`, `stat`, `volume` and `data`, that `ctl` starts in 9front's format, and that `stat` names the device and what each stream takes and starts with 9front's audiostat line; it prints that `stat`.
+It checks that the driver found an output and an input stream with no control request failed, that devmgr binds the device at `/dev/audio/0` with `ctl`, `stat`, `volume`, `data` and `lease`, that `ctl` starts in 9front's format, and that `stat` names the device and what each stream takes and starts with 9front's audiostat line; it prints that `stat`.
 It writes half a second of a 440 Hz tone, 16-bit stereo at 44,100 frames a second, to `data` in 8 KiB writes, waits up to 10 seconds for `stat` to say the stream stopped, and checks that it drained by itself after one run, that the device played a period for every 1024 frames written, that `stat`'s offset counts the bytes, and that playing took at least 0.4 seconds, the device taking frames at its rate.
 It reads a quarter of a second from `data`, checks that it got it, stops capture through `ctl` and checks that `stat` says so.
 Then it sets `speed 48000`, checks that `ctl` reads it back and refuses `speed 12345`, and plays a tenth of a second, which must run and drain again.
