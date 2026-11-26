@@ -141,3 +141,14 @@ public func strndup(_ s: UnsafePointer<CChar>, _ n: UInt) -> UnsafeMutablePointe
   unsafe p[length] = 0
   return unsafe p
 }
+
+/// The string transformed for comparison by strcmp, as strcoll compares
+/// (§7.26.4.5): in the C locale, the string itself. Copies it, its NUL
+/// too, when that fits in n chars; returns its length either way.
+public func strxfrm(_ d: UnsafeMutablePointer<CChar>?, _ s: UnsafePointer<CChar>, _ n: UInt) -> UInt {
+  let length = unsafe strlen(s)
+  if length < n, let d = unsafe d {
+    for i in 0...Int(length) { unsafe d[i] = s[i] }
+  }
+  return length
+}

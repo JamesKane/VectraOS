@@ -32,3 +32,23 @@ char *strerror(int errnum) {
   strerror_r(errnum, buffer, sizeof buffer);
   return buffer;
 }
+
+// In a locale, which can only be "C" (<locale.h>).
+long double strtold_l(const char *__restrict s, char **__restrict end, locale_t locale) {
+  (void)locale;
+  return strtold(s, end);
+}
+
+// strftime (time/Strftime.swift): struct tm read into fields here.
+#include <time.h>
+size_t td_strftime(char *s, size_t max, const char *format, const int64_t fields[9], const char *zone);
+size_t strftime(char *__restrict s, size_t max, const char *__restrict format, const struct tm *__restrict tm) {
+  int64_t fields[9] = {tm->tm_sec,  tm->tm_min,  tm->tm_hour,  tm->tm_mday,  tm->tm_mon,
+                       tm->tm_year, tm->tm_wday, tm->tm_yday, tm->tm_gmtoff};
+  return td_strftime(s, max, format, fields, tm->tm_zone);
+}
+size_t strftime_l(char *__restrict s, size_t max, const char *__restrict format, const struct tm *__restrict tm,
+                  locale_t locale) {
+  (void)locale;
+  return strftime(s, max, format, tm);
+}

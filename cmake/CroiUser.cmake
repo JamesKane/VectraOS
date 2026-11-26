@@ -89,11 +89,13 @@ function(croi_user_floor)
   set(_libc_swift
     ${_libc}/string/Memory.swift ${_libc}/string/Strings.swift ${_libc}/string/Strerror.swift
     ${_libc}/stdlib/Stdlib.swift ${_libc}/stdlib/Strtod.swift ${_libc}/stdlib/Errno.swift
-    ${_libc}/stdio/Format.swift ${_libc}/stdio/Decimal.swift ${_libc}/ctype/Ctype.swift
+    ${_libc}/stdio/Format.swift ${_libc}/stdio/Decimal.swift ${_libc}/stdio/Scan.swift ${_libc}/ctype/Ctype.swift
+    ${_libc}/time/Strftime.swift
     ${_libc}/math/Exact.swift ${_libc}/math/Transcendental.swift ${_libc}/math/generated/Constants.swift
-    ${_libc}/native/Exports.swift)
+    ${_libc}/native/Exports.swift ${_libc}/native/Streams.swift)
   set(_libc_c ${_libc}/native/errno.c ${_libc}/native/stdio.c ${_libc}/native/stdlib.c ${_libc}/native/files.c
-    ${_libc}/native/dispatch.c ${_libc}/native/tiers.c)
+    ${_libc}/native/dispatch.c ${_libc}/native/tiers.c ${_libc}/native/locale.c
+    ${_libc}/native/getopt.c ${_libc}/native/setjmp-${CROI_ARCH}.S)
   set(_pthread_swift
     ${_libc}/pthread/lib/Condition.swift ${_libc}/pthread/lib/Keys.swift ${_libc}/pthread/lib/Mutex.swift
     ${_libc}/pthread/lib/Once.swift ${_libc}/pthread/lib/RWLock.swift ${_libc}/pthread/lib/Threads.swift

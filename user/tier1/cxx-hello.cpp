@@ -7,7 +7,10 @@
 // hardware_concurrency, __cxa_demangle) and what C++ programs do besides:
 // static constructors and destructors, RTTI, threads, a mutex and a
 // condition variable, clocks, and exceptions thrown through frames,
-// caught by type, rethrown, and std::stoi's out_of_range (strtol's ERANGE).
+// caught by type, rethrown, and std::stoi's out_of_range (strtol's ERANGE);
+// iostreams over the C locale (formatting and parsing numbers, a pointer
+// through scanf's %p, std::put_time through strftime, std::cout) and a
+// file stream that has no file to open (no fdio here: fopen fails).
 // Exits 0 if all held.
 
 #include <chrono>
@@ -15,6 +18,12 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cxxabi.h>
+#include <ctime>
+#include <fstream>
+#include <iomanip>
+#include <iostream>
+#include <locale>
+#include <sstream>
 #include <functional>
 #include <map>
 #include <memory>
@@ -138,6 +147,41 @@ int main() {
     bad = true;
   }
   check(bad, "vector::at's out_of_range");
+
+  // iostreams in the C locale.
+  check(std::locale().name() == "C" && std::use_facet<std::numpunct<char>>(std::locale()).decimal_point() == '.',
+        "the global locale is the C locale");
+  std::ostringstream out;
+  out << 42 << ' ' << -7 << ' ' << std::hex << 255 << std::dec << ' ' << std::boolalpha << true << ' '
+      << std::fixed << std::setprecision(3) << 3.14159 << ' ' << std::scientific << 1.5e10 << ' '
+      << std::setw(5) << std::setfill('*') << 9;
+  check(out.str() == "42 -7 ff true 3.142 1.500e+10 ****9", "an ostringstream formats numbers");
+  std::istringstream in("17 -3.25 0x1f word 1e400");
+  int i17 = 0, hex = 0;
+  double d = 0, huge = 0;
+  std::string word;
+  in >> i17 >> d >> std::hex >> hex >> word >> std::dec;
+  check(in && i17 == 17 && d == -3.25 && hex == 31 && word == "word", "an istringstream parses numbers");
+  in >> huge;
+  check(in.fail(), "an istringstream's out-of-range double fails");
+  void *pointer = nullptr;
+  std::istringstream("0x1234") >> pointer;
+  check(pointer == reinterpret_cast<void *>(0x1234), "a pointer parsed (scanf's %p)");
+  std::tm when{};
+  when.tm_year = 126;
+  when.tm_mon = 10;
+  when.tm_mday = 26;
+  when.tm_hour = 9;
+  when.tm_min = 5;
+  when.tm_wday = 4;
+  when.tm_yday = 329;
+  std::ostringstream date;
+  date << std::put_time(&when, "%a %Y-%m-%d %H:%M:%S %j");
+  check(date.str() == "Thu 2026-11-26 09:05:00 330", "std::put_time (strftime)");
+  std::ifstream none("/nonexistent");
+  check(!none.is_open(), "an ifstream with no file to open");
+  std::cout << "cxx-hello: std::cout writes" << std::endl;
+  check(std::cout.good(), "std::cout");
 
   // Threads, a mutex and a condition variable, clocks.
   unsigned cpus = std::thread::hardware_concurrency();
