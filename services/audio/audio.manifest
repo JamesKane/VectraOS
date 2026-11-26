@@ -1,0 +1,10 @@
+# The audio service (D179): push streams mixed into the first sound
+# device, whose playback stream it leases from /dev/audio/0 (D181) while
+# anything plays. The system resource admits its mixer's deadline.
+service audio
+program audio
+use devmgr
+mount /dev devmgr/dev
+export
+resource system
+restart on-failure

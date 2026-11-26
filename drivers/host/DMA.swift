@@ -8,6 +8,13 @@ import Sys
 /// the device uses for them, kept for the provider's life.
 public protocol DMAMemory: AnyObject {
   func allocate(bytes: Int) throws(Status) -> (pointer: UnsafeMutableRawPointer, bus: UInt64)
+  /// The VMO under the allocation at `bus`, to lend: nil if there is none
+  /// to lend.
+  func vmo(bus: UInt64) -> Handle?
+}
+
+extension DMAMemory {
+  public func vmo(bus: UInt64) -> Handle? { nil }
 }
 
 /// Memory a device reaches through its BTI (croi K9e): each allocation a
@@ -53,6 +60,15 @@ public protocol DMAMemory: AnyObject {
     let pointer = unsafe mapping.address
     regions.append(Region(mapping: mapping, pmt: pinned.pmt, vmo: vmo, bus: pinned.addresses[0]))
     return unsafe (pointer, pinned.addresses[0])
+  }
+
+  /// The VMO under the allocation at device address `bus` (what
+  /// `allocate` returned), a handle of its own, to lend another process
+  /// the same memory (an audio stream's buffer, D180): nil for an address
+  /// that isn't one. The device's pin stays the provider's.
+  public func vmo(bus: UInt64) -> Handle? {
+    guard let r = regions.first(where: { $0.bus == bus }) else { return nil }
+    return try? r.vmo.duplicate()
   }
 
   /// Pins a VMO of the caller's for the device, a page to an address (its

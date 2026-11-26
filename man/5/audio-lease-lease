@@ -1,0 +1,95 @@
+page audio-lease-lease 5
+summary the vectraos.audio.lease.Lease protocol
+names audio-lease-lease vectraos.audio.lease.Lease
+src drivers/audio/lib/Lease.swift
+
+# SYNOPSIS
+
+```text
+protocol vectraos.audio.lease.Lease version 1
+call lend() throws(LeaseError) -> Lent
+call clock() throws(LeaseError) -> Clock
+```
+
+# DESCRIPTION
+
+Protocol `vectraos.audio.lease.Lease`, version 1, of library `AudioLeaseIPC`, its messages in the one wire format (wire(6)).
+
+| Method | Kind | Since | Ordinal |
+| `lend` | call | 1 | `0x1c8876ed4643e67b` |
+| `clock` | call | 1 | `0x7a42c00fd3bb6338` |
+
+: `lend`
+  The playback stream, lent: its buffer, made silence, and its
+  layout. The stream starts at once and runs until the channel
+  closes; the lessee writes each period `lead` ahead of the device.
+: `clock`
+  The lent stream's counter.
+
+@node layouts Message layouts
+
+## lend
+
+Request body: empty.
+
+Reply body, 32 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 28 | `result` | Lent (inline) |
+
+## clock
+
+Request body: empty.
+
+Reply body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `result` | Clock (inline) |
+
+@node types Types
+
+## struct Layout
+
+A lent stream's layout: `periods` periods of `periodFrames` frames,
+`lead` of them with the device at a time, in the format `ctl` says:
+`sample` is the index of its sample format in s8, u8, s16, s24, s32,
+f32.
+
+aligned to 4, 24 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `periods` | UInt32 |
+| 4 | 4 | `periodFrames` | UInt32 |
+| 8 | 4 | `lead` | UInt32 |
+| 12 | 4 | `sample` | UInt32 |
+| 16 | 4 | `channels` | UInt32 |
+| 20 | 4 | `rate` | UInt32 |
+
+## struct Lent
+
+The lent buffer: map `buffer` writable, its first `periods` ×
+`periodFrames` frames the stream's.
+
+Moves (carries handles); aligned to 4, 28 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `buffer` | Handle (in the handle array) |
+| 4 | 24 | `layout` | Layout (inline) |
+
+## struct Clock
+
+The stream's counter: the periods the device has finished since the
+lease began, so period `k` is the buffer's slot `k mod periods`.
+
+Moves (carries handles); aligned to 4, 4 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `counter` | Handle (in the handle array) |
+
+## errors LeaseError
+
+| Case | Code |
+| `busy` | 1 |
+| `unsupported` | 2 |
+| `io` | 3 |
+| `notLent` | 4 |

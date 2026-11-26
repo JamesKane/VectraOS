@@ -5,8 +5,8 @@ do audio and asks what semi-professional musicians and gamers need from
 each. It then proposes one audio subsystem for VectraOS that serves
 both groups with the same mechanism.
 
-Two of its decisions are taken (2026-11-26): the graph (D179) and the
-buffer as the hardware's (D180). §11 lists the rest, and §12 the open
+Three of its decisions are taken (2026-11-26): the graph (D179), the
+buffer as the hardware's (D180) and the clock as a counter (D181). §11 lists the rest, and §12 the open
 questions. It fills in what the roadmap already commits: V6f item
 3 (an audio class fed by a ring, HDA with the ALC269, DisplayPort
 audio), V9 (audio output for the reference game, virtio-snd, HDA on
@@ -443,13 +443,10 @@ graph's own links.
 
 Little, by design:
 
-1. **A device timeline,** generalised from the display timeline (K10b):
-   any driver holding a device resource advances it with a hardware
-   timestamp and a position (sample count, not vblank count), and its
-   page carries position, time, nominal rate and a flag for a
-   synthesised tick. One object type for display and audio clocks
-   (principle 1). The wake with an offset ("wake me when position
-   reaches N, minus this much time") is new.
+1. **Nothing for the clock** (D181): the display timeline (K10b) this
+   proposed to generalise was cut by D27, and a counter the driver adds
+   to for each period, which lends the mixer's deadline as it wakes it,
+   does the job.
 2. **A scheduling context shared across processes,** so a pull client's
    threads run on the audio service's admitted context. K10c names a
    context on a wait; this needs the same for a thread that joins a
@@ -631,8 +628,8 @@ keeps to a few minutes (the owner rejects long-running checks).
 
 1. **The audio graph** (one path, no exclusive mode, direct links,
    usages, links as files, skipped late clients): decided, D179.
-2. **The device timeline:** the display timeline generalised for audio
-   clocks (§6.1), one object type for both.
+2. **The device timeline:** decided, D181: no timeline object; the
+   device's clock is a counter, as D27 made the display's.
 3. **Joining a scheduling context across processes** (§6.2), with its
    right and its admission rule.
 4. **The DMA buffer is the hardware's, not a ring:** decided, D180.

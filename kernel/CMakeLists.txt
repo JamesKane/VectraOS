@@ -887,6 +887,18 @@ croi_user_program(${_audio_test} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers
 croi_bootfs(bootfs-audio-test "Building bootfs for boot-audio"
   ${_sdhci_entries} bin/audio-test=${_audio_test}
   etc/manifests/audio-test.manifest=${PROJECT_SOURCE_DIR}/drivers/audio/virtio-snd/tests/native/audio-test.manifest)
+# bootfs-audio-service-test.img: as the audio image, with the audio service
+# (bin/audio, D179): boot-audio-service, push streams mixed into the
+# virtio-sound-pci it leases.
+set(_audio_service ${CMAKE_CURRENT_BINARY_DIR}/audio.elf)
+croi_user_program(${_audio_service} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/audio/Main.swift)
+set(_audio_service_test ${CMAKE_CURRENT_BINARY_DIR}/audioservicetest.elf)
+croi_user_program(${_audio_service_test} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/audio/tests/native/Main.swift)
+croi_bootfs(bootfs-audio-service-test "Building bootfs for boot-audio-service"
+  ${_sdhci_entries} bin/audio=${_audio_service}
+  etc/manifests/audio.manifest=${PROJECT_SOURCE_DIR}/services/audio/audio.manifest
+  bin/audio-service-test=${_audio_service_test}
+  etc/manifests/audio-service-test.manifest=${PROJECT_SOURCE_DIR}/services/audio/tests/native/audio-service-test.manifest)
 add_custom_target(cpu-keys
   COMMAND ${VX} cpu-keys ${CMAKE_BINARY_DIR}/cpu ${CROI_CPU_PEERS}
   BYPRODUCTS ${CMAKE_BINARY_DIR}/cpu/terminal ${CMAKE_BINARY_DIR}/cpu/node.keys ${CMAKE_BINARY_DIR}/cpu/node.pub

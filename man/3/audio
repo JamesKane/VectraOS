@@ -10,6 +10,7 @@ keys audio sound pcm playback capture speaker microphone volume audiostat period
 /dev/audio/N/stat
 /dev/audio/N/volume
 /dev/audio/N/data
+/dev/audio/N/lease
 ```
 
 # DESCRIPTION
@@ -25,7 +26,7 @@ A device has a playback stream, a capture stream, or both.
 : `stat`
   Read only.
   Its first line is 9front's: `bufsize` (the playback buffer's bytes), `buffered` (bytes written and not yet played), `offset` (bytes played) and `time` (the monotonic clock, in nanoseconds, when the device last finished a period), padded as 9front pads them.
-  Then a line each: `device` and the driver's name; for each stream the device has, `out` or `in`, `formats` and the sample formats it takes, `rates` and its rates, `channels` and its range; `format`, `speed`, `period`, `periods` (the buffer's), `lead` (the periods handed to the device at a time) and `delay` (frames between the buffer and the converter); and for each stream, `out` or `in`, its state (`stopped`, `running` or `stopping`), `runs` (times started), `periods` (played or recorded) and `underruns` or `overruns`.
+  Then a line each: `device` and the driver's name; for each stream the device has, `out` or `in`, `formats` and the sample formats it takes, `rates` and its rates, `channels` and its range; `format`, `speed`, `period`, `periods` (the buffer's), `lead` (the periods handed to the device at a time) and `delay` (frames between the buffer and the converter); and for each stream, `out` or `in`, its state (`stopped`, `running`, `stopping` or `lent`), `runs` (times started), `periods` (played or recorded) and `underruns` or `overruns`.
 : `volume`
   Reads as 9front's `speed` and `delay`, the frames buffered ahead of the device.
   It takes `speed`, as `ctl` does; a line naming an amplifier the device lacks fails with `not supported`.
@@ -33,6 +34,10 @@ A device has a playback stream, a capture stream, or both.
   Written, the frames played; read, the frames recorded.
   Frames are interleaved, little-endian, in the format `ctl` says: 9front's, 16-bit stereo at 44,100 frames a second, unless the device can't take it, when it starts in the nearest the device can.
   A write's offset is ignored.
+: `lease`
+  The playback stream lent to one lessee, the audio service, audio(4): a channel speaking audio-lease-lease(5), whose `lend` gives the stream's buffer and its layout and starts the stream, and whose `clock` gives a counter that rises by 1 as the device finishes each period, so period <k> of the lease is the buffer's slot <k> modulo its periods.
+  A lent stream runs until the lease's channel closes, and then stops: it plays what the lessee writes into the buffer, 2 periods ahead of the device, never drains or stops by itself, and the class writes nothing into it.
+  While it is lent, `stat` says `out lent`, a write of `data` fails with `permission denied`, and so do `ctl`'s format lines and `start` and `stop`; a second `lend` fails while one holds the lease.
 
 Sample formats are named as 9front names them: `s8`, `u8`, `s16`, `s24` (24 bits in 32), `s32` and `f32`.
 
@@ -61,11 +66,11 @@ period 1024
 
 # SEE ALSO
 
-virtio-snd(3), devmgr(8), audio-test(8), intro(3)
+virtio-snd(3), audio(4), audio-lease-lease(5), devmgr(8), audio-test(8), intro(3)
 
 # BUGS
 
+Only playback is lent; capture is read through `data` alone.
 `data` takes no ring (node(5)): its frames are copied by message, once, between the client and the buffer.
 A blocked read of `data` and a write from another client wait for each other.
 No driver has amplifiers yet, so `volume` has no levels.
-Nothing mixes streams: two writers of one device's `data` share its one stream.

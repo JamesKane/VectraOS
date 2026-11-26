@@ -139,7 +139,7 @@ func stopped(_ ns: Namespace, _ prefix: String, within seconds: Int64) -> String
     }
     check(same(names, ["0"]), "devmgr binds the device at /dev/audio/0")
     let files = ((try? ns.list("/dev/audio/0")) ?? []).map { $0.name }
-    check(same(files, ["ctl", "stat", "volume", "data"]), "/dev/audio/0 holds ctl, stat, volume and data")
+    check(same(files, ["ctl", "stat", "volume", "data", "lease"]), "/dev/audio/0 holds ctl, stat, volume, data and lease")
     let ctl = ns.readText("/dev/audio/0/ctl") ?? ""
     check(same(ctl, "speed 44100\nformat s16 2\nperiod 1024\n"), "the device starts in 9front's format")
     let stat = ns.readText("/dev/audio/0/stat") ?? ""

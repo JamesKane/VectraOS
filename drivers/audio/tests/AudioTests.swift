@@ -149,13 +149,35 @@ final class ModelAudio: AudioHardware, @unchecked Sendable {
   func prepare(_ d: AudioDirection, _ format: PCMFormat, periodBytes: Int, periods: Int)
     throws(NodeIPC.NodeError) -> AudioBuffer
   {
-    let b = UnsafeMutableRawBufferPointer.allocate(byteCount: periodBytes * periods, alignment: 16)
+    // A VMO, so that it can be lent.
+    let size = (periodBytes * periods + 4095) & ~4095
+    guard let vmo = try? VMO.create(size: size), let mapping = try? VMO.map(vmo, length: size) else { throw .io }
+    let b = UnsafeMutableRawBufferPointer(start: mapping.address, count: periodBytes * periods)
     b.initializeMemory(as: UInt8.self, repeating: 0xEE)
+    let region = Region(vmo, mapping)
     lock.withLock {
       prepared.append((d, format, periodBytes, periods))
       buffers.append(b)
+      regions.append(region)
     }
     return AudioBuffer(b)
+  }
+
+  final class Region {
+    let vmo: Handle
+    let mapping: Mapping
+    init(_ vmo: consuming Handle, _ mapping: consuming Mapping) {
+      self.vmo = vmo
+      self.mapping = mapping
+    }
+  }
+  var regions: [Region] = []
+  var lent = 0
+
+  func lend(_ d: AudioDirection) throws(NodeIPC.NodeError) -> Handle {
+    guard let r = lock.withLock({ regions.last }), let h = try? r.vmo.duplicate() else { throw .unsupported }
+    lock.withLock { lent += 1 }
+    return h
   }
 
   func start(_ d: AudioDirection) throws(NodeIPC.NodeError) { lock.withLock { started.append(d) } }
@@ -207,7 +229,7 @@ func lines(_ s: String) -> [String] { s.split(separator: "\n").map(String.init) 
   let served = try ServedAudio(ModelAudio())
   let ns = Namespace()
   try ns.mount(try served.unit.channel(), at: "/audio")
-  #expect(try ns.list("/audio").map(\.name) == ["ctl", "stat", "volume", "data"])
+  #expect(try ns.list("/audio").map(\.name) == ["ctl", "stat", "volume", "data", "lease"])
   #expect(try served.text("ctl") == "speed 44100\nformat s16 2\nperiod 1024\n")
   #expect(try served.text("volume") == "speed 44100\ndelay \(1024 * 2 + 16)\n")
   let stat = lines(try served.text("stat"))
@@ -327,6 +349,67 @@ func lines(_ s: String) -> [String] { s.split(separator: "\n").map(String.init) 
   #expect(model.lock.withLock { model.stopped } == [.output])
   _ = try data.write(offset: 0, [UInt8](repeating: 0, count: 4096))
   #expect(model.lock.withLock { model.prepared.count == 2 && model.prepared[1].1.rate == 48000 })
+}
+
+// MARK: The lease (D181)
+
+func leaseClient(_ served: ServedAudio) throws -> AudioLeaseIPC.LeaseClient {
+  var f = try served.open("lease")
+  return AudioLeaseIPC.LeaseClient(channel: f.takeChannel())
+}
+
+@Test func aLeaseLendsTheBufferAndCountsEachPeriod() throws {
+  let model = ModelAudio()
+  let served = try ServedAudio(model)
+  try served.write("ctl", "period 32")
+  var lease = try leaseClient(served)
+  let lent = try lease.lend()
+  #expect(lent.layout == AudioLeaseIPC.Layout(periods: 8, periodFrames: 32, lead: 2, sample: 2, channels: 2, rate: 44100))
+  let vmo = lent.takeBuffer()
+  let mapping = try VMO.map(vmo, length: 4096)
+  // Made silence, and the device's memory itself.
+  #expect((0..<1024).allSatisfy { mapping.address.load(fromByteOffset: $0, as: UInt8.self) == 0 })
+  mapping.address.storeBytes(of: 0x5A, toByteOffset: 2 * 128, as: UInt8.self)
+  #expect(model.lastBuffer[2 * 128] == 0x5A)
+  #expect(model.lock.withLock { model.started } == [.output])
+  #expect(model.handedSlots == [0, 1])
+  let clock = try lease.clock().takeCounter()
+  #expect(try Counter.read(clock) == 0)
+  // Nothing written through data, yet it runs on, a period counted each.
+  for _ in 0..<5 { served.unit.finished(.output) }
+  #expect(try Counter.read(clock) == 5)
+  #expect(model.handedSlots == [0, 1, 2, 3, 4, 5, 6])
+  #expect(model.lock.withLock { model.stopped }.isEmpty)
+  #expect(lines(try served.text("stat")).contains("out lent runs 1 periods 5 underruns 0"))
+  // The lessee's alone.
+  var data = try served.open("data")
+  #expect(fails(.denied) { _ = try data.write(offset: 0, [1, 2, 3, 4]) })
+  #expect(fails(.denied) { try served.write("ctl", "speed 48000") })
+  #expect(fails(.denied) { try served.write("ctl", "stop") })
+  var other = try leaseClient(served)
+  #expect(throws: (any Error).self) { _ = try other.lend() }
+}
+
+@Test func aLeaseEndsWhenItsChannelCloses() throws {
+  let model = ModelAudio()
+  let served = try ServedAudio(model)
+  do {
+    var lease = try leaseClient(served)
+    _ = try lease.lend().takeBuffer()
+    #expect(model.lock.withLock { model.started } == [.output])
+  }
+  let deadline = Clock.monotonic() + 2_000_000_000
+  while model.lock.withLock({ model.stopped }).isEmpty, Clock.monotonic() < deadline {
+    sleep(until: Clock.monotonic() + 5_000_000)
+  }
+  #expect(model.lock.withLock { model.stopped } == [.output])
+  #expect(lines(try served.text("stat")).contains("out stopped runs 1 periods 0 underruns 0"))
+  // data plays again, and the next lessee may lend.
+  var data = try served.open("data")
+  #expect(try data.write(offset: 0, [UInt8](repeating: 0, count: 64)) == 64)
+  var again = try leaseClient(served)
+  _ = try again.lend().takeBuffer()
+  #expect(model.lock.withLock { model.lent } == 2)
 }
 
 // MARK: virtio-snd's messages

@@ -208,6 +208,10 @@ let ipc: [Target] = [
           path: "drivers/audio/virtio-snd/lib", swiftSettings: tier0),
   .testTarget(name: "AudioTests", dependencies: ["AudioDevice", "VirtioSnd", "IPC", "Node", "Sys"],
               path: "drivers/audio/tests"),
+  // The audio service's graph (services/audio/lib, D179).
+  .target(name: "AudioMix", dependencies: ["Sys"], path: "services/audio/lib", swiftSettings: tier0),
+  .testTarget(name: "AudioServiceTests", dependencies: ["AudioMix", "Sys"], path: "services/audio/tests",
+              exclude: ["native"]),
   // USB's descriptors, xHCI's endpoint rules and a DWC3's setup (bin/xhci
   // compiles them in).
   .target(name: "USB", path: "drivers/usb/lib", swiftSettings: tier0),

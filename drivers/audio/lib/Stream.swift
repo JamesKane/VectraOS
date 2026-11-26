@@ -13,6 +13,10 @@
 // stopped once it holds none, so the interrupt thread never waits for it.
 // An explicit stop (ctl, or a change of format) waits, off the lock,
 // for the device to give back what it holds.
+//
+// A lent stream (D181) is the lessee's: it runs from the lease to its
+// end without draining, the class writes nothing into its buffer, and
+// each period finished adds 1 to the lease's counter.
 
 import IPC
 import Node
@@ -25,6 +29,11 @@ import Synchronization
   public let bytes: UnsafeMutableRawBufferPointer
   @unsafe public init(_ bytes: UnsafeMutableRawBufferPointer) { unsafe self.bytes = bytes }
   public var count: Int { unsafe bytes.count }
+  /// Bytes `range` set to `byte` (silence).
+  public func fill(_ range: Range<Int>, with byte: UInt8) {
+    precondition(range.lowerBound >= 0 && range.upperBound <= count)
+    for i in range { unsafe bytes[i] = byte }
+  }
 }
 
 /// An audio device, as its driver gives it to the class.
@@ -48,6 +57,9 @@ public protocol AudioHardware: AnyObject, Sendable {
   /// Stops `d`. Returns once each period the device held is given back,
   /// through AudioUnit.finished.
   func stop(_ d: AudioDirection)
+  /// The VMO under `d`'s buffer, a handle of its own, to lend (D181);
+  /// `unsupported` if the device can't lend it.
+  func lend(_ d: AudioDirection) throws(NodeIPC.NodeError) -> Handle
 }
 
 final class AudioStream: @unchecked Sendable {
@@ -74,6 +86,10 @@ final class AudioStream: @unchecked Sendable {
   var played: UInt64 = 0
   var playedBytes: UInt64 = 0
   var failure: NodeIPC.NodeError?
+  /// Lent (D181): the lessee writes the buffer, and the counter the class
+  /// adds 1 to at each period finished (its raw handle, the stream's).
+  var leased = false
+  var clockRaw: UInt32 = 0
   /// Bumped (and woken) at each period finished and each stop: a blocked
   /// writer or reader waits on it.
   let progress = Atomic<UInt32>(0)
@@ -119,13 +135,13 @@ final class AudioStream: @unchecked Sendable {
   /// winding down or playback has drained what was written.
   func handLocked() {
     guard state == .running, var c = cycle, let b = buffer else { return }
-    while c.wantsPeriod, !(direction == .output && c.draining) {
+    while c.wantsPeriod, !(direction == .output && !leased && c.draining) {
       let overruns = c.overruns
       let (slot, filled) = c.hand()
-      if direction == .output, filled < c.periodBytes {
+      if direction == .output, !leased, filled < c.periodBytes {
         let silence = format.sample.silence
         let from = slot * c.periodBytes + filled
-        for i in from..<((slot + 1) * c.periodBytes) { unsafe b.bytes[i] = silence }
+        b.fill(from..<((slot + 1) * c.periodBytes), with: silence)
       }
       hardware.hand(direction, slot: slot)
       if c.overruns != overruns {
@@ -173,10 +189,15 @@ final class AudioStream: @unchecked Sendable {
       if state == .running || state == .winding {
         played += 1
         playedBytes += UInt64(c.periodBytes)
+        if leased, clockRaw != 0 {
+          let clock = Handle(raw: clockRaw)
+          try? Counter.add(clock, 1)
+          _ = clock.release()
+        }
       }
       switch state {
       case .running:
-        if direction == .output && c.drained {
+        if direction == .output && !leased && c.drained {
           stopNow = true
         } else {
           handLocked()
@@ -207,6 +228,7 @@ final class AudioStream: @unchecked Sendable {
     while done < data.count {
       let seen = progress.load(ordering: .acquiring)
       let took = try lock.withLock { () throws(NodeIPC.NodeError) -> Int in
+        guard !leased else { throw .denied }
         var c = try preparedLocked()
         let (at, room) = c.writable()
         let n = min(room, data.count - done)
@@ -286,6 +308,65 @@ final class AudioStream: @unchecked Sendable {
     bump()
   }
 
+  // MARK: The lease (D181)
+
+  /// Lends the stream: stopped if it ran, set up afresh so that period
+  /// `k` of the lease is slot `k mod periods`, its buffer made silence, a
+  /// counter made, and started. The buffer's VMO.
+  func lend() throws(NodeIPC.NodeError) -> Handle {
+    stop()
+    let raw = try lock.withLock { () throws(NodeIPC.NodeError) -> UInt32 in
+      guard !leased, state == .stopped else { throw .exists }
+      cycle = nil
+      buffer = nil
+      let c = try preparedLocked()
+      let vmo = try hardware.lend(direction)
+      let silence = format.sample.silence
+      buffer!.fill(0..<c.bufferBytes, with: silence)
+      let clock: Handle
+      do throws(Status) {
+        clock = try Counter.create()
+      } catch {
+        throw .io
+      }
+      clockRaw = clock.release()
+      leased = true
+      do throws(NodeIPC.NodeError) {
+        try startLocked()
+      } catch {
+        leased = false
+        _ = Handle(raw: clockRaw)  // closed
+        clockRaw = 0
+        throw error
+      }
+      return vmo.release()
+    }
+    return Handle(raw: raw)
+  }
+
+  /// A handle of the lent stream's counter, nil if it isn't lent.
+  func clock() -> Handle? {
+    let raw = lock.withLock { () -> UInt32 in
+      guard leased, clockRaw != 0 else { return 0 }
+      let c = Handle(raw: clockRaw)
+      let copy = (try? c.duplicate())?.release() ?? 0
+      _ = c.release()
+      return copy
+    }
+    return raw == 0 ? nil : Handle(raw: raw)
+  }
+
+  /// The lease ends: the stream stopped, its counter closed.
+  func endLease() {
+    guard lock.withLock({ leased }) else { return }
+    stop()
+    lock.withLock {
+      leased = false
+      if clockRaw != 0 { _ = Handle(raw: clockRaw) }
+      clockRaw = 0
+    }
+  }
+
   /// A new format or period: the stream stopped, and prepared again at
   /// its next start.
   func reconfigure(_ f: PCMFormat, periodFrames: Int) {
@@ -299,7 +380,8 @@ final class AudioStream: @unchecked Sendable {
   }
 
   /// The counts, for stat.
-  var snapshot: (state: State, cycle: Cycle?, finishedAt: Int64, runs: Int, played: UInt64, playedBytes: UInt64) {
-    lock.withLock { (state, cycle, finishedAt, runs, played, playedBytes) }
+  var snapshot: (state: State, cycle: Cycle?, finishedAt: Int64, runs: Int, played: UInt64, playedBytes: UInt64,
+                 leased: Bool) {
+    lock.withLock { (state, cycle, finishedAt, runs, played, playedBytes, leased) }
   }
 }
