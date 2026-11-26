@@ -13,6 +13,7 @@ userboot.next=bin/launcher launcher.until=audio-service-test
 
 audio-service-test is the last service of the audio service's image, `bootfs-audio-service-test.img`, which holds devmgr(8) with its drivers, audio(4) and the services their manifests mount.
 The boot-audio-service test boots it in QEMU with a virtio-sound-pci, through the IOMMU, on QEMU's silent backend (`-audiodev none`), which takes frames at the device's rate.
+The boot-audio-service-hda test boots the same program in `bootfs-audio-service-hda-test.img`, with an ich9-intel-hda and an hda-duplex codec instead, the service leasing hda(3)'s stream.
 The launcher runs until audio-service-test ends and exits with its code (launcher(8)).
 
 It waits up to 30 seconds for devmgr to bind the device at `/dev/audio/0`, prints audio's `status`, a line each, `audio-service-test: status: <line>`, and checks that the service is idle with no lease taken and that the device is stopped.
@@ -29,7 +30,7 @@ It exits 0 if every check passed.
 
 # SEE ALSO
 
-audio(4), audio(3), audio-lease-lease(5), audio-test(8), launcher(8)
+audio(4), audio(3), hda(3), audio-lease-lease(5), audio-test(8), launcher(8)
 
 # BUGS
 

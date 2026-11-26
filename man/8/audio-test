@@ -1,7 +1,7 @@
 page audio-test 8
-summary check that virtio-snd brings up a sound device and plays and records through audio(3)'s files
+summary check that virtio-snd and hda bring up a sound device and play and record through audio(3)'s files
 src drivers/audio/virtio-snd/tests/native/Main.swift drivers/audio/virtio-snd/tests/native/audio-test.manifest
-keys audio sound virtio-snd test devmgr qemu virtio-sound-pci playback capture pcm
+keys audio sound virtio-snd hda test devmgr qemu virtio-sound-pci ich9-intel-hda playback capture pcm
 
 # SYNOPSIS
 
@@ -13,13 +13,15 @@ userboot.next=bin/launcher launcher.until=audio-test
 
 audio-test is the last service of the audio image, `bootfs-audio-test.img`, which holds devmgr(8) with its drivers and the services its manifest mounts.
 The boot-audio test boots it in QEMU with a virtio-sound-pci, an output and an input stream, through the IOMMU, on QEMU's silent backend (`-audiodev none`), which takes and gives frames at the device's rate.
+The boot-audio-hda test boots the same program in `bootfs-audio-hda-test.img` with an ich9-intel-hda and an hda-duplex codec (a line out and a line in) instead.
 The launcher runs until audio-test ends and exits with its code (launcher(8)).
 
-It waits up to 30 seconds for virtio-snd(3) to bring the device up or fail, and prints the driver's `status`, a line each, `audio-test: status: <line>`.
-It checks that the driver found an output and an input stream with no control request failed, that devmgr binds the device at `/dev/audio/0` with `ctl`, `stat`, `volume`, `data` and `lease`, that `ctl` starts in 9front's format, and that `stat` names the device and what each stream takes and starts with 9front's audiostat line; it prints that `stat`.
+It waits up to 30 seconds for the driver, virtio-snd(3) or hda(3), to bring the device up or fail, and prints its `status`, a line each, `audio-test: status: <line>`.
+It checks that virtio-snd found an output and an input stream with no control request failed, or that hda found the codec's playback and capture paths and set them up with no verb refused, that devmgr binds the device at `/dev/audio/0` with `ctl`, `stat`, `volume`, `data` and `lease`, that `ctl` starts in 9front's format, and that `stat` names the device and what each stream takes and starts with 9front's audiostat line; it prints that `stat`.
 It writes half a second of a 440 Hz tone, 16-bit stereo at 44,100 frames a second, to `data` in 8 KiB writes, waits up to 10 seconds for `stat` to say the stream stopped, and checks that it drained by itself after one run, that the device played a period for every 1024 frames written, that `stat`'s offset counts the bytes, and that playing took at least 0.4 seconds, the device taking frames at its rate.
 It reads a quarter of a second from `data`, checks that it got it, stops capture through `ctl` and checks that `stat` says so.
 Then it sets `speed 48000`, checks that `ctl` reads it back and refuses `speed 12345`, and plays a tenth of a second, which must run and drain again.
+Last it prints the driver's counts and checks that its interrupts were no more than 4 for each period played or recorded, and 20 more: an interrupt left raised is taken again without end.
 A line for each check is `audio-test: ok:` or `audio-test: FAILED:` and what it checks; its last line is `audio-test: passed` or `audio-test: <n> failed`.
 It exits 0 if every check passed.
 
@@ -27,10 +29,12 @@ It exits 0 if every check passed.
 
 : `build/<arch>/esp-audio-test`
   The ESP boot-audio boots: the loader, the kernel, the audio image and a command line that powers off when audio-test ends.
+: `build/<arch>/esp-audio-hda-test`
+  boot-audio-hda's.
 
 # SEE ALSO
 
-audio(3), virtio-snd(3), devmgr(8), launcher(8), sd-test(8)
+audio(3), virtio-snd(3), hda(3), devmgr(8), launcher(8), sd-test(8)
 
 # BUGS
 

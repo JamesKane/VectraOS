@@ -1,0 +1,64 @@
+page hda 3
+summary the HD Audio driver: a controller and its codec
+src drivers/audio/hda/Main.swift drivers/audio/hda/lib/Registers.swift drivers/audio/hda/lib/Verbs.swift
+src drivers/audio/hda/lib/Codec.swift drivers/audio/hda/lib/Controller.swift drivers/audio/hda/lib/Engine.swift
+src drivers/audio/hda/driver.manifest
+keys audio sound hda azalia intel high definition audio codec corb rirb bdl pin widget ich9-intel-hda
+
+# DESCRIPTION
+
+hda drives an HD Audio controller and the codec on its link (Intel High Definition Audio Specification, rev. 1.0a), and serves them as a sound device, audio(3).
+devmgr(8) starts one for each PCI function of the audio device class, as QEMU's ich9-intel-hda is, and binds its directory at `/dev/audio/`<n>:
+
+```text
+driver hda
+class audio
+match pci-class 04.03
+```
+
+The driver resets the controller and takes as its codecs those that `STATESTS` names before the reset or after it, or, if neither names one, those of addresses 0 to 7 that answer.
+Commands go through the CORB, 256 entries, and their responses are read by polling the RIRB, whose interrupt stays off; after each response the RIRB's status flags are cleared, so a controller that counts responses keeps taking commands.
+Registers are accessed at the widths the specification gives them; the controller's `SDnCTL` is three bytes and `SDnSTS` the fourth.
+
+From the first codec with an audio function group it reads every widget: its type, its connections (either form of the list, ranges included), a pin's capabilities and configuration default, amplifiers and PCM formats.
+Playback's path runs from the first connected output pin, line out before speaker before headphones by their defaults, through mixers and selectors to an analog DAC, at most 6 nodes; capture's from an analog ADC to the first connected input pin, line in before microphone.
+Each path is set up once: every node powered, each selector set to the path, each amplifier on it unmuted at 0 dB, the pin's output (with its headphone amplifier for headphones, and EAPD where it has it) or input enabled.
+The streams take what the DAC's or ADC's PCM capabilities give: 16, 24 (`s24`) or 32-bit samples at the rates it lists, one channel or two.
+
+Each direction uses the controller's first stream descriptor of its kind, output stream tag 1 and input tag 2.
+Its cyclic buffer, up to 256 KiB, is memory the controller reaches through its own DMA, described by a BDL of one entry a period, each raising its interrupt when done; periods must be multiples of 128 bytes.
+The descriptor runs at the first period handed to it and reads or writes the buffer by itself after that.
+At each interrupt the driver reads each running stream's position (`SDnLPIB`) and counts every period it has moved past, so an interrupt that came late, or covered two periods, loses none.
+Stopping a stream clears `RUN` and resets the descriptor, holding `SRST` 100 µs.
+The interrupt is INTx with a 50 ms poll against a lost one; a controller's MSI isn't used.
+
+# EXAMPLES
+
+QEMU's controller and codec, as boot-audio-hda adds them:
+
+```text
+-audiodev none,id=snd0
+-device ich9-intel-hda -device hda-duplex,audiodev=snd0
+```
+
+# FILES
+
+The driver's tree is served in devmgr(8)'s, at `drivers/hda-<address>`.
+
+: `audio`
+  The device's audio(3) directory, which devmgr binds at `/dev/audio/`<n>.
+: `status`
+  Read only.
+  `interrupt` (`MSI-X` or `INTx`); `streams in <n> out <n>` (the controller's descriptors); `codecs` (the mask found), the codec used, its `vendor` and `widgets`; `output path` and `input path`, their nodes from the pin's end or `none`; `periods out <n> in <n>`; `commands`, `refused` (path verbs the codec didn't answer) and `unsolicited`; `interrupts <n> polls <n>`.
+  If the controller or codec didn't come up, a line saying why and `gcap`, `gctl` and `statests` as they read, then `FAILED: status <n>`.
+
+# SEE ALSO
+
+audio(3), virtio-snd(3), audio(4), devmgr(8), driver(6), audio-test(8)
+
+# BUGS
+
+Only the first codec, and on it one playback and one capture path, are used; HDMI and DisplayPort codecs, digital pins and a second output are not.
+Jacks are not sensed, so plugging headphones in moves nothing, and nothing is told.
+The codec's own volume isn't served: `volume` has no amplifier lines.
+The CIX Sky1's controller (`CIXH6020`) is not matched: the driver knows its word-only registers and DMA address window but not yet its clocks, its reset or its reserved DMA memory.

@@ -208,6 +208,11 @@ let ipc: [Target] = [
           path: "drivers/audio/virtio-snd/lib", swiftSettings: tier0),
   .testTarget(name: "AudioTests", dependencies: ["AudioDevice", "VirtioSnd", "IPC", "Node", "Sys"],
               path: "drivers/audio/tests"),
+  // HD Audio (drivers/audio/hda, D179): its registers, verbs, codec graph,
+  // controller and engine (bin/hda compiles them in).
+  .target(name: "HDA", dependencies: ["AudioDevice", "CroiMMIO", "DriverHost", "Node", "Sys"],
+          path: "drivers/audio/hda/lib", swiftSettings: tier0),
+  .testTarget(name: "HDATests", dependencies: ["HDA", "AudioDevice", "DriverHost", "Sys"], path: "drivers/audio/hda/tests"),
   // The audio service's graph (services/audio/lib, D179).
   .target(name: "AudioMix", dependencies: ["Sys"], path: "services/audio/lib", swiftSettings: tier0),
   .testTarget(name: "AudioServiceTests", dependencies: ["AudioMix", "Sys"], path: "services/audio/tests",

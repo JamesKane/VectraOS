@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
-// bin/audio-test: the audio class through bin/virtio-snd, run by the
-// launcher (launcher.until=audio-test) in boot-audio, where QEMU's
-// virtio-sound-pci has an output and an input stream. It waits for the
-// driver to bring the device up and devmgr to bind it at /dev/audio/0,
-// checks its files, plays half a second of a 440 Hz tone and waits for
+// bin/audio-test: the audio class through bin/virtio-snd or bin/hda, run
+// by the launcher (launcher.until=audio-test) in boot-audio, where QEMU's
+// virtio-sound-pci has an output and an input stream, and in
+// boot-audio-hda, where its ich9-intel-hda has an hda-duplex codec. It
+// waits for the driver to bring the device up and devmgr to bind it at
+// /dev/audio/0, checks its files, plays half a second of a 440 Hz tone and waits for
 // the stream to drain, captures a quarter of a second, and plays again
 // at another rate. It prints the driver's status and the device's stat,
 // and exits 0 if every check passed.
@@ -116,20 +117,31 @@ func stopped(_ ns: Namespace, _ prefix: String, within seconds: Int64) -> String
     // The driver, once it has brought the device up or failed.
     let deadline = Clock.monotonic() + 30_000_000_000
     var status = ""
+    // Whichever audio driver devmgr bound: virtio-snd (boot-audio) or hda
+    // (boot-audio-hda).
     var driver = "virtio-snd"
+    var hda = false
     while Clock.monotonic() < deadline {
       let drivers = ((try? ns.list("/svc/devmgr/drivers")) ?? []).map { $0.name }
-        .filter { $0.utf8.starts(with: "virtio-snd".utf8) }
+        .filter { $0.utf8.starts(with: "virtio-snd".utf8) || $0.utf8.starts(with: "hda-".utf8) }
       if let d = drivers.first {
         driver = d
+        hda = d.utf8.starts(with: "hda-".utf8)
         status = ns.readText("/svc/devmgr/drivers/\(d)/status") ?? ""
         if holds(status, "streams ") || holds(status, "FAILED") { break }
       }
       sleep(until: Clock.monotonic() + 100_000_000)
     }
     for l in lines(status) { print("audio-test: status: \(l)") }
-    check(holds(status, "stream 0 out") && holds(status, "stream 1 in"), "virtio-snd finds an output and an input stream")
-    check(!holds(status, "FAILED") && !holds(status, "control failed"), "virtio-snd brings the device up")
+    if hda {
+      check(holds(status, "\noutput path ") && !holds(status, "output path none") && !holds(status, "input path none"),
+            "hda finds the codec's playback and capture paths")
+      check(!holds(status, "FAILED") && holds(status, " refused 0 "), "hda brings the controller and codec up")
+    } else {
+      check(holds(status, "stream 0 out") && holds(status, "stream 1 in"), "virtio-snd finds an output and an input stream")
+      check(!holds(status, "FAILED") && !holds(status, "control failed"), "virtio-snd brings the device up")
+    }
+    let device = hda ? "hda" : "virtio-snd"
 
     var names: [String] = []
     while Clock.monotonic() < deadline {
@@ -144,7 +156,7 @@ func stopped(_ ns: Namespace, _ prefix: String, within seconds: Int64) -> String
     check(same(ctl, "speed 44100\nformat s16 2\nperiod 1024\n"), "the device starts in 9front's format")
     let stat = ns.readText("/dev/audio/0/stat") ?? ""
     for l in lines(stat) { print("audio-test: stat: \(l)") }
-    check(holds(stat, "device virtio-snd\n") && holds(stat, "\nout formats ") && holds(stat, "\nin formats "),
+    check(holds(stat, "device " + device + "\n") && holds(stat, "\nout formats ") && holds(stat, "\nin formats "),
           "stat names the device and what each stream takes")
     check(lines(stat).first?.utf8.starts(with: "bufsize  32768 buffered      0 offset ".utf8) == true,
           "stat's first line is 9front's audiostat")
@@ -188,9 +200,16 @@ func stopped(_ ns: Namespace, _ prefix: String, within seconds: Int64) -> String
     check(holds(again, "\nout stopped runs 2 "), "the stream runs again at the new rate and drains")
 
     let end = ns.readText("/svc/devmgr/drivers/\(driver)/status") ?? ""
-    for l in lines(end) where l.utf8.starts(with: "periods".utf8) || l.utf8.starts(with: "events".utf8) {
+    for l in lines(end) where l.utf8.starts(with: "periods".utf8) || l.utf8.starts(with: "events".utf8)
+      || l.utf8.starts(with: "interrupts".utf8) {
       print("audio-test: status: \(l)")
     }
+    // An interrupt left raised would be taken again and again: no more
+    // than a few for each period played or recorded.
+    let periodsSeen = (number(end, line: "periods", after: "out") ?? 0) + (number(end, line: "periods", after: "in") ?? 0)
+    let interrupts = number(end, line: "interrupts", after: "interrupts") ?? UInt64.max
+    check(periodsSeen > 0 && interrupts <= 4 * periodsSeen + 20,
+          "the device's interrupts are cleared (\(interrupts) for \(periodsSeen) periods)")
     print("audio-test: \(failures == 0 ? "passed" : "\(failures) failed")")
     Process.exit(code: failures == 0 ? 0 : 1)
   }

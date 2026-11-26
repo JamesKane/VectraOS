@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# HD Audio controllers (PCI class 04.03: Intel's, QEMU's ich9-intel-hda)
+# and their codecs, serving the audio class (D179): /dev/audio/0, 1, ...
+driver hda
+class audio
+match pci-class 04.03

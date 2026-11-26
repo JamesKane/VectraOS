@@ -460,10 +460,18 @@ croi_launcher_test(sdhci UNTIL sd-test TIMEOUT 180
 # device's rate.
 croi_launcher_test(audio TIMEOUT 180
   QEMU -audiodev none,id=snd0 -device virtio-sound-pci,audiodev=snd0,addr=0x1a,iommu_platform=on,disable-legacy=on)
+# HD Audio (D179): the same bin/audio-test through bin/hda, on an
+# ich9-intel-hda at slot 0x1b with an hda-duplex codec (a line out and a
+# line in) on the silent backend.
+croi_launcher_test(audio-hda UNTIL audio-test TIMEOUT 180
+  QEMU -audiodev none,id=snd0 -device ich9-intel-hda,addr=0x1b -device hda-duplex,audiodev=snd0)
 # The audio service (D179, D181): bin/audio-service-test plays two push streams
 # at once through bin/audio, which leases the same device.
 croi_launcher_test(audio-service TIMEOUT 180
   QEMU -audiodev none,id=snd0 -device virtio-sound-pci,audiodev=snd0,addr=0x1a,iommu_platform=on,disable-legacy=on)
+# The same through bin/hda.
+croi_launcher_test(audio-service-hda UNTIL audio-service-test TIMEOUT 180
+  QEMU -audiodev none,id=snd0 -device ich9-intel-hda,addr=0x1b -device hda-duplex,audiodev=snd0)
 # The lock screen (D118): bin/lock-test locks, types a wrong and the right
 # password, uses Control-Alt-Delete, waits a minute for the lock, and
 # kills Radharc while locked.
