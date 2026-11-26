@@ -42,6 +42,9 @@ tty=${BOARD_TTY:-/dev/cu.usbserial-ABSCDIMD}
 entry=${BOOT_ENTRY:-000A}
 # The partition Boot000A names (efibootmgr -v), by its GPT id.
 esp=${BOARD_ESP:-/dev/gptid/bbec220e-a11b-4b8d-82b0-6aadb2cfbe9f}
+# The run's last line: board-test's, or another program's (glmark2's score).
+pass_re=${BOARD_PASS:-board-test: passed}
+fail_re=${BOARD_FAIL:-board-test: FAILED}
 stale_min=${BOARD_STALE_MIN:-20}
 ssh_=(ssh -o HostKeyAlias="$alias_" -o BatchMode=yes -o ConnectTimeout=8)
 scp_=(scp -q -o HostKeyAlias="$alias_" -o BatchMode=yes -o ConnectTimeout=8)
@@ -109,11 +112,11 @@ cat_pid=$!
 "${ssh_[@]}" "$board" 'shutdown -r now' >/dev/null 2>&1
 
 # board-test's last line, or the deadline.
-deadline=$((SECONDS + 360))
+deadline=$((SECONDS + ${BOARD_DEADLINE:-360}))
 sleep 20
 while ((SECONDS < deadline)); do
-  if grep -aq "board-test: passed" "$log"; then status=passed; break; fi
-  if grep -aq "board-test: FAILED" "$log"; then status=failed; break; fi
+  if grep -aEq "$pass_re" "$log"; then status=passed; break; fi
+  if grep -aEq "$fail_re" "$log"; then status=failed; break; fi
   sleep 5
 done
 [[ $status == unknown ]] && status=timeout

@@ -1166,6 +1166,14 @@ croi_bootfs(bootfs-board-desktop "Building bootfs for the board's desktop"
   etc/manifests/compose-test.manifest=${PROJECT_SOURCE_DIR}/services/radharc/tests/gpu/compose-test-desktop.manifest
   ${_vulkan_present_board_entries} ${_glmark2_entries})
 add_dependencies(bootfs-board-desktop cpu-keys)
+# glmark2 off-screen on the board (glmark2(8)): the board image with the port, run until glmark2 ends.
+if(_glmark2_entries)
+  set(_glmark2_offscreen_entries ${_glmark2_entries})
+  list(FILTER _glmark2_offscreen_entries EXCLUDE REGEX "^etc/manifests/glmark2\\.manifest=")
+  croi_bootfs(bootfs-board-glmark2 "Building bootfs for glmark2 on the board"
+    ${_board_entries} lib/factotum/keys=${PROJECT_SOURCE_DIR}/services/factotum/keys ${_glmark2_offscreen_entries}
+    etc/manifests/glmark2-offscreen.manifest=${PROJECT_SOURCE_DIR}/ports/glmark2/glmark2-offscreen.manifest)
+endif()
 
 # Atomics count with one AMO, never a checked add's LR/SC loop
 # (cmake/CheckAtomicsAreAmos.cmake).

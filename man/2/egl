@@ -17,6 +17,7 @@ lang c
 struct vectra_egl_window {   // EGLNativeWindowType is a pointer to one
   uint32_t width, height;
   const char *title;
+  uint32_t flags;  // VECTRA_EGL_WINDOW_HEADLESS: shown by none
 };
 // linked against libEGL.so, or opened by name: libEGL.so, libEGL.so.1
 ```
@@ -37,6 +38,7 @@ Every colour config's image is the device's `rgba8` (a window's `bgra8`); a conf
 A pbuffer is an image of `EGL_WIDTH` by `EGL_HEIGHT` (1 by 1 if not given) and a depth and stencil image as its config has; its swap ends and submits what was drawn.
 
 A window surface is a window of Radharc's, opened through the SDK (sdk(2)) for the `vectra_egl_window` given as the native window: its width, height (in points) and title.
+A headless window (`flags` holding `VECTRA_EGL_WINDOW_HEADLESS`) is shown by no compositor and needs none: its surface is one image of the core's at the size given, as a pbuffer's is, and `eglSwapBuffers` only ends and submits the frame.
 Its surface is the window's size in pixels when it first appears, and three of the core's present images (gpucore(2)'s `makePresentImage`) given to the window, as the Vulkan layer's swapchain is (vulkansurface(2)).
 `eglSwapBuffers` ends the frame's pass, adds the copy a staged device needs (Venus), submits, and presents the image to the window naming the timeline value its drawing signals, so nothing waits on the CPU where the device gives its timeline as a handle (Mali); elsewhere it waits for that value first.
 At a swap interval of 1 (the default) a swap waits for the window's credit, its last frame shown.

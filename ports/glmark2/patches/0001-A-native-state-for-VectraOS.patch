@@ -9,7 +9,7 @@ of Radharc's from; the struct is <EGL/vectraos.h>'s when the GLES
 library's headers have it, declared here the same otherwise. No full
 screen (Radharc gives the size asked for), no window events. main.cpp
 picks it for GLMARK2_USE_VECTRAOS.
----
+
 diff --git a/src/main.cpp b/src/main.cpp
 index d1077fe..3f39e12 100644
 --- a/src/main.cpp
@@ -34,10 +34,10 @@ index d1077fe..3f39e12 100644
  #endif
 diff --git a/src/native-state-vectraos.cpp b/src/native-state-vectraos.cpp
 new file mode 100644
-index 0000000..6eb3793
+index 0000000..4bb9fee
 --- /dev/null
 +++ b/src/native-state-vectraos.cpp
-@@ -0,0 +1,75 @@
+@@ -0,0 +1,79 @@
 +/*
 + * SPDX-License-Identifier: GPL-3.0-or-later
 + *
@@ -53,6 +53,7 @@ index 0000000..6eb3793
 +#include <cstring>
 +
 +#include "log.h"
++#include "options.h"
 +
 +NativeStateVectraOS::NativeStateVectraOS()
 +{
@@ -87,6 +88,9 @@ index 0000000..6eb3793
 +    window_.width = static_cast<uint32_t>(properties.width);
 +    window_.height = static_cast<uint32_t>(properties.height);
 +    window_.title = "glmark2";
++    /* Off-screen, glmark2 draws into its own framebuffer: the window is EGL's
++     * alone, never shown (as a GBM surface is elsewhere). */
++    window_.flags = Options::offscreen ? VECTRA_EGL_WINDOW_HEADLESS : 0;
 +    return true;
 +}
 +
@@ -115,10 +119,10 @@ index 0000000..6eb3793
 +}
 diff --git a/src/native-state-vectraos.h b/src/native-state-vectraos.h
 new file mode 100644
-index 0000000..6de0fcb
+index 0000000..1ea6698
 --- /dev/null
 +++ b/src/native-state-vectraos.h
-@@ -0,0 +1,52 @@
+@@ -0,0 +1,54 @@
 +/*
 + * SPDX-License-Identifier: GPL-3.0-or-later
 + *
@@ -132,7 +136,7 @@ index 0000000..6de0fcb
 + * The native state on VectraOS: EGL's default display, and a window of
 + * Radharc's that VectraOS's EGL makes from a struct vectra_egl_window (its
 + * size and title). An off-screen run (--off-screen) still makes one, which
-+ * glmark2 never shows.
++ * glmark2 never shows: a headless one, which EGL makes with no compositor.
 + */
 +#ifndef GLMARK2_NATIVE_STATE_VECTRAOS_H_
 +#define GLMARK2_NATIVE_STATE_VECTRAOS_H_
@@ -148,7 +152,9 @@ index 0000000..6de0fcb
 +struct vectra_egl_window {
 +    uint32_t width, height;
 +    const char *title;
++    uint32_t flags;
 +};
++#define VECTRA_EGL_WINDOW_HEADLESS 1u
 +#endif
 +
 +class NativeStateVectraOS : public NativeState

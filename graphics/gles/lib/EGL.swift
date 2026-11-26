@@ -493,7 +493,26 @@ public final class EGLState: @unchecked Sendable {
     let height = Int32(truncatingIfNeeded: unsafe native.load(fromByteOffset: 4, as: UInt32.self))
     let titlePointer = unsafe native.load(fromByteOffset: 8, as: UnsafePointer<CChar>?.self)
     let title = unsafe cString(titlePointer) ?? ""
-    guard width > 0, height > 0, let platform = unsafe glPlatform else {
+    let flags = unsafe native.load(fromByteOffset: 16, as: UInt32.self)
+    guard width > 0, height > 0 else {
+      fail(EGL_BAD_NATIVE_WINDOW)
+      return nil
+    }
+    // Headless (VECTRA_EGL_WINDOW_HEADLESS): no compositor shows it, so its image is the surface's own, as a
+    // pbuffer's is, and a swap only ends the frame.
+    if flags & 1 != 0 {
+      let s = EGLSurfaceObject(display: d, config: c, width: width, height: height)
+      do throws(GPUError) { try s.makePbuffer() } catch {
+        say("a headless window surface: \(error)")
+        s.release()
+        fail(EGL_BAD_ALLOC)
+        return nil
+      }
+      let h = handle()
+      surfaces[h] = s
+      return unsafe UnsafeMutableRawPointer(bitPattern: h)
+    }
+    guard let platform = unsafe glPlatform else {
       fail(EGL_BAD_NATIVE_WINDOW)
       return nil
     }

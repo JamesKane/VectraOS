@@ -143,7 +143,7 @@ extension GLTests {
     let context = gles_eglCreateContext(d, c, nil, [EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE])
     let title = "gl window"
     let surface = title.withCString { t -> EGLHandle? in
-      var native = (UInt32(80), UInt32(60), t)
+      var native = (UInt32(80), UInt32(60), t, UInt32(0), UInt32(0))
       return withUnsafeMutableBytes(of: &native) { gles_eglCreateWindowSurface(d, c, $0.baseAddress, nil) }
     }
     #expect(surface != nil)
@@ -172,5 +172,34 @@ extension GLTests {
     #expect(gles_eglMakeCurrent(d, nil, nil, nil) == 1)
     #expect(gles_eglDestroySurface(d, surface) == 1)
     #expect(w.closed)
+  }
+
+  @Test func aHeadlessWindowIsDrawnWithNoCompositor() {
+    let d = display()
+    let c = choose(d, [EGL_SURFACE_TYPE, EGL_WINDOW_BIT, EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT])[0]
+    let context = gles_eglCreateContext(d, c, nil, [EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE])
+    let platform = unsafe glPlatform as! TestPlatform
+    let before = platform.windows.count
+    let surface = "headless".withCString { t -> EGLHandle? in
+      // struct vectra_egl_window with VECTRA_EGL_WINDOW_HEADLESS.
+      var native = (UInt32(40), UInt32(20), t, UInt32(1), UInt32(0))
+      return withUnsafeMutableBytes(of: &native) { gles_eglCreateWindowSurface(d, c, $0.baseAddress, nil) }
+    }
+    #expect(surface != nil)
+    // No window of the compositor's was opened.
+    #expect(platform.windows.count == before)
+    #expect(gles_eglMakeCurrent(d, surface, surface, context) == 1)
+    var v = [GLint](repeating: 0, count: 4)
+    gles_glGetIntegerv(GL_VIEWPORT, &v)
+    #expect(v == [0, 0, 40, 20])
+    gles_glClearColor(1, 0, 0, 1)
+    gles_glClear(GL_COLOR_BUFFER_BIT)
+    #expect(gles_eglSwapBuffers(d, surface) == 1)
+    var pixel = [UInt8](repeating: 0, count: 4)
+    gles_glReadPixels(0, 0, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, &pixel)
+    #expect(pixel == [255, 0, 0, 255])
+    #expect(gles_eglMakeCurrent(d, nil, nil, nil) == 1)
+    #expect(gles_eglDestroySurface(d, surface) == 1)
+    #expect(gles_eglDestroyContext(d, context) == 1)
   }
 }

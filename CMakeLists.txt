@@ -327,6 +327,11 @@ if(CROI_ARCH STREQUAL arm64)
   if(TARGET bootfs-glmark2)
     croi_esp(glmark2 "userboot.next=bin/glmark2-es2-vectraos${_shutdown} croi.debug_syscalls=on" BOOTFS bootfs-glmark2)
   endif()
+  # glmark2 off-screen on the board, rebooting into its own OS when done.
+  if(TARGET bootfs-board-glmark2)
+    croi_esp(board-glmark2 "userboot.next=bin/launcher userboot.shutdown=reboot croi.halt_on_panic=false launcher.until=glmark2-offscreen"
+      BOOTFS bootfs-board-glmark2)
+  endif()
   # The board's desktop: Radharc on its display, and the cpu server.
   croi_esp(board-desktop "userboot.next=bin/launcher croi.debug_syscalls=on croi.halt_on_panic=false"
     BOOTFS bootfs-board-desktop)
