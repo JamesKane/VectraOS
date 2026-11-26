@@ -500,6 +500,14 @@ let text: [Target] = [
   .testTarget(name: "VulkanLoweringTests",
               dependencies: ["VulkanLowering", "ShaderCompiler", "ShaderTestKit", "ValhallBackend", "ValhallBridge", "ValhallISA", "ValhallInterp", "MaliCore"],
               path: "graphics/vulkan/drivers/core/lowering/tests", exclude: ["shaders"]),
+  // The GLSL ES 1.00 front end (D183): GLSL ES into the Vulkan-style SPIR-V the layer's lowering takes. Tier 0's
+  // flags, as its neighbours'; the GLES library links it on the device (tier 1).
+  .target(name: "GLSL", path: "graphics/glsl", exclude: ["tests"], swiftSettings: tier0),
+  // Its tests: the preprocessor, the checks, the built-ins and the link rules, and each program through the lowering, the
+  // compiler and its Valhall backend, run on the IR interpreter (and glmark2's shaders, from .cache, when they are there).
+  .testTarget(name: "GLSLTests",
+              dependencies: ["GLSL", "VulkanLowering", "ShaderCompiler", "ShaderTestKit", "ValhallBackend", "ValhallISA", "MaliCore"],
+              path: "graphics/glsl/tests"),
   // The core over a Mali GPU (D174 sections 2 and 5): MaliCore and the compiler's backend behind the core. The CSF
   // client (native/) is the device's; the host builds the rest over a fake transport.
   .target(name: "GPUCoreMali", dependencies: ["GPUCore", "MaliCore", "ValhallBackend"], path: "graphics/core/mali",

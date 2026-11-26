@@ -516,7 +516,9 @@ extension Lowerer {
       res = emit(.fmul, r, [emit(.fmul, r, [t, t]), c])
     case 50: try arity(3); try float(); res = emit(.fma, r, a)
     default:
-      guard let m = try lowerMathExt(n, a, r, name, i) else { throw fail(i, "GLSL.std.450 \(name) is not supported yet") }
+      var ext = try lowerMathExt(n, a, r, name, i)
+      if ext == nil { ext = try lowerGeometricExt(n, a, r, name, i) }
+      guard let m = ext else { throw fail(i, "GLSL.std.450 \(name) is not supported yet") }
       res = m
     }
     lv[Int(i.result)] = [res]
