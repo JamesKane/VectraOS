@@ -284,11 +284,11 @@ extension GLContext {
 
   // MARK: Passes
 
-  /// The open pass on `target`, begun: the one there is, unless it is another target's, is full, or has drawn and must
+  /// The open pass on `target`, begun: the one there is, unless it is another target's, or has drawn and must
   /// see what was written to an image this draw reads (a barrier goes before a pass, not in it).
   func openPass(_ target: RenderTarget, reads: [UInt64]) {
     if var p = frame.pass, p.target == target {
-      let mustSplit = p.draws >= maxDrawsPerPass || (p.begun && reads.contains { frame.written.contains($0) })
+      let mustSplit = (p.begun && reads.contains { frame.written.contains($0) })
       if !mustSplit {
         for r in reads where !p.reads.contains(r) { p.reads.append(r) }
         frame.pass = p
@@ -645,7 +645,7 @@ extension GLContext {
     let stencilWhole = c.stencil == nil || stencilFront.writeMask & 0xFF == 0xFF
     if whole && colorWhole && stencilWhole {
       // Before the pass draws: what it loads.
-      if frame.pass == nil || frame.pass!.target != t || frame.pass!.draws >= maxDrawsPerPass {
+      if frame.pass == nil || frame.pass!.target != t {
         frame.endPass()
         frame.pass = OpenPass(target: t)
       }

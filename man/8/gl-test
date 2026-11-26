@@ -29,7 +29,7 @@ Each check reads the pbuffer back with `glReadPixels` and judges it pixel by pix
 - `depth`: two triangles over the target, the nearer (z -0.5) drawn first in red and the farther (z 0.5) in blue: red everywhere.
 - `blend`: white at alpha 0.5 over black with `GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA`: grey 128 within 1.
 - `render to texture`: a 32 by 32 texture of a framebuffer object cleared blue with a green triangle drawn on it, then sampled over the pbuffer by a second pass.
-- `many draws`: 20 draws in one frame, each a column of its own grey (more than one pass of the Mali backend takes), each column judged within 1.
+- `many draws`: 20 draws in one pass, each a column of its own grey, each column judged within 1.
 - `client arrays`: positions as floats and colours as normalized bytes from the program's memory, drawn from vertex 1.
 
 It then times frames: `gl.frame_us.empty` is a clear and `glFinish`, and `gl.frame_us.draw` a clear, one draw and `glFinish`, each the median of 200 after 10 that warm up, printed as `gl-test: budget name=... value=... unit=us limit=...` (200 and 250, under glmark2's fastest frames on the board).

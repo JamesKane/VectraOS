@@ -142,19 +142,18 @@ extension GLTests {
     #expect(h.error() == GL_NO_ERROR)
   }
 
-  @Test func aPassEndsAtItsLimit() {
+  @Test func aPassTakesEveryDraw() {
     let h = Harness()
     let p = h.program("flat.vert", "flat.frag")
     h.uniforms(p, color: [1, 1, 1, 1])
     h.fullTriangle()
     gles_glClear(GL_COLOR_BUFFER_BIT)
-    for _ in 0..<(maxDrawsPerPass + 4) { gles_glDrawArrays(GL_TRIANGLES, 0, 3) }
+    for _ in 0..<40 { gles_glDrawArrays(GL_TRIANGLES, 0, 3) }
     gles_glFinish()
     let d = h.test
-    #expect(d.passes.count == 2)
+    #expect(d.passes.count == 1)
     #expect(d.passes[0].colors[0].load == .clear(0, 0, 0, 0))
-    #expect(d.passes[1].colors[0].load == .load)
-    #expect(d.draws.count == maxDrawsPerPass + 4)
+    #expect(d.draws.count == 40)
   }
 
   @Test func pipelinesAreKeptByState() {

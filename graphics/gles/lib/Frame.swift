@@ -3,7 +3,7 @@
 // The frame (gles(3), "Frames"): what a device's contexts record into and how it reaches the GPU.
 //  - One open command list, into which every draw, clear and upload goes in GL's order, and one open render pass in it.
 //    A pass ends only where it must: a framebuffer change, an upload or a copy into something it reads or draws, a
-//    ReadPixels, a Flush, a Finish or a swap (and, while the device takes no more, at `maxDrawsPerPass` draws).
+//    ReadPixels, a Flush, a Finish or a swap.
 //  - The list is submitted at Flush, Finish, a swap and ReadPixels, signalling the next value of the device's timeline;
 //    Finish waits for it.
 //  - The upload ring: chunks of `.upload` memory that per-draw data (root blocks, set records, uniform blocks, client
@@ -16,9 +16,6 @@
 
 import GPUCore
 
-/// The most draws (and clears) in one pass before the library ends it and starts another that loads what the first stored:
-/// the Mali backend refuses more than 16 (graphics/core/mali/lib/Execute.swift). Delete when it takes any number.
-let maxDrawsPerPass = 16
 
 /// Bytes of the upload ring: the memory they are in, where in it, and the CPU's pointer to them.
 @safe struct Upload {
@@ -329,10 +326,12 @@ final class Frame {
     }
     var ds: DepthStencilAttachment?
     if let d = t.depthStencilFormat, let view = t.depthStencil {
-      let depthLoad: AspectLoad = d.hasDepth ? (p.clear.depth != nil ? .clear : .load) : .dontCare
-      let stencilLoad: AspectLoad = d.hasStencil ? (p.clear.stencil != nil ? .clear : .load) : .dontCare
+      // An aspect GL's framebuffer doesn't have (a combined image of a depth-only config) is neither loaded nor stored.
+      let depth = d.hasDepth && t.hasDepth, stencil = d.hasStencil && t.hasStencil
+      let depthLoad: AspectLoad = depth ? (p.clear.depth != nil ? .clear : .load) : .dontCare
+      let stencilLoad: AspectLoad = stencil ? (p.clear.stencil != nil ? .clear : .load) : .dontCare
       ds = DepthStencilAttachment(view: view, depthLoad: depthLoad, stencilLoad: stencilLoad,
-                                  depthStore: d.hasDepth ? .store : .discard, stencilStore: d.hasStencil ? .store : .discard,
+                                  depthStore: depth ? .store : .discard, stencilStore: stencil ? .store : .discard,
                                   clearDepth: p.clear.depth ?? 1, clearStencil: p.clear.stencil ?? 0)
     }
     list.beginRendering(RenderingInfo(colors: colors, depthStencil: ds))

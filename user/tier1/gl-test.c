@@ -10,7 +10,7 @@
 //   - the depth test: the nearer of two triangles drawn first is all that shows;
 //   - blending: half-transparent white over black, within 1;
 //   - render to texture: a framebuffer object's texture drawn into, then sampled by a second pass;
-//   - 20 draws in a frame, more than a pass of the Mali backend takes, each its own column;
+//   - 20 draws in one pass, each its own column;
 //   - client-side arrays: positions as floats and colours as normalized bytes from the program's memory;
 // and on a window of Radharc's, where there is a compositor: frames swapped at interval 1 and at 0.
 // Then the budgets: `gl.frame_us.empty` (a clear and glFinish) and `gl.frame_us.draw` (a clear, one draw and

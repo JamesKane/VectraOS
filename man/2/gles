@@ -35,7 +35,7 @@ A device failure is `GL_OUT_OF_MEMORY`, and its words go to `glesLog` (`gles:` l
 
 A device's draws, clears and uploads are recorded in GL's order into one open command list, and the draws into as few render passes as the state allows.
 A pass is opened by the first clear or draw of a framebuffer and begun at its first draw, so a `glClear` of the whole framebuffer before anything is drawn is the pass's load (a clear of a tiler's memory, no draw); a clear of part of it (the scissor) or after a draw is a clear inside the pass.
-A pass ends at a change of framebuffer, at an upload or copy (a copy is never inside a pass), at `glReadPixels`, `glFlush`, `glFinish` and a swap, and after 16 draws and clears, which is the most the Mali backend takes in one pass; the next pass loads what the last stored.
+A pass ends at a change of framebuffer, at an upload or copy (a copy is never inside a pass), at `glReadPixels`, `glFlush`, `glFinish` and a swap, and before a draw that reads an image the open list wrote after the pass began; the next pass on the framebuffer loads what the last stored.
 A barrier goes between a pass or copy that writes an image and the next that reads it.
 The list is submitted at `glFlush`, `glFinish`, a swap, `glReadPixels` and a fence (egl(2)), signalling the next value of the device's timeline; `glFinish` and `glReadPixels` wait for it.
 
@@ -91,7 +91,7 @@ egl(2), glsl(2), gpucore(2), vulkanlowering(2), gl-test(8)
 
 # BUGS
 
-A pass ends after 16 draws, loading and storing its attachments again, until the Mali backend takes more.
+A pass split by a draw that reads what the frame wrote loads its attachments again; a depth and stencil attachment of both planes can't be loaded on Mali.
 An upload into a texture, a `glCopyTexImage2D` and a `glGenerateMipmap` end the open pass even when it doesn't read the image.
 A clear with the colour mask partly off clears every channel; a partial stencil write mask clears all of the stencil.
 `glCopyTexImage2D` into `GL_LUMINANCE` or `GL_ALPHA` keeps the framebuffer's other channels in the texture, which a shader reads.
