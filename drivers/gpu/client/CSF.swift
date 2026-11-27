@@ -347,6 +347,17 @@ public final class CSFContext: @unchecked Sendable {
 
   /// The jobs, once each wait has reached its value; each signal is raised when the last is done, well
   /// or not. `lost` if a group of this context ended.
+  /// `submit` with no answer (`post`, protocol version 5): it returns once the request is sent; a submission the driver
+  /// refuses raises its signals and sets bit 3 of its group's state.
+  public func post(group: UInt32, jobs: [GPUCSFIPC.Job], waits: [(id: UInt32, value: UInt64)] = [],
+                   signals: [(id: UInt32, value: UInt64)] = []) throws(CSFClientError) {
+    try io.withLock { () throws(CSFClientError) in
+      let w = waits.map { GPUCSFIPC.SyncValue(id: $0.id, value: $0.value) }
+      let s = signals.map { GPUCSFIPC.SyncValue(id: $0.id, value: $0.value) }
+      do { try client.post(group: group, jobs: jobs, waits: w, signals: s) } catch { throw CSFClientError.failed(0) }
+    }
+  }
+
   public func submit(group: UInt32, jobs: [GPUCSFIPC.Job], waits: [(id: UInt32, value: UInt64)] = [],
                      signals: [(id: UInt32, value: UInt64)] = []) throws(CSFClientError) {
     try io.withLock { () throws(CSFClientError) in

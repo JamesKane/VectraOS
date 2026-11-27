@@ -37,22 +37,80 @@ public struct IndirectArguments: Sendable, Equatable {
   public init(address: UInt64) { self.address = address }
 }
 
-/// One draw of a pass.
+/// One draw of a pass. What its pipeline and the pass's dynamic state make (the shaders, the blends, the fixed-function
+/// state, the bindings) lives in one object, shared by the draws that have the same (`sharingState`) and copied when a shared
+/// one is written; the counts, offsets and push constants are the draw's own. A pass copies its draws several times as it
+/// is planned and laid out, and the shared part is many references: counting them for each copy was most of a draw's cost.
 public struct PassDraw: Sendable {
-  public var vertexShader: VertexShader
-  public var fragmentShader: FragmentShader
+  // The fields are written only through `own()`, which copies a shared object first: no access to one overlaps another, so
+  // they are not checked at run time (`@exclusivity(unchecked)`).
+  final class Shared: @unchecked Sendable {
+    @exclusivity(unchecked) var vertexShader: VertexShader
+    @exclusivity(unchecked) var fragmentShader: FragmentShader
+    @exclusivity(unchecked) var blend: BlendDescriptor
+    @exclusivity(unchecked) var images: [BindingHandle]
+    @exclusivity(unchecked) var dummySampler: UInt32
+    @exclusivity(unchecked) var state: DrawPipelineState = DrawPipelineState()
+    @exclusivity(unchecked) var extraBlends: [BlendDescriptor] = []
+    @exclusivity(unchecked) var blendShaders: [Int: [UInt64]] = [:]
+    @exclusivity(unchecked) var blendConstants: [Float] = []
+    init(vertexShader: VertexShader, fragmentShader: FragmentShader, blend: BlendDescriptor, images: [BindingHandle], dummySampler: UInt32) {
+      unsafe self.vertexShader = vertexShader
+      unsafe self.fragmentShader = fragmentShader
+      unsafe self.blend = blend
+      unsafe self.images = images
+      unsafe self.dummySampler = dummySampler
+    }
+    init(copying o: Shared) {
+      unsafe vertexShader = unsafe o.vertexShader
+      unsafe fragmentShader = unsafe o.fragmentShader
+      unsafe blend = unsafe o.blend
+      unsafe images = unsafe o.images
+      unsafe dummySampler = unsafe o.dummySampler
+      unsafe state = unsafe o.state
+      unsafe extraBlends = unsafe o.extraBlends
+      unsafe blendShaders = unsafe o.blendShaders
+      unsafe blendConstants = unsafe o.blendConstants
+    }
+  }
+  var shared: Shared
+  /// The shared part, made this draw's own before a write.
+  mutating func own() -> Shared {
+    if !isKnownUniquelyReferenced(&shared) { shared = Shared(copying: shared) }
+    return shared
+  }
+
+  public var vertexShader: VertexShader {
+    _read { yield unsafe shared.vertexShader }
+    _modify { yield unsafe &own().vertexShader }
+  }
+  public var fragmentShader: FragmentShader {
+    _read { yield unsafe shared.fragmentShader }
+    _modify { yield unsafe &own().fragmentShader }
+  }
   /// The vertices (non-indexed) and the instances.
   public var vertexCount: Int
   public var instanceCount: Int
   /// The push constants, the same words for both stages.
   public var push: [UInt32]
+  /// The push constants as one 64-bit root pointer, words 0 and 1 (`push` is then empty): a draw's usual two words, with no array.
+  public var root: UInt64? = nil
   /// The blend descriptor of the pass's one colour target (09: the position must equal the target).
-  public var blend: BlendDescriptor
+  public var blend: BlendDescriptor {
+    _read { yield unsafe shared.blend }
+    _modify { yield unsafe &own().blend }
+  }
   /// The heap handle of element 0 of each image and sampler binding the fragment shader names, and the dummy sampler's.
-  public var images: [BindingHandle]
-  public var dummySampler: UInt32
+  public var images: [BindingHandle] {
+    _read { yield unsafe shared.images }
+    _modify { yield unsafe &own().images }
+  }
+  public var dummySampler: UInt32 {
+    _read { yield unsafe shared.dummySampler }
+    _modify { yield unsafe &own().dummySampler }
+  }
   /// `RUN_IDVS2`'s vertex shading mode (01 section 1.9.3): early (false, the reference driver's) or deferred.
-  public var deferredShading = false
+  public var deferredShading: Bool = false
   /// `VARY_SIZE` when it is not the vertex shader's own `varyingBytes` (06 section 6.6.2), for probes.
   public var varyingBytes: UInt32?
   /// The index data (an indexed draw), the first index and the base vertex added to each index; for a draw with no
@@ -71,27 +129,63 @@ public struct PassDraw: Sendable {
   public var flags0Clear: UInt32 = 0
   /// The fixed-function state beyond the colour-only opaque triangle list (PipelineState.swift): the primitive mode, culling, the
   /// depth/stencil test, a viewport and scissor.
-  public var state = DrawPipelineState()
+  public var state: DrawPipelineState {
+    _read { yield unsafe shared.state }
+    _modify { yield unsafe &own().state }
+  }
   /// The blend descriptors of the pass's colour targets after the first, in order (each one's `renderTarget` is its index, 09 section 9.2.3).
-  public var extraBlends: [BlendDescriptor] = []
+  public var extraBlends: [BlendDescriptor] {
+    _read { yield unsafe shared.extraBlends }
+    _modify { yield unsafe &own().extraBlends }
+  }
   /// The code of the blend shader of each colour target whose descriptor is in mode Shader (by target; 09 section 9.9). The recipe
   /// places each in the pass's block, so it lies in the fragment shader's 4 GiB region, and puts its address in the descriptor.
-  public var blendShaders: [Int: [UInt64]] = [:]
+  public var blendShaders: [Int: [UInt64]] {
+    _read { yield unsafe shared.blendShaders }
+    _modify { yield unsafe &own().blendShaders }
+  }
   /// The blend constants (red, green, blue, alpha) the blend shaders read from the fragment FAU (`GraphicsFauLayout.blendConstantWord`).
-  public var blendConstants: [Float] = []
+  public var blendConstants: [Float] {
+    _read { yield unsafe shared.blendConstants }
+    _modify { yield unsafe &own().blendConstants }
+  }
 
   public init(
     vertexShader: VertexShader, fragmentShader: FragmentShader, vertexCount: Int, instanceCount: Int = 1, push: [UInt32] = [],
     blend: BlendDescriptor = BlendDescriptor(renderTarget: 0), images: [BindingHandle] = [], dummySampler: UInt32 = 0
   ) {
-    self.vertexShader = vertexShader
-    self.fragmentShader = fragmentShader
+    shared = Shared(vertexShader: vertexShader, fragmentShader: fragmentShader, blend: blend, images: images, dummySampler: dummySampler)
     self.vertexCount = vertexCount
     self.instanceCount = instanceCount
     self.push = push
-    self.blend = blend
-    self.images = images
-    self.dummySampler = dummySampler
+  }
+
+  /// Whether this draw shares `other`'s shaders, blends, state and bindings (one made from the other by `init(sharingState:)`,
+  /// neither changed since): what is read from those for one is the other's.
+  public func sharesState(with other: PassDraw) -> Bool { shared === other.shared }
+
+  /// A draw with `template`'s shaders, blends, state and bindings (shared, not copied) and counts and push constants of its own:
+  /// `push`, or `root` as words 0 and 1 with no array made.
+  /// A draw with this one's shaders, blends, state and bindings, as `init(sharingState:)` makes, read where this draw is (an
+  /// array's element) rather than from a copy of it.
+  public func sharing(vertexCount: Int, instanceCount: Int = 1, root: UInt64) -> PassDraw {
+    PassDraw(shared: shared, vertexCount: vertexCount, instanceCount: instanceCount, root: root)
+  }
+
+  init(shared: Shared, vertexCount: Int, instanceCount: Int, root: UInt64) {
+    self.shared = shared
+    self.vertexCount = vertexCount
+    self.instanceCount = instanceCount
+    self.push = []
+    self.root = root
+  }
+
+  public init(sharingState template: PassDraw, vertexCount: Int, instanceCount: Int = 1, push: [UInt32] = [], root: UInt64? = nil) {
+    shared = template.shared
+    self.vertexCount = vertexCount
+    self.instanceCount = instanceCount
+    self.push = push
+    self.root = root
   }
 }
 
@@ -195,6 +289,15 @@ public struct DrawPassRequest: Sendable {
   /// For a probe of the hardware (06 section 6.11.1's next experiment): where the fragment queue, after its clean flush,
   /// loads the first report through the GPU and stores the two 32-bit words it read (the report) at this address, to tell a lost update from a missing flush.
   public var queryReadback: UInt64?
+  /// The pass's place in its submission's chain of steps (StepChain): both streams wait for the step before, and the fragment
+  /// stream adds its one when the pass is done.
+  public var chain: StepChain?
+  /// Target 0's CRC table (08 section 8.6): the pass checks each tile's checksum and writes back only the tiles that changed. Only
+  /// for a pass of one layer and one sample over the whole of a target's level 0, whose effective tile is 16 x 16 or more.
+  public var crc: CRCTable?
+  /// Where the sample patterns' table already is (`SamplePatterns.table`, 64-byte aligned): the device keeps one, and a pass then
+  /// doesn't lay out its own.
+  public var sampleTable: UInt64?
   /// The depth and stencil target; nil for a pass with none (PipelineState.swift).
   public var zs: ZSTarget?
   /// The colour targets after the first (08 section 8.4); with any, a pass can't keep its target's contents.
@@ -212,6 +315,12 @@ public struct DrawPassRequest: Sendable {
   public var viewMask: UInt32 = 0
   /// A probe of the hardware: hand back only the last context's chunk list (the leak of 07 section 7.10), to see what shows it.
   public var finishLastContextOnly = false
+  /// A probe of the pass's own time: eight 64-bit timestamps stored here as the streams run (`PassStamp`), or nil.
+  public var stamps: UInt64?
+  /// A probe of the recipe's own time: a clock, read at each phase's end into `RenderPass.phaseNanoseconds`.
+  public var clock: (@Sendable () -> UInt64)? = nil
+  /// Whether `RenderPass.build` gives each draw's records (the tests' and the probes'); without, the list is empty.
+  public var wantsRecords = true
   /// The first colour target's writeback (08 section 8.3.2) and the distance between its sample surfaces.
   public var colourMSAA: UInt32 = 0
   /// The first colour target's block format (08 section 8.4.3): 2 linear, 8 the 64 KiB interleaved layout.
@@ -225,7 +334,12 @@ public struct DrawPassRequest: Sendable {
   /// The most stack any shader of the pass needs.
   public var stackBytes: UInt32 {
     var most: UInt32 = 0
-    for d in draws { most = max(most, d.vertexShader.stackBytes, d.fragmentShader.stackBytes) }
+    var previous: PassDraw? = nil
+    for d in draws {
+      if let p = previous, p.shared === d.shared { continue }
+      most = max(most, d.vertexShader.stackBytes, d.fragmentShader.stackBytes)
+      previous = d
+    }
     if let p = preload { most = max(most, p.shader.stackBytes) }
     if let p = zsPreload { most = max(most, p.shader.stackBytes) }
     return most
@@ -273,25 +387,49 @@ extension RenderPass {
     at base: UInt64, capacity: Int, request r: DrawPassRequest, registers: CSRegisterMap, scoreboards: CSScoreboards, arch: Int = 12
   ) throws(RenderError) -> (image: RenderPassImage, records: [DrawRecords], resourceTable: UInt64) {
     guard arch >= 12, arch <= 13 else { throw .arch(arch) }
-    guard !r.draws.isEmpty, r.draws.count <= 16, r.clear.count == 4, r.width >= 1, r.height >= 1, r.width <= 4096,
+    var phaseAt = r.clock?() ?? 0
+    func phase(_ k: Int) {
+      guard let c = r.clock else { return }
+      let now = c()
+      unsafe RenderPass.phaseNanoseconds[k] &+= now &- phaseAt
+      phaseAt = now
+    }
+    guard !r.draws.isEmpty, r.clear.count == 4, r.width >= 1, r.height >= 1, r.width <= 4096,
       r.height <= 4096, r.layers >= 1, r.layers <= 256
     else { throw .badRequest }
     guard base & 63 == 0 else { throw .descriptor(.misaligned) }
-    for d in r.draws {
-      guard d.indirect != nil || (d.vertexCount >= d.state.minimumVertices && d.instanceCount >= 1), d.blend.renderTarget == 0 else {
-        throw .badRequest
-      }
-      guard d.occlusionQuery & 7 == 0 else { throw .badRequest }
-      if let i = d.indirect { guard i.address & 3 == 0 else { throw .badRequest } }
-    }
     let targetCount = 1 + r.extraTargets.count
     guard targetCount <= 8, r.preload == nil || targetCount == 1 else { throw .badRequest }
     guard r.zsPreload == nil || r.zs != nil else { throw .badRequest }
-    for d in r.draws { guard d.extraBlends.count == targetCount - 1 else { throw .badRequest } }
-    // A target in mode Shader has its shader (and a draw with a shader has the constants' words in its FAU).
-    for d in r.draws {
-      for (i, b) in ([d.blend] + d.extraBlends).enumerated() where b.mode == .shader {
-        guard let code = d.blendShaders[i], !code.isEmpty, d.fragmentShader.layout.blendConstantWord >= 0 else { throw .badRequest }
+    // A draw that shares the draw before's state (`PassDraw(sharingState:)`, the same object) shares what is made from it: its
+    // depth/stencil and blend descriptors, its shader slots, and the state of its run but for its own counts and FAU blocks
+    // (`sameRun`: and the inputs of its run's flags, so the draw before's run state is this one's but for its own counts and
+    // blocks). Each draw is read once here; what is made from its shared state is made once for each run of draws that share it.
+    var same = [Bool](repeating: false, count: r.draws.count)
+    var sameRun = same
+    // (The draws are read in place through a span: a copy of a draw, as an array's subscript gives, counts each of its references.)
+    let ds = r.draws.span
+    for n in r.draws.indices {
+      let indirect = ds[n].indirect
+      guard indirect != nil || (ds[n].vertexCount >= ds[n].state.minimumVertices && ds[n].instanceCount >= 1)
+      else { throw .badRequest }
+      guard ds[n].occlusionQuery & 7 == 0 else { throw .badRequest }
+      if let i = indirect { guard i.address & 3 == 0 else { throw .badRequest } }
+      if n > 0, ds[n - 1].shared === ds[n].shared {
+        same[n] = true
+        sameRun[n] = ds[n].occlusionQuery == ds[n - 1].occlusionQuery && ds[n].flags0Or == ds[n - 1].flags0Or
+          && ds[n].flags0Clear == ds[n - 1].flags0Clear && ds[n].indices?.size == ds[n - 1].indices?.size
+          && ds[n].varyingBytes == ds[n - 1].varyingBytes
+      } else {
+        let d = r.draws[n]
+        guard d.blend.renderTarget == 0, d.extraBlends.count == targetCount - 1 else { throw .badRequest }
+        // A target in mode Shader has its shader (and a draw with a shader has the constants' words in its FAU).
+        func check(_ i: Int, _ b: BlendDescriptor) throws(RenderError) {
+          guard b.mode == .shader else { return }
+          guard let code = d.blendShaders[i], !code.isEmpty, d.fragmentShader.layout.blendConstantWord >= 0 else { throw .badRequest }
+        }
+        try check(0, d.blend)
+        for (i, b) in d.extraBlends.enumerated() { try check(i + 1, b) }
       }
     }
     for t in r.extraTargets { guard t.clear.count == 4, t.address & 63 == 0 else { throw .badRequest } }
@@ -337,7 +475,7 @@ extension RenderPass {
     let contexts = r.viewMask != 0 ? 1 : (r.layers + 7) / 8
     let tilerAt = place(TilerContext.size * contexts, TilerContext.alignment)
     let heapAt = place(TilerHeapDescriptor.size, TilerHeapDescriptor.alignment)
-    let zsExtension = r.zs != nil
+    let zsExtension = r.zs != nil || r.crc != nil
     let groupSize = alignUp(groupBytes + (zsExtension ? ZSTarget.size : 0) + 64 * (descriptorCount - 1), 64)
     let fbdAt = place(groupSize * layerList.count, 64)
     // A draw whose state has a depth/stencil test has a descriptor of its own.
@@ -353,8 +491,19 @@ extension RenderPass {
       if d.fragmentShader.writesStencil && z?.stencilTest == true { z!.stencilFromShader = true }
       return z
     }
-    for d in r.draws { drawZSDAt.append(zsState(d) != nil ? place(DepthStencilDescriptor.size, DepthStencilDescriptor.alignment) : -1) }
-    let samplesAt = place(SamplePatterns.tableBytes, 64)
+    // Each draw's state, made once (a pass may have hundreds of draws).
+    var zsStates: [ZSDescriptorState?] = []
+    for n in r.draws.indices {
+      if same[n] {
+        zsStates.append(zsStates[n - 1])
+        drawZSDAt.append(drawZSDAt[n - 1])
+      } else {
+        let z = zsState(r.draws[n])  // (one copy of the draw for each state, not each draw)
+        zsStates.append(z)
+        drawZSDAt.append(z != nil ? place(DepthStencilDescriptor.size, DepthStencilDescriptor.alignment) : -1)
+      }
+    }
+    let samplesAt = r.sampleTable == nil ? place(SamplePatterns.tableBytes, 64) : -1
     let tableAt = r.heapAddress == nil && r.storageAddress == nil ? -1 : place(DescriptorHeap.tableEntries * ResourceTable.entrySize, ResourceTable.alignment)
     var shaders: [(code: [UInt64], spd: Int, at: Int)] = []
     func shaderSlot(_ code: [UInt64]) -> Int {
@@ -365,15 +514,25 @@ extension RenderPass {
     }
     var vslot: [Int] = []
     var fslot: [Int] = []
-    for d in r.draws {
-      vslot.append(shaderSlot(d.vertexShader.code))
-      fslot.append(shaderSlot(d.fragmentShader.code))
+    for n in r.draws.indices {
+      if same[n] {
+        vslot.append(vslot[n - 1])
+        fslot.append(fslot[n - 1])
+      } else {
+        vslot.append(shaderSlot(r.draws[n].vertexShader.code))
+        fslot.append(shaderSlot(r.draws[n].fragmentShader.code))
+      }
     }
     for n in 0..<shaders.count { shaders[n].at = place(shaders[n].code.count * 8, 128) }
     // The blend shaders (09 section 9.9): each distinct program once, 16-byte aligned, in this block.
     var blendCodes: [(code: [UInt64], at: Int)] = []
     var blendCodeAt: [[Int: Int]] = []
-    for d in r.draws {
+    for n in r.draws.indices {
+      if same[n] {
+        blendCodeAt.append(blendCodeAt[n - 1])
+        continue
+      }
+      let d = r.draws[n]
       var at: [Int: Int] = [:]
       for (target, code) in d.blendShaders.sorted(by: { $0.key < $1.key }) {
         if let k = blendCodes.firstIndex(where: { $0.code == code }) {
@@ -393,13 +552,21 @@ extension RenderPass {
     // 256 boxes, so whatever byte the shader writes names one in memory.
     var viewportsAt: [Int] = []
     var scissorsAt: [Int] = []
-    for d in r.draws {
-      blendAt.append(place(BlendDescriptor.size * targetCount, 64))
-      vfauAt.append(place(8 * max(d.vertexShader.layout.slots, 1), 8))
-      ffauAt.append(place(8 * d.fragmentShader.layout.slots, 8))
-      viewportsAt.append(d.vertexShader.layout.viewportTableWord >= 0 ? place(ViewportTable.bytes, 16) : -1)
-      scissorsAt.append(d.vertexShader.storesViewportIndex && d.state.scissorProbe >= 2 && d.state.scissorProbe <= 5
-        ? place(ScissorArray.entries * (d.state.scissorProbe == 3 ? 16 : 8), d.state.scissorProbe == 4 ? 4096 : 64) : -1)
+    // (What a draw's blocks take comes from its shared state: read again only where that changes.)
+    var vertexSlots = 0, fragmentSlots = 0, viewportTable = false, scissorArray = 0
+    for n in r.draws.indices {
+      if !same[n] {
+        let d = r.draws[n]
+        vertexSlots = d.vertexShader.layout.slots
+        fragmentSlots = d.fragmentShader.layout.slots
+        viewportTable = d.vertexShader.layout.viewportTableWord >= 0
+        scissorArray = d.vertexShader.storesViewportIndex && d.state.scissorProbe >= 2 && d.state.scissorProbe <= 5 ? d.state.scissorProbe : 0
+      }
+      blendAt.append(same[n] ? blendAt[n - 1] : place(BlendDescriptor.size * targetCount, 64))
+      vfauAt.append(place(8 * max(vertexSlots, 1), 8))
+      ffauAt.append(place(8 * fragmentSlots, 8))
+      viewportsAt.append(viewportTable ? place(ViewportTable.bytes, 16) : -1)
+      scissorsAt.append(scissorArray != 0 ? place(ScissorArray.entries * (scissorArray == 3 ? 16 : 8), scissorArray == 4 ? 4096 : 64) : -1)
     }
     // The first pre-frame shader (08 section 8.10): the three frame shaders' draw descriptors (the other two never run),
     // its blend descriptor, push words, resource table (its own heap), program descriptor and code.
@@ -441,12 +608,29 @@ extension RenderPass {
         red: r.clear[0], green: r.clear[1], blue: r.clear[2], alpha: r.clear[3], srgb: r.format.isSRGB))
     renderTarget.msaa = r.colourMSAA
     renderTarget.blockFormat = r.colourBlockFormat
+    // An AFBC target (08 sections 8.4.6 and 8.9): a four-byte colour, so mode R8G8B8A8 with the colour transform; a superblock
+    // larger than the tile needs the clean tile write and the reverse issue order.
+    let smallTile = plan.tileWidth < 16 || plan.tileHeight < 16
+    func afbc(_ t: inout RenderTargetDescriptor) {
+      guard t.blockFormat == 12 else { return }
+      t.afbcMode = 10
+      t.afbcYTR = true
+      if smallTile {
+        t.reverseIssueOrder = true
+        t.cleanTileWrite = true
+      }
+    }
+    afbc(&renderTarget)
     let rtAt = fbdAt + FramebufferParameters.size + (zsExtension ? ZSTarget.size : 0)
     var framebuffer = FramebufferParameters(
       width: r.width, height: r.height, sampleCountLog2: UInt32(log2Floor(UInt64(r.samples))), samplePattern: pattern,
-      sampleLocations: va(samplesAt) + UInt64(SamplePatterns.blockBytes) * UInt64(pattern),
+      sampleLocations: (r.sampleTable ?? va(samplesAt)) + UInt64(SamplePatterns.blockBytes) * UInt64(pattern),
       effectiveTileLog2: plan.tileLog2, colourAllocationKiB: plan.allocationField, tiler: va(tilerAt))
     framebuffer.zs = r.zs
+    let crcUsed = r.crc != nil && plan.tilePixels >= 256 && r.layers == 1 && r.viewMask == 0 && r.samples == 1
+    framebuffer.crc = crcUsed
+    framebuffer.emptyTileRead = crcUsed && targetCount == 1
+    if smallTile, framebuffer.zs?.depthAFBC == true { framebuffer.zs!.reverseIssueOrder = true }
     framebuffer.renderTargetCount = descriptorCount
     if r.preload != nil {
       framebuffer.preFrame0Mode = 1
@@ -469,7 +653,9 @@ extension RenderPass {
     var preTableBytes: [UInt8] = []
     var preSPDWords: [UInt32] = []
 
+    phase(0)
     var states: [IDVSState] = []
+    states.reserveCapacity(r.draws.count)
     var records: [DrawRecords] = []
     var fbdPointer: UInt64 = 0
     var resourcePointer: UInt64 = 0
@@ -568,15 +754,46 @@ extension RenderPass {
           stage: .fragment, registerClass: p.shader.registerClass, preloadMask: p.shader.preloadMask, binary: va(zsPreCodeAt),
           coverageBitmaskType: 1).words
       }
-      for (n, d) in r.draws.enumerated() {
+      phase(1)
+      var vertexWords = 1, fragmentWords = 0
+      let ds = r.draws.span
+      for n in r.draws.indices {
+        // The draw before's run state, where this draw shares its state and its flags' inputs: its own FAU blocks, counts,
+        // offsets and index data (read in place: the shaders' sizes are the run's, and nothing of the draw is copied).
+        if sameRun[n] {
+          var s = states[n - 1]
+          s.vertexFAU = try FAUPointer.value(address: va(vfauAt[n]), words: vertexWords)
+          if fragmentWords > 0 {
+            s.fragmentFAU = try FAUPointer.value(address: va(ffauAt[n]), words: fragmentWords)
+          }
+          s.indexCount = UInt32(max(ds[n].vertexCount, 0))
+          s.instanceCount = UInt32(max(ds[n].instanceCount, 0))
+          s.indexOffset = ds[n].firstIndex
+          s.vertexOffset = UInt32(bitPattern: ds[n].vertexOffset)
+          s.instanceOffset = ds[n].firstInstance
+          let indices = ds[n].indices
+          s.indexBuffer = indices?.address ?? IDVSState().indexBuffer
+          s.indexBufferSize = indices?.bytes ?? IDVSState().indexBufferSize
+          states.append(s)
+          if r.wantsRecords { records.append(
+            DrawRecords(
+              blend: va(blendAt[n]), vertexFAU: va(vfauAt[n]), fragmentFAU: va(ffauAt[n]), vertexSPD: s.vertexSPD,
+              fragmentSPD: s.fragmentSPD, state: s)) }
+          continue
+        }
+        let d = r.draws[n]
+        vertexWords = max(d.vertexShader.layout.slots, 1)
+        fragmentWords = d.fragmentShader.layout.slots
         var s = IDVSState()
-        s.vertexFAU = try FAUPointer.value(address: va(vfauAt[n]), words: max(d.vertexShader.layout.slots, 1))
-        if d.fragmentShader.layout.slots > 0 {
-          s.fragmentFAU = try FAUPointer.value(address: va(ffauAt[n]), words: d.fragmentShader.layout.slots)
+        s.vertexFAU = try FAUPointer.value(address: va(vfauAt[n]), words: vertexWords)
+        if fragmentWords > 0 {
+          s.fragmentFAU = try FAUPointer.value(address: va(ffauAt[n]), words: fragmentWords)
         }
         s.blend = try BlendDescriptor.register(address: va(blendAt[n]), count: targetCount)
         s.tilerContext = va(tilerAt)
         s.fragmentSRT = resourcePointer
+        // A vertex shader that samples reads the same resource table (the heap as table 1).
+        if !d.vertexShader.layout.imageBindings.isEmpty || d.vertexShader.layout.dummySamplerWord >= 0 { s.vertexSRT = resourcePointer }
         s.vertexSPD = va(shaders[vslot[n]].spd)
         s.fragmentSPD = va(shaders[fslot[n]].spd)
         s.vertexTSD = va(tsdAt)
@@ -610,7 +827,7 @@ extension RenderPass {
         } else if d.vertexShader.storesViewportIndex && d.state.scissorProbe == 7 {
           // The first scissor's box itself (the probe makes its maximum y 256 or more: read as an array, a length byte of 1 or more).
         }
-        s.depthStencil = va(zsState(d) != nil ? drawZSDAt[n] : zsdAt)
+        s.depthStencil = va(zsStates[n] != nil ? drawZSDAt[n] : zsdAt)
         s.tilerFlags = PrimitiveFlags(
           mode: d.state.mode, indexType: d.indices?.size.rawValue ?? 0, lowDepthCull: d.state.depthStencil?.depthClip ?? true,
           highDepthCull: d.state.depthStencil?.depthClip ?? true, primitiveRestart: d.state.primitiveRestart,
@@ -634,7 +851,7 @@ extension RenderPass {
         flags.cullBack = triangles && d.state.cullBack
         if r.zs != nil {
           // 6.10.2: early or late, from the shader and the state.
-          let zsd = zsState(d)
+          let zsd = zsStates[n]
           var storage = false
           for b in d.fragmentShader.layout.imageBindings where b.binding == 2 { storage = true }
           let ops = PixelOperations.derive(
@@ -665,10 +882,10 @@ extension RenderPass {
         s.flags1 = DrawFlags1.word(sampleMask: d.state.sampleMask, renderTargetMask: written)
         s.flags2 = DrawFlags2.word(writeMask: written)
         states.append(s)
-        records.append(
+        if r.wantsRecords { records.append(
           DrawRecords(
             blend: va(blendAt[n]), vertexFAU: va(vfauAt[n]), fragmentFAU: va(ffauAt[n]), vertexSPD: s.vertexSPD,
-            fragmentSPD: s.fragmentSPD, state: s))
+            fragmentSPD: s.fragmentSPD, state: s)) }
       }
     } catch { throw .descriptor(error) }
 
@@ -680,27 +897,44 @@ extension RenderPass {
     let fragmentSlot = r.layout == .singleQueue ? singleFragmentSlot : tilingSlot
     let fragmentMask = UInt16(1) << UInt16(fragmentSlot)
 
-    func prologue(_ b: inout CSBuilder, resources: CSResources) {
+    // The probe's timestamps (`stamps`): the slot's work waited for first, where a mask is given, then the store waited for.
+    func stamp(_ b: inout CSBuilder, _ k: PassStamp, after mask: UInt16 = 0) {
+      guard let at = r.stamps else { return }
+      if mask != 0 { b.wait(mask: mask) }
+      b.move64(CSRegisterMap.firstScratch, at + UInt64(8 * k.rawValue))
+      b.emit(CSInstruction.storeState(address: CSRegisterMap.firstScratch, state: .timestamp))
+      b.wait(mask: b.scoreboards.slotMask(dataSlot))
+    }
+    func prologue(_ b: inout CSBuilder, resources: CSResources, fragment: Bool = false) {
       if r.initialiseQueues {
         b.initialiseSlotState()
         b.requestResources(resources)
       }
+      if !fragment || r.chain?.fragmentWaits != false { b.startStep(r.chain) }
       b.move64(heapContextRegister, r.heapContext)
       b.emit(CSInstruction.heapSet(addressPair: heapContextRegister))
     }
     func tiling(_ b: inout CSBuilder) {
       b.emit(CSInstruction.setState(.endpointSlot, immediate: UInt32(tilingSlot)))
       b.emit(CSInstruction.heapOperation(.vertexTilerStarted))
+      // Each run's registers are those the last run read but for what differs (a draw of the same pipeline: its counts and FAU).
+      var last: IDVSState? = nil
       for k in 0..<contexts {
-      for (n, var s) in states.enumerated() {
-        if k > 0 && !r.draws[n].vertexShader.writesLayer { continue }
+      // (Each draw's fields read in place, through a span.)
+      let ds = r.draws.span
+      for n in r.draws.indices {
+        if k > 0 && !ds[n].vertexShader.writesLayer { continue }
+        var s = states[n]
         s.tilerContext = va(tilerAt) + UInt64(k * TilerContext.size)
-        s.load(into: &b)
-        if let a = r.draws[n].indirect {
+        s.load(into: &b, after: last)
+        // An indirect draw's counts come from memory into the registers: the next draw sets them all again.
+        let indirect = ds[n].indirect
+        last = indirect == nil ? s : nil
+        if let a = indirect {
           // The counts come from memory when the stream runs: the words land in the count registers (33 to 37) and the
           // run waits for the load (01 section 1.4.2, a load signals the load/store slot).
           b.move64(heapContextRegister, a.address)
-          if r.draws[n].indices != nil {
+          if ds[n].indices != nil {
             b.emit(CSInstruction.loadMultiple(base: IDVSState.Register.indexCount, address: heapContextRegister, mask: 0b11111))
           } else {
             // vertexCount, instanceCount, firstVertex, firstInstance: registers 33, 34, 36 and 37.
@@ -708,13 +942,13 @@ extension RenderPass {
           }
           b.wait(mask: b.scoreboards.slotMask(dataSlot))
         }
-        if r.draws[n].indirect != nil {
+        if indirect != nil {
           // 06 section 6.4.7: what the hardware does for a zero count is no source's to say, so the stream does not issue
           // the run for one: it branches over it when the count of vertices or indices, or of instances, is zero.
           b.emit(CSInstruction.branch(.equal, register: IDVSState.Register.indexCount, offset: 2))
           b.emit(CSInstruction.branch(.equal, register: IDVSState.Register.instanceCount, offset: 1))
         }
-        b.emit(CSInstruction.runIDVS2(deferredShading: r.draws[n].deferredShading))
+        b.emit(CSInstruction.runIDVS2(deferredShading: ds[n].deferredShading))
       }
       }
       b.emit(CSInstruction.finishTiling)
@@ -747,10 +981,7 @@ extension RenderPass {
         b.emit(CSInstruction.heapOperation(.fragmentCompleted, waitMask: fragmentMask, signalSlot: finishSlot))
       }
     }
-    func tail(_ b: inout CSBuilder) {
-      b.waitAll()
-      b.cleanCachesForHost()
-    }
+    func tail(_ b: inout CSBuilder) { b.stepTail(r.chain) }
     // 06 section 6.11.1 item 3: a query's report is zeroed by a store on the fragment queue, followed by a flush of
     // stores, before the pass's fragment work; the clean flush of the tail after it hands the count to the CPU.
     func zeroReports(_ b: inout CSBuilder) {
@@ -778,41 +1009,59 @@ extension RenderPass {
       b.cleanCachesForHost()
     }
 
+    phase(2)
     var streams: [CSStream] = []
     var b0 = CSBuilder(address: va(stream0At), capacityBytes: max(capacity - stream0At, 0), registers: registers,
                        scoreboards: scoreboards)
     if r.layout == .singleQueue {
+      stamp(&b0, .tilingStream)
       prologue(&b0, resources: resourcesTiling | .fragment)
+      stamp(&b0, .tilingStart)
       tiling(&b0)
       b0.wait(mask: tilingMask | b0.scoreboards.slotMask(CSScoreboards.deferredSyncSlot))
+      stamp(&b0, .tiled)
+      stamp(&b0, .fragmentStart)
       zeroReports(&b0)
       fragment(&b0)
+      stamp(&b0, .finished, after: b0.scoreboards.slotMask(finishSlot))
       tail(&b0)
+      stamp(&b0, .cleaned)
       readbackReport(&b0)
+      b0.endStep(r.chain)
       let s0: CSStream
       do throws(CSBuildError) { s0 = try b0.finish() } catch { throw .stream(error) }
       streams = [s0]
     } else {
+      stamp(&b0, .tilingStream)
       prologue(&b0, resources: resourcesTiling)
+      stamp(&b0, .tilingStart)
       tiling(&b0)
+      stamp(&b0, .tiled, after: tilingMask | b0.scoreboards.slotMask(CSScoreboards.deferredSyncSlot))
       b0.move64(syncAddressRegister, syncVA)
       b0.move64(syncValueRegister, 1)
       b0.emit(CSInstruction.syncAdd64(address: syncAddressRegister, value: syncValueRegister, waitMask: tilingMask,
                                       signalSlot: CSScoreboards.deferredSyncSlot, scope: .group))
-      tail(&b0)
+      // The tiling stream writes nothing the host reads (the polygon lists are the fragment work's, through the L2): it drains,
+      // and the fragment stream's tail cleans for both.
+      b0.waitAll()
       let s0: CSStream
       do throws(CSBuildError) { s0 = try b0.finish() } catch { throw .stream(error) }
       let stream1At = alignUp(stream0At + s0.size, 64)
       var b1 = CSBuilder(address: va(stream1At), capacityBytes: max(capacity - stream1At, 0), registers: registers,
                          scoreboards: scoreboards)
-      prologue(&b1, resources: .fragment)
+      stamp(&b1, .fragmentStream)
+      prologue(&b1, resources: .fragment, fragment: true)
       b1.move64(syncAddressRegister, syncVA)
       b1.move64(syncValueRegister, 1)
       zeroReports(&b1)
       b1.emit(CSInstruction.syncWait64(address: syncAddressRegister, reference: syncValueRegister, condition: .greater))
+      stamp(&b1, .fragmentStart)
       fragment(&b1)
+      stamp(&b1, .finished, after: b1.scoreboards.slotMask(finishSlot))
       tail(&b1)
+      stamp(&b1, .cleaned)
       readbackReport(&b1)
+      b1.endStep(r.chain)
       let s1: CSStream
       do throws(CSBuildError) { s1 = try b1.finish() } catch { throw .stream(error) }
       streams = [s0, s1]
@@ -821,6 +1070,7 @@ extension RenderPass {
     let total = (streams.count == 2 ? Int(streams[1].address - base) : stream0At) + (streams.last?.size ?? 0)
     guard total <= capacity else { throw .noRoom(needed: total, capacity: capacity) }
 
+    phase(3)
     // The block's bytes.
     var m = MemoryImage()
     m.extend(to: total)
@@ -841,7 +1091,17 @@ extension RenderPass {
       layerFramebuffer.frameArgument = UInt64(l)
       layerFramebuffer.tiler = va(tilerAt) + UInt64((l / 8) * TilerContext.size)
       m.store(words: try layerFramebuffer.words(), at: fbdAt + g)
-      if let z = r.zs { m.store(words: try z.words(layer: l), at: fbdAt + g + FramebufferParameters.size) }
+      if zsExtension {
+        var ext = try r.zs?.words(layer: l) ?? [UInt32](repeating: 0, count: 16)
+        if crcUsed, let c = r.crc {
+          let clears = [renderTarget.clear] + r.extraTargets.map { t in
+            let w = ColourFormat.packedClear(red: t.clear[0], green: t.clear[1], blue: t.clear[2], alpha: t.clear[3], srgb: t.format.isSRGB)
+            return [w, w, w, w]
+          }
+          for (i, w) in c.words(emptyWord: CRCTable.emptyWord(clears: clears, counter: c.counter)).enumerated() { ext[i] |= w }
+        }
+        m.store(words: ext, at: fbdAt + g + FramebufferParameters.size)
+      }
       var layerTarget = renderTarget
       layerTarget.address += UInt64(l * r.colourLayerStride)
       m.store(words: try layerTarget.words(), at: rtAt + g)
@@ -852,6 +1112,7 @@ extension RenderPass {
           clearWord: ColourFormat.packedClear(red: t.clear[0], green: t.clear[1], blue: t.clear[2], alpha: t.clear[3], srgb: t.format.isSRGB))
         extra.msaa = t.msaa
         extra.blockFormat = t.blockFormat
+        afbc(&extra)
         extra.address += UInt64(l * t.layerStride)
         m.store(words: try extra.words(), at: rtAt + g + 64 * (i + 1))
       }
@@ -869,7 +1130,7 @@ extension RenderPass {
         m.store(words: try resolve.words(), at: rtAt + g + 64 * (targetCount + k))
       }
       }
-      for (n, d) in r.draws.enumerated() { if let z = zsState(d) { m.store(words: z.words, at: drawZSDAt[n]) } }
+      for n in r.draws.indices where !same[n] { if let z = zsStates[n] { m.store(words: z.words, at: drawZSDAt[n]) } }
       if tableAt >= 0 {
         m.store(
           bytes: try DescriptorHeap.resourceTable(
@@ -877,7 +1138,7 @@ extension RenderPass {
           at: tableAt)
       }
     } catch { throw .descriptor(error) }
-    m.store(bytes: SamplePatterns.table(), at: samplesAt)
+    if samplesAt >= 0 { m.store(bytes: SamplePatterns.table(), at: samplesAt) }
     if let p = r.preload {
       m.store(words: preDCD, at: dcdAt)
       m.store(words: BlendDescriptor(renderTarget: 0, isSRGB: p.isSRGB).words, at: preBlendAt)
@@ -896,25 +1157,28 @@ extension RenderPass {
     }
     for s in shaders { m.store(words: s.code, at: s.at) }
     for b in blendCodes { m.store(words: b.code, at: b.at) }
-    for (n, d) in r.draws.enumerated() {
-      let vs = d.vertexShader
-      let fs = d.fragmentShader
-      let vp = d.state.viewport ?? DrawViewport(x: 0, y: 0, width: Float(r.width), height: Float(r.height))
+    for n in r.draws.indices {
+      // (Read in place through the span, but for a draw whose blends are its own.)
+      let vp = ds[n].state.viewport ?? DrawViewport(x: 0, y: 0, width: Float(r.width), height: Float(r.height))
       let viewport = ViewportTransform(x: vp.x, y: vp.y, width: vp.width, height: vp.height, minDepth: vp.minDepth, maxDepth: vp.maxDepth)
-      let vblock = vs.layout.block(viewport: viewport, push: d.push, viewportTable: viewportsAt[n] >= 0 ? va(viewportsAt[n]) : 0)
-      for (i, w) in vblock.enumerated() { m.store(w, at: vfauAt[n] + 8 * i) }
+      // The blocks are stored in place (the vertex shader's nonPerspective, base vertex and base instance words are zero, as
+      // `block` leaves them for a draw that gives none).
+      ds[n].vertexShader.layout.store(into: &m, at: vfauAt[n], viewport: viewport, push: ds[n].push, root: ds[n].root, images: ds[n].images, dummySampler: ds[n].dummySampler,
+                      viewportTable: viewportsAt[n] >= 0 ? va(viewportsAt[n]) : 0)
       if viewportsAt[n] >= 0 {
         var transforms: [ViewportTransform] = []
-        for k in 0..<max(d.state.viewports.count, 1) {
-          let v = (k < d.state.viewports.count ? d.state.viewports[k] : nil) ?? DrawViewport(x: 0, y: 0, width: Float(r.width), height: Float(r.height))
+        for k in 0..<max(ds[n].state.viewports.count, 1) {
+          let v = (k < ds[n].state.viewports.count ? ds[n].state.viewports[k] : nil) ?? DrawViewport(x: 0, y: 0, width: Float(r.width), height: Float(r.height))
           transforms.append(ViewportTransform(x: v.x, y: v.y, width: v.width, height: v.height, minDepth: v.minDepth, maxDepth: v.maxDepth))
         }
         m.store(words: ViewportTable.words(transforms), at: viewportsAt[n])
       }
-      if scissorsAt[n] >= 0 { m.store(words: ScissorArray(state: d.state, width: r.width, height: r.height).words(stride: d.state.scissorProbe == 3 ? 16 : 8), at: scissorsAt[n]) }
-      let handles = d.images.map { (set: $0.set, binding: $0.binding, handle: $0.handle) }
-      let fblock = fs.layout.block(push: d.push, images: handles, dummySampler: d.dummySampler, blendConstants: d.blendConstants)
-      for (i, w) in fblock.enumerated() { m.store(w, at: ffauAt[n] + 8 * i) }
+      if scissorsAt[n] >= 0 { m.store(words: ScissorArray(state: ds[n].state, width: r.width, height: r.height).words(stride: ds[n].state.scissorProbe == 3 ? 16 : 8), at: scissorsAt[n]) }
+      ds[n].fragmentShader.layout.store(into: &m, at: ffauAt[n], push: ds[n].push, root: ds[n].root, images: ds[n].images, dummySampler: ds[n].dummySampler,
+                                    blendConstants: ds[n].blendConstants)
+      // Its blend descriptors are the draw before's (`same`).
+      if same[n] { continue }
+      let d = r.draws[n]
       func withShader(_ b: BlendDescriptor, _ target: Int) -> [UInt32] {
         var b = b
         if b.mode == .shader, let p = blendCodeAt[n][target] { b.shaderAddress = UInt32(truncatingIfNeeded: va(p)) }
@@ -930,20 +1194,25 @@ extension RenderPass {
     }
     for (n, s) in shaders.enumerated() {
       // Each shader's program descriptor: the stage of the draws that use it.
+      // (The last draw that uses it says, as each draw of a shader has the same; found from the end, not by a walk of every draw.)
       var stage = ShaderProgramDescriptor.Stage.vertex
       var cls = RegisterClass.r64
       var preload: UInt16 = 0
-      for (k, d) in r.draws.enumerated() {
-        if vslot[k] == n {
-          stage = .vertex
-          cls = d.vertexShader.registerClass
-          preload = d.vertexShader.preloadMask
-        }
+      var k = r.draws.count - 1
+      while k >= 0 {
         if fslot[k] == n {
           stage = .fragment
-          cls = d.fragmentShader.registerClass
-          preload = d.fragmentShader.preloadMask
+          cls = r.draws[k].fragmentShader.registerClass
+          preload = r.draws[k].fragmentShader.preloadMask
+          break
         }
+        if vslot[k] == n {
+          stage = .vertex
+          cls = r.draws[k].vertexShader.registerClass
+          preload = r.draws[k].vertexShader.preloadMask
+          break
+        }
+        k -= 1
       }
       let spd = ShaderProgramDescriptor(
         stage: stage, registerClass: cls, preloadMask: preload, binary: va(s.at), coverageBitmaskType: stage == .fragment ? 1 : 0)
@@ -952,14 +1221,28 @@ extension RenderPass {
     if r.layout == .splitQueues { m.store(UInt64(1), at: syncAt) }
     for s in streams { m.store(words: s.words, at: Int(s.address - base)) }
 
+    phase(4)
     let last = states[states.count - 1]
     let image = RenderPassImage(
       memory: m, base: base, streams: streams, plan: plan, hierarchyMask: mask, tilerContext: va(tilerAt),
       heapDescriptor: va(heapAt), framebuffer: va(fbdAt), renderTarget: va(rtAt),
-      sampleTable: va(samplesAt), blend: va(blendAt[0]), depthStencil: va(zsdAt), vertexTable: 0,
+      sampleTable: r.sampleTable ?? va(samplesAt), blend: va(blendAt[0]), depthStencil: va(zsdAt), vertexTable: 0,
       vertexShader: va(shaders[vslot[vslot.count - 1]].at), fragmentShader: va(shaders[fslot[fslot.count - 1]].at),
       vertexSPD: last.vertexSPD, fragmentSPD: last.fragmentSPD, localStorage: va(tsdAt), syncObject: syncVA, draw: last,
       fragmentPointer: fbdPointer)
     return (image, records, resourcePointer)
   }
+}
+
+/// The probe's timestamps of a pass (`DrawPassRequest.stamps`), by index: when each stream began, when its chain wait (and
+/// the tiling stream's resources) let it start, the tiling's end, the fragment stream's start after its wait for the tiling,
+/// the fragment work's end with its chunks handed back, and the tail's clean.
+extension RenderPass {
+  /// The probe's phases (`DrawPassRequest.clock`): validation and placement, the pre-frame shaders' records, the draws' run
+  /// states, the streams, the block's bytes.
+  nonisolated(unsafe) public static var phaseNanoseconds: [UInt64] = [0, 0, 0, 0, 0]
+}
+
+public enum PassStamp: Int, CaseIterable, Sendable {
+  case tilingStream, tilingStart, tiled, fragmentStream, fragmentStart, finished, cleaned
 }

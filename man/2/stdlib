@@ -1,7 +1,7 @@
 page stdlib 2
 summary number conversion, memory allocation, process exit, environment, sorting and integer arithmetic
-names stdlib strtol strtoll strtoul strtoull strtod strtof strtold atof atoi atol atoll malloc calloc realloc free aligned_alloc posix_memalign malloc_usable_size abort exit _Exit atexit getenv realpath mktemp mkstemp bsearch qsort abs labs llabs div ldiv lldiv
-src system/libc/include/stdlib.h system/libc/stdlib/Stdlib.swift system/libc/stdlib/Strtod.swift system/libc/native/stdlib.c system/sys/floor/Heap.swift system/sys/floor/runtime.c system/sys/floor/Start.swift system/fdio/native/Exports.swift system/fdio/native/open.c
+names stdlib strtol strtoll strtoul strtoull strtod strtof strtold atof atoi atol atoll malloc calloc realloc free aligned_alloc posix_memalign malloc_usable_size abort exit _Exit atexit getenv realpath mktemp mkstemp bsearch qsort abs labs llabs div ldiv lldiv strtol_l strtoll_l strtoul_l strtoull_l strtod_l strtof_l strtold_l rand srand
+src system/libc/include/stdlib.h system/libc/stdlib/Stdlib.swift system/libc/stdlib/Strtod.swift system/libc/native/stdlib.c system/sys/floor/Heap.swift system/sys/floor/runtime.c system/sys/floor/Start.swift system/fdio/native/Exports.swift system/fdio/native/open.c system/libc/native/Exports.swift
 keys convert strtol malloc heap exit atexit getenv environment sort search qsort temporary file path
 lang c
 
@@ -61,6 +61,31 @@ lldiv_t lldiv(long long numer, long long denom);
 ```
 
 The header also defines `EXIT_SUCCESS` and `EXIT_FAILURE`.
+
+```c
+#define MB_CUR_MAX ((size_t)1)
+#define RAND_MAX 2147483647
+
+// In a locale (locale(2)).
+long strtol_l(const char *__restrict nptr, char **__restrict endptr, int base,
+              locale_t locale);
+long long strtoll_l(const char *__restrict nptr, char **__restrict endptr,
+                    int base, locale_t locale);
+unsigned long strtoul_l(const char *__restrict nptr, char **__restrict endptr,
+                        int base, locale_t locale);
+unsigned long long strtoull_l(const char *__restrict nptr,
+                              char **__restrict endptr, int base,
+                              locale_t locale);
+double strtod_l(const char *__restrict nptr, char **__restrict endptr,
+                locale_t locale);
+float strtof_l(const char *__restrict nptr, char **__restrict endptr,
+               locale_t locale);
+long double strtold_l(const char *__restrict nptr, char **__restrict endptr,
+                      locale_t locale);
+
+int rand(void);
+void srand(unsigned seed);
+```
 
 # DESCRIPTION
 
@@ -135,6 +160,17 @@ It is a heapsort: it allocates nothing, takes O(n log n) at worst, and is not st
 `abs`, `labs` and `llabs` return the absolute value; the most negative value is returned as it is.
 `div`, `ldiv` and `lldiv` return the quotient and remainder; a zero divisor faults or traps as the hardware does.
 
+## In a locale
+
+The `_l` conversions take a locale object (locale(2)) and convert as the functions without it, since the only locale is "C".
+`MB_CUR_MAX` is 1: a character of the C locale is a byte.
+
+## Pseudo-random numbers
+
+`rand` returns the next number from 0 to `RAND_MAX` of a 64-bit linear congruential generator, its state's top 31 bits; `srand` sets the state to <seed>, which is 1 until it is called.
+The same seed gives the same sequence.
+It is not for secrets (getentropy, unistd(2), is), and two threads calling it at once may see the same number.
+
 # SEE ALSO
 
 string(2), stdio(2), inttypes(2), unistd(2), fcntl(2), time(2)
@@ -144,6 +180,6 @@ string(2), stdio(2), inttypes(2), unistd(2), fcntl(2), time(2)
 `malloc` and its kin do not set `errno` when they fail, and `free` of a pointer not from the heap traps.
 Memory from small blocks is never returned to the system.
 
-`<stdlib.h>` has no `system`, `rand`, `srand`, `setenv`, `unsetenv`, `putenv`, `mblen`, `wctomb` and the like, `strtol_l`, `at_quick_exit` or `quick_exit`.
+`<stdlib.h>` has no `system`, `setenv`, `unsetenv`, `putenv`, `mblen`, `wctomb` and the like, `at_quick_exit` or `quick_exit`.
 
 A program built without the file library (rather than with fdio, which has the file calls of this page) finds `realpath` and `mktemp` failing with `ENOENT`, and `mkstemp` not defined.

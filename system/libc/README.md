@@ -26,7 +26,10 @@ rounded, with the variadic entries and `va_list` readers in C
 (`native/stdio.c`); `TODHCHAI_FORMAT_CASES` and `TODHCHAI_STRTOD_CASES` run
 more cases. Its libm (`system/libc/math`, `<math.h>`): exact functions bit
 for bit with glibc, transcendentals within an ulp of the truth (glibc's
-80-bit functions, `TODHCHAI_MATH_CASES`). Since M6d, long double:
+80-bit functions, `TODHCHAI_MATH_CASES`). The transcendentals are
+exp, exp2, log, log2, log10, sin, cos and tan (`Transcendental.swift`),
+atan, atan2, asin and acos (`Inverse.swift`) and pow (`Power.swift`),
+each with its float form. Since M6d, long double:
 `strtold` and printf's `%L`, in x87's format on amd64 and binary128's
 elsewhere (`Big` and `Digits` are value-generic over their capacity;
 binary128 is tested against glibc's `strtof128`/`strfromf128` through the
@@ -60,5 +63,18 @@ thread's area in the psABI's layout (`system/sys/floor/Thread.swift`:
 variant II on amd64, I on arm64 and rv64, where the thread block is the 64
 bytes below the thread pointer); the `libc` suite checks it. Swift code
 still has none.
+
+For libc++'s iostreams and file streams and ported C and C++ programs
+(glmark2, D183) it has the C locale (`<locale.h>`, `native/locale.c`: the
+one locale, and each thread's in `uselocale`), the `_l` forms of ctype,
+the conversions and collation, `strftime` (`time/Strftime.swift`),
+`sscanf`'s family (`stdio/Scan.swift`), `asprintf`, file streams over
+descriptors (`native/Streams.swift`: fopen, fdopen, buffering, seeking,
+ungetc; stdio.c keeps the standard streams and sends a file stream
+there), the `*at` calls relative to the working directory, `setjmp` and
+`longjmp` (`native/setjmp-<arch>.S`), `getopt_long` (`native/getopt.c`),
+`getrusage` (`native/resource.c`) and `rand`. The `libc` suite checks
+them natively (`LibcSuiteText.c`), and fdio-test the file streams over
+fdio's files.
 
 dlopen (M5k) is `system/ld` (`docs/kernel/design/user.md`, "dlopen").

@@ -109,6 +109,22 @@ extension Lowerer {
 
   /// `pow(x, y)` as exp2(y log2 x) (the definition Vulkan gives), with the product's rounding carried through like `exp`'s.
   mutating func lowerPowAccurate(_ r: IRType, _ x0: ValueID, _ y0: ValueID) -> ValueID {
+    // A constant whole exponent from 1 to 128 is products, by squaring (pow(x, 2.0) is x * x, glmark2's pow(x, 100.0)
+    // eight products): within pow's bounds wherever exp2(y log2 x) is defined (x > 0), and closer to x^y.
+    if r.scalarKind == .f32, let lanes = constantLanes(f, y0), let b = lanes.first, lanes.allSatisfy({ $0 == b }) {
+      let y = Float(bitPattern: UInt32(truncatingIfNeeded: b))
+      if y >= 1, y <= 128, y == y.rounded(.towardZero) {
+        var n = Int(y)
+        var power = x0
+        var result: ValueID = -1
+        while n > 0 {
+          if n & 1 == 1 { result = result < 0 ? power : emit(.fmul, r, [result, power]) }
+          n >>= 1
+          if n > 0 { power = emit(.fmul, r, [power, power]) }
+        }
+        return result
+      }
+    }
     let half = r.scalarKind == .f16
     let t = half ? r.with(.f32) : r
     let x = half ? emit(.fpext, t, [x0]) : x0

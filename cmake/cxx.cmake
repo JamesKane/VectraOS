@@ -7,9 +7,13 @@
 # usr/include/c++/v1, the archives in usr/lib).
 #
 # As far as the Swift runtime and C++ programs need them: exceptions (with
-# libunwind, which finds unwind tables through dl_iterate_phdr), RTTI, and
-# threads over our pthreads; no localization, wide characters, file system,
-# random device, time zones or terminal, which our libc doesn't have yet;
+# libunwind, which finds unwind tables through dl_iterate_phdr), RTTI,
+# threads over our pthreads, and iostreams and file streams over our libc's
+# C locale and FILE streams (localization and the file system on: libc++
+# has no rune table for us, so it takes its own, the C locale's;
+# std::filesystem has what our libc and fdio have, and the *at calls only
+# relative to the working directory); no wide characters, random device,
+# time zones or terminal, which our libc doesn't have yet;
 # no dladdr (static programs have no dynamic symbol table). Their layouts
 # are our libc's (std::mutex holds our pthread_mutex_t), so they're rebuilt
 # whenever the sysroot's headers change: the build runs each time and ninja
@@ -44,8 +48,9 @@ function(croi_tier1_cxx triple sysroot)
       -DLLVM_ENABLE_RUNTIMES=libunwind|libcxx|libcxxabi -DLLVM_ENABLE_PER_TARGET_RUNTIME_DIR=OFF
       -DLIBCXX_ENABLE_SHARED=OFF -DLIBCXX_ENABLE_STATIC=ON -DLIBCXX_ENABLE_EXCEPTIONS=ON -DLIBCXX_ENABLE_RTTI=ON
       -DLIBCXX_ENABLE_THREADS=ON -DLIBCXX_HAS_PTHREAD_API=ON -DLIBCXX_HAS_PTHREAD_LIB=NO -DLIBCXX_HAS_RT_LIB=NO
-      -DLIBCXX_HAS_ATOMIC_LIB=NO -DLIBCXX_ENABLE_MONOTONIC_CLOCK=ON -DLIBCXX_ENABLE_FILESYSTEM=OFF
-      -DLIBCXX_ENABLE_LOCALIZATION=OFF -DLIBCXX_ENABLE_WIDE_CHARACTERS=OFF -DLIBCXX_ENABLE_UNICODE=OFF
+      -DLIBCXX_HAS_ATOMIC_LIB=NO -DLIBCXX_ENABLE_MONOTONIC_CLOCK=ON -DLIBCXX_ENABLE_FILESYSTEM=ON
+      -DLIBCXX_ENABLE_LOCALIZATION=ON -DLIBCXX_EXTRA_SITE_DEFINES=_LIBCPP_PROVIDES_DEFAULT_RUNE_TABLE
+      -DLIBCXX_ENABLE_WIDE_CHARACTERS=OFF -DLIBCXX_ENABLE_UNICODE=OFF
       -DLIBCXX_ENABLE_RANDOM_DEVICE=OFF -DLIBCXX_ENABLE_TIME_ZONE_DATABASE=OFF -DLIBCXX_HAS_TERMINAL_AVAILABLE=OFF
       -DLIBCXX_CXX_ABI=libcxxabi -DLIBCXX_USE_COMPILER_RT=ON -DLIBCXX_INCLUDE_TESTS=OFF
       -DLIBCXX_INCLUDE_BENCHMARKS=OFF

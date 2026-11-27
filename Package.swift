@@ -500,6 +500,14 @@ let text: [Target] = [
   .testTarget(name: "VulkanLoweringTests",
               dependencies: ["VulkanLowering", "ShaderCompiler", "ShaderTestKit", "ValhallBackend", "ValhallBridge", "ValhallISA", "ValhallInterp", "MaliCore"],
               path: "graphics/vulkan/drivers/core/lowering/tests", exclude: ["shaders"]),
+  // The GLSL ES 1.00 front end (D183): GLSL ES into the Vulkan-style SPIR-V the layer's lowering takes. Tier 0's
+  // flags, as its neighbours'; the GLES library links it on the device (tier 1).
+  .target(name: "GLSL", path: "graphics/glsl", exclude: ["tests"], swiftSettings: tier0),
+  // Its tests: the preprocessor, the checks, the built-ins and the link rules, and each program through the lowering, the
+  // compiler and its Valhall backend, run on the IR interpreter (and glmark2's shaders, from .cache, when they are there).
+  .testTarget(name: "GLSLTests",
+              dependencies: ["GLSL", "VulkanLowering", "ShaderCompiler", "ShaderTestKit", "ValhallBackend", "ValhallISA", "MaliCore"],
+              path: "graphics/glsl/tests"),
   // The core over a Mali GPU (D174 sections 2 and 5): MaliCore and the compiler's backend behind the core. The CSF
   // client (native/) is the device's; the host builds the rest over a fake transport.
   .target(name: "GPUCoreMali", dependencies: ["GPUCore", "MaliCore", "ValhallBackend"], path: "graphics/core/mali",
@@ -510,6 +518,13 @@ let text: [Target] = [
   .testTarget(name: "VulkanLayerTests",
               dependencies: ["VulkanCoreDriver", "VulkanLowering", "GPUCore", "GPUCoreMali", "MaliFakeTransport", "TDVulkan"],
               path: "graphics/vulkan/layer-tests"),
+  // OpenGL ES 2.0 and EGL over the core (D183; gles(3), egl(3)): the state machine on GPUDevice and the lowering, its
+  // C names exported. Hosted it has no platform (hosted/); its tests give it a fake device, and the Mali backend over the
+  // fake transport, where the real lowering and the Valhall compiler take its pipelines.
+  .target(name: "GLES", dependencies: ["GLSL", "GPUCore", "VulkanLowering"], path: "graphics/gles",
+          exclude: ["c", "include", "native", "tests", "shaders", "README.md"], sources: ["lib", "hosted"], swiftSettings: tier0),
+  .testTarget(name: "GLESTests", dependencies: ["GLES", "GPUCore", "VulkanLowering", "GPUCoreMali", "MaliFakeTransport"],
+              path: "graphics/gles/tests", exclude: ["shaders"]),
   // The transfers' kernels run on the interpreter over the fake transport's memory (TransferTests.swift).
   .testTarget(name: "GPUCoreMaliTests", dependencies: ["GPUCoreMali", "GPUCore", "MaliCore", "ShaderTestKit", "MaliFakeTransport",
                                                      "ValhallBackend", "ValhallBridge", "ValhallInterp"], path: "graphics/core/mali/tests"),

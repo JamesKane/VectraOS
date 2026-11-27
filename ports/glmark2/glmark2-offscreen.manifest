@@ -1,0 +1,10 @@
+# glmark2's board run (glmark2(8), D183): the image esp-board-glmark2 runs its default benchmark off-screen at
+# 800x600, as the reference on AbyssBSD was run (docs/boards/orangepi-6-plus/gl.md), until it ends
+# (launcher.until=glmark2-offscreen), then reboots.
+service glmark2-offscreen
+program glmark2-es2-vectraos
+arg --off-screen
+arg -s
+arg 800x600
+mount /dev devmgr/dev
+mount /lib/glmark2 bootfs/lib/glmark2

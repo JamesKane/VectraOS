@@ -10,18 +10,19 @@ public enum TimestampStream {
   /// each store is waited for, and the caches are cleaned for the CPU (02 section 2.9.1's tail).
   public static func build(
     at base: UInt64, capacity: Int, addresses: [UInt64], initialiseQueue: Bool, registers: CSRegisterMap,
-    scoreboards: CSScoreboards
+    scoreboards: CSScoreboards, chain: StepChain? = nil
   ) throws(CSBuildError) -> CSStream {
     var b = CSBuilder(address: base, capacityBytes: capacity, registers: registers, scoreboards: scoreboards)
     if initialiseQueue { b.initialiseSlotState() }
+    b.startStep(chain)
     b.waitAll()
     for a in addresses {
       b.move64(CSRegisterMap.firstScratch, a)
       b.emit(CSInstruction.storeState(address: CSRegisterMap.firstScratch, state: .timestamp))
       b.wait(mask: scoreboards.slotMask(CSScoreboards.loadStoreSlot))
     }
-    b.waitAll()
-    b.cleanCachesForHost()
+    b.stepTail(chain)
+    b.endStep(chain)
     return try b.finish()
   }
 }

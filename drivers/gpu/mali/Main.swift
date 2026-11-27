@@ -134,7 +134,7 @@ import Sys
       tree.text("status", read: {
         guard let core, let served else { return text }
         served.lock.lock()
-        let more = (core.statusLines() + served.service.heapStatusLines).map { $0 + "\n" }.joined()
+        let more = (core.statusLines() + served.service.heapStatusLines + served.service.submitStatusLines).map { $0 + "\n" }.joined()
         served.lock.unlock()
         return text + more
       })

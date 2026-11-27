@@ -34,7 +34,11 @@ in input attachments).
    - `passed` or `failed` come from board-test's last line;
    - `timeout` means no last line within 6 minutes;
    - `locked`, `no-board`, `copy-failed` and `deploy-failed` mean it
-     never booted.
+     never booted. A run first waits up to 15 minutes (BOARD_WAIT) for
+     another run of this Mac to finish and for FreeBSD to answer, since
+     a board in a VectraOS boot or rebooting doesn't answer ssh; so
+     `no-board` means it stayed silent all that time. After a run it
+     waits up to 10 minutes (BOARD_RETURN) for FreeBSD to come back.
 
    LOG gets the serial console. BACKUP_NAME keeps the ESP's previous
    `croi/` under that name, once.

@@ -145,10 +145,10 @@ public struct ScissorBox: Equatable, Sendable {
   /// A box over `width` x `height` pixels from the origin.
   public init(width: Int, height: Int) { self.init(minX: 0, minY: 0, maxX: width - 1, maxY: height - 1) }
   /// Word 0: min x `[15:0]`, min y `[31:16]`; word 1: max x and max y likewise.
-  public var words: [UInt32] {
-    [UInt32(truncatingIfNeeded: minX) & 0xFFFF | UInt32(truncatingIfNeeded: minY) << 16,
-     UInt32(truncatingIfNeeded: maxX) & 0xFFFF | UInt32(truncatingIfNeeded: maxY) << 16]
-  }
+  public var words: [UInt32] { [word0, word1] }
+  /// The two words, without an array (a draw's registers are set from them).
+  public var word0: UInt32 { UInt32(truncatingIfNeeded: minX) & 0xFFFF | UInt32(truncatingIfNeeded: minY) << 16 }
+  public var word1: UInt32 { UInt32(truncatingIfNeeded: maxX) & 0xFFFF | UInt32(truncatingIfNeeded: maxY) << 16 }
 }
 
 /// The scissor array of a draw whose vertex shader writes ViewportIndex (06 section 6.2's scissor array enable). What is stated is the
@@ -385,44 +385,52 @@ public struct IDVSState: Equatable, Sendable {
   }
 
   /// Write every register the run reads into `builder` (a run samples them when it issues; the stream sets all
-  /// of them, since the ones a previous job left are not the recipe's to rely on, 02 section 2.1.3).
-  public func load(into b: inout CSBuilder) {
+  /// of them, since the ones a previous job left are not the recipe's to rely on, 02 section 2.1.3). With `after`, the state
+  /// the stream's last run read, whose registers nothing has written since: only the registers that differ from it (a run
+  /// leaves the registers as they were, 01 section 1.9.1).
+  public func load(into b: inout CSBuilder, after p: IDVSState? = nil) {
     typealias R = Register
-    b.move64(R.vertexSRT, vertexSRT)
-    b.move64(R.fragmentSRT, fragmentSRT)
-    b.move64(R.vertexFAU, vertexFAU)
-    b.move64(R.fragmentFAU, fragmentFAU)
-    b.move64(R.vertexSPD, vertexSPD)
-    b.move64(R.fragmentSPD, fragmentSPD)
-    b.move64(R.vertexTSD, vertexTSD)
-    b.move64(R.fragmentTSD, fragmentTSD)
-    b.move32(R.globalAttributeOffset, globalAttributeOffset)
-    b.move32(R.indexCount, indexCount)
-    b.move32(R.instanceCount, instanceCount)
-    b.move32(R.indexOffset, indexOffset)
-    b.move32(R.vertexOffset, vertexOffset)
-    b.move32(R.instanceOffset, instanceOffset)
-    b.move64(R.tilerContext, tilerContext)
-    if let a = scissorArray {
+    // The state before unwrapped once (each `p?.` read tested the optional again): with none, every register differs.
+    let all = p == nil
+    let q = p ?? self
+    if all || q.vertexSRT != vertexSRT { b.move64(R.vertexSRT, vertexSRT) }
+    if all || q.fragmentSRT != fragmentSRT { b.move64(R.fragmentSRT, fragmentSRT) }
+    if all || q.vertexFAU != vertexFAU { b.move64(R.vertexFAU, vertexFAU) }
+    if all || q.fragmentFAU != fragmentFAU { b.move64(R.fragmentFAU, fragmentFAU) }
+    if all || q.vertexSPD != vertexSPD { b.move64(R.vertexSPD, vertexSPD) }
+    if all || q.fragmentSPD != fragmentSPD { b.move64(R.fragmentSPD, fragmentSPD) }
+    if all || q.vertexTSD != vertexTSD { b.move64(R.vertexTSD, vertexTSD) }
+    if all || q.fragmentTSD != fragmentTSD { b.move64(R.fragmentTSD, fragmentTSD) }
+    if all || q.globalAttributeOffset != globalAttributeOffset { b.move32(R.globalAttributeOffset, globalAttributeOffset) }
+    if all || q.indexCount != indexCount { b.move32(R.indexCount, indexCount) }
+    if all || q.instanceCount != instanceCount { b.move32(R.instanceCount, instanceCount) }
+    if all || q.indexOffset != indexOffset { b.move32(R.indexOffset, indexOffset) }
+    if all || q.vertexOffset != vertexOffset { b.move32(R.vertexOffset, vertexOffset) }
+    if all || q.instanceOffset != instanceOffset { b.move32(R.instanceOffset, instanceOffset) }
+    if all || q.tilerContext != tilerContext { b.move64(R.tilerContext, tilerContext) }
+    if all || q.scissorArray != scissorArray || q.scissor != scissor, let a = scissorArray {
       b.move64(R.scissor, a)
-    } else {
-      let s = scissor.words
-      b.move32(R.scissor, s[0])
-      b.move32(R.scissor + 1, s[1])
+    } else if all || q.scissorArray != scissorArray || q.scissor != scissor {
+      b.move32(R.scissor, scissor.word0)
+      b.move32(R.scissor + 1, scissor.word1)
     }
-    let v = viewport.words
-    for i in 0..<4 { b.move32(R.viewportHigh + i, v[i]) }
-    b.move64(R.indexBuffer, indexBuffer)
-    b.move32(R.indexBufferSize, indexBufferSize)
-    b.move32(R.varySize, varySize)
-    b.move64(R.depthStencil, depthStencil)
-    b.move64(R.blend, blend)
-    b.move32(R.tilerFlags, tilerFlags)
-    b.move32(R.flags0, flags0)
-    b.move32(R.flags1, flags1)
-    b.move32(R.flags2, flags2)
-    b.move32(R.primitiveSize, primitiveSize)
-    b.move32(R.tilerFlags2, tilerFlags2)
-    b.move64(R.occlusionQuery, occlusionQuery)
+    if all || q.viewport != viewport {
+      b.move32(R.viewportHigh, viewport.rectangle.word0)
+      b.move32(R.viewportHigh + 1, viewport.rectangle.word1)
+      b.move32(R.viewportHigh + 2, viewport.minDepth.bitPattern)
+      b.move32(R.viewportHigh + 3, viewport.maxDepth.bitPattern)
+    }
+    if all || q.indexBuffer != indexBuffer { b.move64(R.indexBuffer, indexBuffer) }
+    if all || q.indexBufferSize != indexBufferSize { b.move32(R.indexBufferSize, indexBufferSize) }
+    if all || q.varySize != varySize { b.move32(R.varySize, varySize) }
+    if all || q.depthStencil != depthStencil { b.move64(R.depthStencil, depthStencil) }
+    if all || q.blend != blend { b.move64(R.blend, blend) }
+    if all || q.tilerFlags != tilerFlags { b.move32(R.tilerFlags, tilerFlags) }
+    if all || q.flags0 != flags0 { b.move32(R.flags0, flags0) }
+    if all || q.flags1 != flags1 { b.move32(R.flags1, flags1) }
+    if all || q.flags2 != flags2 { b.move32(R.flags2, flags2) }
+    if all || q.primitiveSize != primitiveSize { b.move32(R.primitiveSize, primitiveSize) }
+    if all || q.tilerFlags2 != tilerFlags2 { b.move32(R.tilerFlags2, tilerFlags2) }
+    if all || q.occlusionQuery != occlusionQuery { b.move64(R.occlusionQuery, occlusionQuery) }
   }
 }

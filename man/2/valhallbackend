@@ -5,7 +5,7 @@ names CompiledGraphicsShader FauLayout FauLayout.block VertexShader FragmentShad
 names ViewportTransform VaryingLayout ImageBinding
 names BackendOptions.ballotWithoutWMASK BackendOptions.blendShaders ValhallBackend.compileBlendShader BlendShader
 src graphics/compiler/valhall/backend/lib/BlendShader.swift graphics/compiler/valhall/backend/lib/Backend.swift graphics/compiler/valhall/backend/lib/Contract.swift graphics/mali/lib/FauLayout.swift
-src graphics/compiler/valhall/backend/lib/Prep.swift graphics/compiler/valhall/backend/lib/Select.swift
+src graphics/compiler/valhall/backend/lib/Prep.swift graphics/compiler/valhall/backend/lib/Select.swift graphics/compiler/valhall/backend/lib/PrepLoads.swift graphics/compiler/valhall/backend/lib/PrepVertexPasses.swift
 src graphics/compiler/valhall/backend/lib/SelectArith.swift graphics/compiler/valhall/backend/lib/SelectMem.swift
 src graphics/compiler/valhall/backend/lib/SelectFunc.swift graphics/compiler/valhall/backend/lib/Legalize.swift
 src graphics/compiler/valhall/backend/lib/Alloc.swift graphics/compiler/valhall/backend/lib/Emit.swift
@@ -69,10 +69,14 @@ Workgroup memory is `workgroup_local_pointer` plus a byte offset; stack, private
 
 ## Vertex and fragment shaders
 
-`compileGraphics` compiles the first vertex or fragment entry point (or the one named) the same way, into the data MaliCore builds a draw from: a `VertexShader` or a `FragmentShader` (code, register class 64, preload mask, `GraphicsFauLayout`, and the locations the shader reads and writes).
+`compileGraphics` compiles the first vertex or fragment entry point (or the one named) the same way, into the data MaliCore builds a draw from: a `VertexShader` or a `FragmentShader` (code, register class: 32 when its values fit r0 to r15 and r48 to r63, which doubles the threads a core keeps resident, else 64; preload mask, `GraphicsFauLayout`, and the locations the shader reads and writes).
 The two stages and the driver agree on the ABI below, all of it in `GraphicsShader.swift`.
+In these stages, after the calls are inlined, the private variables become the function's own (`localizePrivateGlobals`, shadercompiler(2)), so a vertex input the Vulkan lowering made a private variable is a value, not stack memory; after the IR's passes, each load of memory nothing writes moves to its use (`sinkLoadsToUses`), and two to four 32-bit loads of global memory at consecutive offsets from one base, in one block and at most 24 instructions apart, are one `LOAD.i64`, `i96` or `i128` (unaligned global accesses are the hardware's, valhall 12a.1.6), each word read from its register of the message's.
+A uniform block's matrix column, or a vertex input's components, is then one message.
 
-A vertex shader is one program for both IDVS passes, and it runs whole in each: it ends in two groups of stores, each behind a test of `shader_output`: the position (bit 0) and the generic varyings (bit 2).
+A vertex shader is one program for both IDVS passes, which stores two groups of outputs, each behind a test of `shader_output`: the position (bit 0) and the generic varyings (bit 2).
+A shader of one block with generic varyings, one view, no memory writes and no NoPerspective varying is divided between the passes: what both groups need runs first, then the instructions only the position needs with its stores behind bit 0, then those only the varyings need with theirs behind bit 2, so the position pass does none of the varyings' work and the varying pass none of the position's (`shader_output` is read once; a shader where fewer than eight instructions are one group's alone is not divided).
+Any other runs whole in each pass and ends in the two groups.
 Preloads are r59 (the vertex's slot in the hardware vertex buffer, always), r60 (the vertex index) and r61 (the instance index); an attribute (a Location input) is read with `LD_ATTR_IMM` from table 0 at the index of its location, taking r60 and r61.
 The position is divided by w and put through the viewport transform in the shader (valhall 14.3.3): `r` is the reciprocal of w clamped to a magnitude of 2^15, `x * r * scale + offset` for x, y and z, and r is the stored w; the scale and offset are FAU words.
 The record is stored with `STORE.i128.istream` at the address `LEA_BUF_IMM` gives from table 61, buffer 0, and r59.
@@ -82,7 +86,7 @@ PointSize is accepted and not stored, so the position record keeps its basic for
 
 A fragment shader's preloads are r60 (the coverage, always), r59 (the pixel position: FragCoord's x and y are those plus a half), r58 (the facing) and r61 (centroid inputs).
 A Location input is read with `LD_VAR_BUF_IMM` at 16 bytes times its location (flat for an integer or Flat input), once, at the start; FragCoord's z and w and a NoPerspective input's multiplier are `LD_VAR_SPECIAL`.
-Interpolating loads wait for the one before them (the hidden register, 12c.5.5).
+The first interpolating load computes the weights into the hidden register (`store`) and a later one at the same sample position reuses them (`retrieve`, 12c.2.4); a retrieving load waits for the one that stored, no other (12c.5.5), and a load after a `frag_w` stores again.
 OpKill is `DISCARD`, and the path goes to the end.
 Every path ends in the epilogue of 12c.6.4: a wait, `ATEST` (the alpha of colour 0, or 1), a wait, and one `BLEND` for each colour output, to the render target of its location and the special blend descriptor of the same number; the last carries `end`.
 
@@ -114,10 +118,11 @@ A handle is one value for a warp, and a fragment warp mixes primitives and insta
 A fetch of a plain image (OpImage of a sampled image drops the sampler) names the dummy sampler.
 The staging block is one register for each operand in the order of valhall 12b.5: the coordinates, the layer, the offset word, the level word.
 The wide form has no narrow word, so a constant offset, the array index and a fetch's level (zero needs none) are staged.
+The handle pair of a texture and sampler is made once a block, and so is a constant that needs a register of its own (a filter's taps share both).
 The result block holds the channels the shader reads, in order, 32 bits each, and its register type field (`f`, `u` or `s`) is the texel's kind.
 `skip` is clear, since an implicit level needs the helper lanes' coordinates, and the shader has no `discard` flow, so helper lanes stay alive to its end; OpDemoteToHelperInvocation is a `DISCARD` that flags the lane and goes on.
 The wait before the result's first reader is on the instruction before it.
-A vertex shader may not sample.
+A vertex shader samples the same heap, its bindings' handles in its FAU block after its own words (the viewport's, and those of its built-ins), the driver giving its stage the resource table; it has no derivatives, so an implicit level is the base level (LOD mode none) and a bias is refused.
 
 ## Derivatives and helper invocations
 
@@ -258,7 +263,7 @@ shadercompiler(2), mali(3)
 
 # BUGS
 
-Vertex and fragment shaders have no thread storage in the draw, so a spill or a stack variable gives a non-zero `stackBytes` the driver must honour; both run in every IDVS pass entirely, so a varying's computation is also done in the position pass; derivatives other than an implicit level, FragDepth and integer colour outputs, point size and layer outputs are refused or not stored; the attribute loads and the varying and special loads are checked by the validator and, for the vertex stage's stores, on the interpreter (whose model of the hardware vertex buffer is a test's), not yet on a GPU except the position record.
+Vertex and fragment shaders have no thread storage in the draw, so a spill or a stack variable gives a non-zero `stackBytes` the driver must honour; a vertex shader that is not divided (control flow, multiview, a NoPerspective varying) runs whole in both IDVS passes, so its varyings' work is also done in the position pass; derivatives other than an implicit level, FragDepth and integer colour outputs, point size and layer outputs are refused or not stored; the attribute loads and the varying and special loads are checked by the validator and, for the vertex stage's stores, on the interpreter (whose model of the hardware vertex buffer is a test's), not yet on a GPU except the position record.
 Double floats, cube, depth and multisampled storage images, 3D and unknown-format storage images, derivatives in a compute shader, pointers in phis or selects and push constants read at a run-time offset are refused (`unsupported`).
 Sine and cosine are wrong past about 411000 radians; beyond 1100 they are good to about 4e-5, not the 2^-15.7 of -pi to pi.
 The subgroup size is 16 and the lanes of a subgroup are the consecutive local invocation indices; vertex shaders have no subgroup operations; scopes other than Subgroup, group operations other than Reduce, InclusiveScan, ExclusiveScan and ClusteredReduce, and an execution barrier in divergent code are not handled.

@@ -6,9 +6,11 @@ src drivers/gpu/lib/CSF.swift
 # SYNOPSIS
 
 ```text
-protocol todhchai.gpu.csf.Context version 3
+protocol todhchai.gpu.csf.Context version 5
 call info() -> Info
 call limits() -> Limits
+call textureFeatures() -> UInt32
+call importBuffer(vmo: Handle, size: UInt64) throws(GPUError) -> UInt32
 call createVM(userRange: UInt64) throws(GPUError) -> VMInfo
 call destroyVM(vm: UInt32) throws(GPUError)
 call createBuffer(size: UInt64, flags: UInt32) throws(GPUError) -> Buffer
@@ -42,15 +44,23 @@ call submit(
     waits: [SyncValue],
     signals: [SyncValue]
 ) throws(GPUError)
+one-way post(
+    group: UInt32,
+    jobs: [Job],
+    waits: [SyncValue],
+    signals: [SyncValue]
+)
 ```
 
 # DESCRIPTION
 
-Protocol `todhchai.gpu.csf.Context`, version 3, of library `GPUCSFIPC`, its messages in the one wire format (wire(6)).
+Protocol `todhchai.gpu.csf.Context`, version 5, of library `GPUCSFIPC`, its messages in the one wire format (wire(6)).
 
 | Method | Kind | Since | Ordinal |
 | `info` | call | 1 | `0x3a5cdeecc2a8b8c0` |
 | `limits` | call | 2 | `0x14f77a9c0aaeee64` |
+| `textureFeatures` | call | 4 | `0x13039d7ef8af6768` |
+| `importBuffer` | call | 4 | `0x6460980629fff7a7` |
 | `createVM` | call | 1 | `0x703588523fa56895` |
 | `destroyVM` | call | 1 | `0x6534cc7cd460e5cf` |
 | `createBuffer` | call | 1 | `0x5704f45c66216682` |
@@ -65,9 +75,16 @@ Protocol `todhchai.gpu.csf.Context`, version 3, of library `GPUCSFIPC`, its mess
 | `addSync` | call | 1 | `0x38cec41b4c23c800` |
 | `removeSync` | call | 1 | `0x6cacb6ed7ba76baf` |
 | `submit` | call | 1 | `0x6b64f57e128aca0c` |
+| `post` | one-way | 5 | `0x7d2fbe9faf0e52d6` |
 
 : `limits`
   The thread limits (`Limits`).
+: `textureFeatures`
+  TEXTURE_FEATURES[0] (valhall 05 section 5.4.2): a bit for each compressed texture format the GPU has.
+: `importBuffer`
+  A buffer over the pages of `vmo`, a VMO another process gave (the client's own reference to it, which the driver
+  does not take): pinned for the GPU, `size` bytes of it (a multiple of the GPU page). Its id names it to `bind`, as
+  a created buffer's does; the driver changes nothing about how the pages are mapped by the CPU.
 : `createVM`
   A VM of `userRange` bytes of the client's addresses (0 chooses;
   at most the address space less 256 MiB); the handle and where the
@@ -112,6 +129,9 @@ Protocol `todhchai.gpu.csf.Context`, version 3, of library `GPUCSFIPC`, its mess
   its value; when the last job of the call is done, each signal is
   raised to its value, well or not (`groupState` says). A group that
   ended gives `lost`.
+: `post`
+  `submit` with no answer: the call returns once the request is sent, and the driver does the rest while the client goes
+  on. A submission the driver refuses raises its signals and sets bit 3 of its group's `state`.
 
 @node layouts Message layouts
 
@@ -132,6 +152,28 @@ Reply body, 16 bytes inline:
 
 | Offset | Size | Field | Type |
 | 0 | 16 | `result` | Limits (inline) |
+
+## textureFeatures
+
+Request body: empty.
+
+Reply body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `result` | UInt32 |
+
+## importBuffer
+
+Request body, 16 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `vmo` | Handle (in the handle array) |
+| 8 | 8 | `size` | UInt64 |
+
+Reply body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `result` | UInt32 |
 
 ## createVM
 
@@ -293,6 +335,16 @@ Request body, 56 bytes inline:
 | 40 | 16 | `signals` | [SyncValue] (16-byte elements out of line) |
 
 Reply body: empty.
+
+## post
+
+Request body, 56 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `group` | UInt32 |
+| 8 | 16 | `jobs` | [Job] (24-byte elements out of line) |
+| 24 | 16 | `waits` | [SyncValue] (16-byte elements out of line) |
+| 40 | 16 | `signals` | [SyncValue] (16-byte elements out of line) |
 
 @node types Types
 

@@ -40,7 +40,7 @@ private func plain(_ listing: String) -> [String] {
     let v = try #require(c.vertex)
     // r59 (the internal vertex id) and r60 (the vertex index): the hand-assembled shader's mask.
     #expect(v.preloadMask == TriangleShaders.positionPreloadMask)
-    #expect(v.registerClass == .r64)
+    #expect(v.registerClass == .r32)  // it fits r0 to r15 and r48 to r63
     #expect(v.layout.viewportWord == 0 && v.layout.nonPerspectiveWord == -1)
     // The root pointer is the first push constant: words 6 and 7, after the viewport's three slots.
     #expect(v.layout.pushWord == 6 && v.layout.pushWords == 2 && v.layout.words == 8)
@@ -147,32 +147,28 @@ private func plain(_ listing: String) -> [String] {
     IMUL.u32 r2, r3^, r4^
     IADD.u32 r7, r7^, r2^
     IADD.u64 r0:r1, r0^:r1^, r6^:r7^
-    LOAD.i32.slot0 @r2, [r0:r1], offset:0
-    LOAD.i32.slot1 @r3, [r0:r1], offset:4
-    LOAD.i32.slot2 @r4, [r0:r1], offset:8
-    LOAD.i32.slot0 @r5, [r0^:r1^], offset:12
+    LOAD.i128.slot0 @r2:r3:r4:r5, [r0^:r1^], offset:0
     NOP.wait0
     FRCP.f32 r0, r5^
-    FMA.f32 r0, 0x3F800000, r0^, 0x0.neg
     IADD_IMM.i32 r1, 0x0, #0xC7000000
     FMAX.f32 r0, r0^, r1^
     IADD_IMM.i32 r1, 0x0, #0x47000000
     FMIN.f32 r0, r0^, r1^
     FMA.f32 r1, r2^, r0, 0x0.neg
-    FMA.f32.wait1 r1, r1^, u0.w0, u0.w1
-    FMA.f32 r2, r3^, r0, 0x0.neg
-    FMA.f32.wait2 r2, r2^, u1.w0, u1.w1
-    FMA.f32 r3, r4^, r0, 0x0.neg
-    FMA.f32 r3, r3^, u2.w0, u2.w1
-    MOV.i32 r4, r1^
-    MOV.i32 r5, r2^
-    MOV.i32 r6, r3^
-    MOV.i32 r7, r0^
+    FMA.f32 r1, r1^, u0.w0, u0.w1
+    FMA.f32 r6, r3^, r0, 0x0.neg
+    FMA.f32 r6, r6^, u1.w0, u1.w1
+    FMA.f32 r2, r4^, r0, 0x0.neg
+    FMA.f32 r2, r2^, u2.w0, u2.w1
+    MOV.i32 r8, r1^
+    MOV.i32 r9, r6^
+    MOV.i32 r10, r2^
+    MOV.i32 r11, r0^
     AND_IMM.i32 r0, shader_output.w0, #0x1
     BRANCH.not.reconverge r0^, offset:5
     LEA_BUF_IMM.slot0 @r0:r1, r59^, table:13, index:0
     NOP.wait0
-    STORE.i128.istream.slot1 @r4:r5:r6:r7, [r0^:r1^], offset:0
+    STORE.i128.istream.slot1 @r8:r9:r10:r11, [r0^:r1^], offset:0
     NOP.wait1
     NOP.reconverge
     NOP.end
@@ -253,6 +249,20 @@ private func plain(_ listing: String) -> [String] {
       // x = (ndc x * 32) + 32, y = (0.25 * 16) + 16, z = 0, w' = 1.
       #expect(run.positions[n] == [bits((f / 16 - 0.5) * 32 + 32), bits(0.25 * 16 + 16), bits(0), bits(1)], "vertex \(n)")
     }
+  }
+
+  @Test func aVertexShaderIsDividedBetweenThePasses() throws {
+    // aVaryingIsStoredAtItsLocation runs this shader once with shader_output 1 and once with 4: each group's work and stores
+    // behind its own bit, shader_output read once.
+    let c = try compileGraphicsText(Corpus.varyingVertex)
+    let text = c.listing
+    #expect(text.components(separatedBy: "shader_output").count == 2)
+    #expect(text.components(separatedBy: "AND_IMM.i32").count == 3)
+    // The position's viewport transform is behind the first test, so the varying pass doesn't make it.
+    let lines = text.split(separator: "\n")
+    let firstBranch = try #require(lines.firstIndex { $0.hasPrefix("BRANCH") })
+    let rcp = try #require(lines.firstIndex { $0.hasPrefix("FRCP") })
+    #expect(rcp > firstBranch)
   }
 
   /// The varying shader with the colour's alpha as the position's w.
