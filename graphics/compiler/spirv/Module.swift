@@ -45,7 +45,10 @@ public enum Decor {
   public static let specId: UInt32 = 1
   public static let block: UInt32 = 2
   public static let bufferBlock: UInt32 = 3
+  public static let rowMajor: UInt32 = 4
+  public static let colMajor: UInt32 = 5
   public static let arrayStride: UInt32 = 6
+  public static let matrixStride: UInt32 = 7
   public static let builtIn: UInt32 = 11
   public static let nonWritable: UInt32 = 24
   public static let nonReadable: UInt32 = 25
@@ -148,6 +151,8 @@ public enum SPIRVType: Equatable {
   case int(width: Int, signed: Bool)
   case float(width: Int)
   case vector(element: UInt32, count: Int)
+  /// OpTypeMatrix: `columns` columns, each a float vector of type `column`. A matrix is lowered as its columns.
+  case matrix(column: UInt32, columns: Int)
   case array(element: UInt32, length: UInt32)  // length: a constant's id
   case runtimeArray(element: UInt32)
   case structure(members: [UInt32])

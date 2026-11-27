@@ -106,6 +106,12 @@ public enum Op {
   public static let fRem: UInt16 = 140
   public static let fMod: UInt16 = 141
   public static let vectorTimesScalar: UInt16 = 142
+  public static let matrixTimesScalar: UInt16 = 143
+  public static let vectorTimesMatrix: UInt16 = 144
+  public static let matrixTimesVector: UInt16 = 145
+  public static let matrixTimesMatrix: UInt16 = 146
+  public static let outerProduct: UInt16 = 147
+  public static let transpose: UInt16 = 84
   public static let dot: UInt16 = 148
   public static let any: UInt16 = 154
   public static let all: UInt16 = 155
@@ -230,6 +236,7 @@ enum OpTable {
       (Op.typeRuntimeArray, "OpTypeRuntimeArray"), (Op.typeStruct, "OpTypeStruct"),
       (Op.typePointer, "OpTypePointer"), (Op.typeFunction, "OpTypeFunction"), (Op.label, "OpLabel"),
       (Op.typeImage, "OpTypeImage"), (Op.typeSampler, "OpTypeSampler"), (Op.typeSampledImage, "OpTypeSampledImage"),
+      (Op.typeMatrix, "OpTypeMatrix"),
     ] as [(UInt16, String)] { add(c, n, 2) }
     // A result type and a result id.
     for (c, n) in [
@@ -287,7 +294,7 @@ enum OpTable {
     ] as [(UInt16, String)] where c < 512 { add(c, n, 3) }
     // Parsed, refused by name.
     for (c, n) in [
-      (Op.typeMatrix, "OpTypeMatrix"), (Op.typeOpaque, "OpTypeOpaque"),
+      (Op.typeOpaque, "OpTypeOpaque"),
     ] as [(UInt16, String)] { add(c, n, 2 | 4) }
     for (c, n) in [
       (73, "OpDecorationGroup"), (84, "OpTranspose"), 
@@ -316,6 +323,9 @@ enum OpTable {
       (96, "OpImageGather"), (97, "OpImageDrefGather"), (103, "OpImageQuerySizeLod"), (105, "OpImageQueryLod"),
       (207, "OpDPdx"), (208, "OpDPdy"), (209, "OpFwidth"), (210, "OpDPdxFine"), (211, "OpDPdyFine"), (212, "OpFwidthFine"),
       (213, "OpDPdxCoarse"), (214, "OpDPdyCoarse"), (215, "OpFwidthCoarse"),
+      // Matrices (Lower.swift and LowerOps.swift: a matrix is its columns).
+      (Op.transpose, "OpTranspose"), (Op.matrixTimesScalar, "OpMatrixTimesScalar"), (Op.vectorTimesMatrix, "OpVectorTimesMatrix"),
+      (Op.matrixTimesVector, "OpMatrixTimesVector"), (Op.matrixTimesMatrix, "OpMatrixTimesMatrix"), (Op.outerProduct, "OpOuterProduct"),
     ] as [(UInt16, String)] { add(c, n, 3) }
     return t
   }()

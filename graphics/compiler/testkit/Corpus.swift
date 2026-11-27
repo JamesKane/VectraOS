@@ -393,6 +393,101 @@ public enum Corpus {
     OpFunctionEnd
     """
 
+  /// Matrices, as glslang writes them: a mat4 in a block (ColMajor, MatrixStride 16) after a vec4, its column read through
+  /// an access chain with a dynamic index, a mat4 kept in a Function variable, and every matrix instruction. For a = in_[i]
+  /// and k = i % 4, out_[i * 7 + n] is, for n from 0: M * a, a * M, (M * M) * a, transpose(M) * a, M[k] * 2 (a column of
+  /// M times a scalar, through OpMatrixTimesScalar), outerProduct(a, a)[1], and the copy of M * M in the variable times a.
+  public static let matrix = """
+    OpCapability Shader
+    OpMemoryModel Logical GLSL450
+    OpEntryPoint GLCompute %main "main" %gid
+    OpExecutionMode %main LocalSize 16 1 1
+    OpDecorate %gid BuiltIn GlobalInvocationId
+    OpDecorate %varr ArrayStride 16
+    OpMemberDecorate %M 0 Offset 0
+    OpMemberDecorate %M 1 ColMajor
+    OpMemberDecorate %M 1 Offset 16
+    OpMemberDecorate %M 1 MatrixStride 16
+    OpDecorate %M Block
+    OpMemberDecorate %In 0 Offset 0
+    OpDecorate %In Block
+    OpMemberDecorate %Out 0 Offset 0
+    OpDecorate %Out Block
+    OpDecorate %mv DescriptorSet 0
+    OpDecorate %mv Binding 0
+    OpDecorate %inv DescriptorSet 0
+    OpDecorate %inv Binding 1
+    OpDecorate %outv DescriptorSet 0
+    OpDecorate %outv Binding 2
+    \(prelude)
+    %mat4 = OpTypeMatrix %v4float 4
+    %ptr_fn_mat4 = OpTypePointer Function %mat4
+    %u7 = OpConstant %uint 7
+    %u5 = OpConstant %uint 5
+    %u6 = OpConstant %uint 6
+    %gid = OpVariable %ptr_in_v3uint Input
+    %varr = OpTypeRuntimeArray %v4float
+    %M = OpTypeStruct %v4float %mat4
+    %In = OpTypeStruct %varr
+    %Out = OpTypeStruct %varr
+    %ptr_sb_M = OpTypePointer StorageBuffer %M
+    %ptr_sb_mat4 = OpTypePointer StorageBuffer %mat4
+    %ptr_sb_In = OpTypePointer StorageBuffer %In
+    %ptr_sb_Out = OpTypePointer StorageBuffer %Out
+    %mv = OpVariable %ptr_sb_M StorageBuffer
+    %inv = OpVariable %ptr_sb_In StorageBuffer
+    %outv = OpVariable %ptr_sb_Out StorageBuffer
+    %main = OpFunction %void None %fn
+    %entry = OpLabel
+    %var = OpVariable %ptr_fn_mat4 Function
+    %gp = OpAccessChain %ptr_in_uint %gid %u0
+    %i = OpLoad %uint %gp
+    %k = OpUMod %uint %i %u4
+    %p = OpAccessChain %ptr_sb_v4float %inv %u0 %i
+    %a = OpLoad %v4float %p
+    %mp = OpAccessChain %ptr_sb_mat4 %mv %u1
+    %m = OpLoad %mat4 %mp
+    %r0 = OpMatrixTimesVector %v4float %m %a
+    %r1 = OpVectorTimesMatrix %v4float %a %m
+    %mm = OpMatrixTimesMatrix %mat4 %m %m
+    %r2 = OpMatrixTimesVector %v4float %mm %a
+    %mt = OpTranspose %mat4 %m
+    %r3 = OpMatrixTimesVector %v4float %mt %a
+    %cp = OpAccessChain %ptr_sb_v4float %mv %u1 %k
+    %col = OpLoad %v4float %cp
+    %cm = OpCompositeConstruct %mat4 %col %col %col %col
+    %c2 = OpMatrixTimesScalar %mat4 %cm %f2
+    %r4 = OpCompositeExtract %v4float %c2 2
+    %op = OpOuterProduct %mat4 %a %a
+    %r5 = OpCompositeExtract %v4float %op 1
+    OpStore %var %mm
+    %back = OpLoad %mat4 %var
+    %r6 = OpMatrixTimesVector %v4float %back %a
+    %base = OpIMul %uint %i %u7
+    %q0 = OpAccessChain %ptr_sb_v4float %outv %u0 %base
+    OpStore %q0 %r0
+    %b1 = OpIAdd %uint %base %u1
+    %q1 = OpAccessChain %ptr_sb_v4float %outv %u0 %b1
+    OpStore %q1 %r1
+    %b2 = OpIAdd %uint %base %u2
+    %q2 = OpAccessChain %ptr_sb_v4float %outv %u0 %b2
+    OpStore %q2 %r2
+    %b3 = OpIAdd %uint %base %u3
+    %q3 = OpAccessChain %ptr_sb_v4float %outv %u0 %b3
+    OpStore %q3 %r3
+    %b4 = OpIAdd %uint %base %u4
+    %q4 = OpAccessChain %ptr_sb_v4float %outv %u0 %b4
+    OpStore %q4 %r4
+    %b5 = OpIAdd %uint %base %u5
+    %q5 = OpAccessChain %ptr_sb_v4float %outv %u0 %b5
+    OpStore %q5 %r5
+    %b6 = OpIAdd %uint %base %u6
+    %q6 = OpAccessChain %ptr_sb_v4float %outv %u0 %b6
+    OpStore %q6 %r6
+    OpReturn
+    OpFunctionEnd
+    """
+
   /// The GLSL.std.450 instructions the lowering knows, one result each:
   /// out_f[i * 22 + k] and out_u[i * 5 + k] for the instruction named in
   /// `mathFloat` and `mathInt`, from x = in_[i] (float) and i.

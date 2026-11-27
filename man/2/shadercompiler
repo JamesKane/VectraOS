@@ -60,8 +60,8 @@ It is Swift, tier 0: no collections of hashed keys, no existentials, typed error
 
 `SPIRVModule.parse` reads a binary and checks its structure: the header, that each id is defined once and is of the kind its use needs, that types are well formed, that every block ends in one terminator, that a merge instruction is followed by the branch it belongs to, that phis come first, and that branch targets and phi predecessors are blocks of the function.
 Capabilities are checked against the types that need them.
-What it accepts: the capabilities Shader, Matrix (implied), Int8, Int16, Int64, Int64Atomics, Float16, Float64, PhysicalStorageBufferAddresses, the GroupNonUniform family (Vote, Arithmetic, Ballot, Shuffle, ShuffleRelative, Clustered, Quad), the 8 and 16-bit storage capabilities and the float atomics (AtomicFloat16AddEXT, AtomicFloat32AddEXT, AtomicFloat16MinMaxEXT, AtomicFloat32MinMaxEXT); the Logical and PhysicalStorageBuffer64 addressing models with the GLSL450 or Vulkan memory model; the execution models GLCompute, Vertex and Fragment; void, bool, integer, float, vector, array, runtime array, struct, pointer (OpTypeForwardPointer declares one before its pointee) and function types; constants, composites, null and undefined values, specialization constants and OpSpecConstantOp on integers; storage classes Input, Output, Uniform, StorageBuffer, Workgroup, Private, Function, PushConstant and PhysicalStorageBuffer; structured control flow; the GLSL.std.450 extended set.
-Decorations are kept as data on the module (`decoration`, `memberDecoration`); the lowering reads BuiltIn, DescriptorSet, Binding, Offset and ArrayStride.
+What it accepts: the capabilities Shader, Matrix (implied), Int8, Int16, Int64, Int64Atomics, Float16, Float64, PhysicalStorageBufferAddresses, the GroupNonUniform family (Vote, Arithmetic, Ballot, Shuffle, ShuffleRelative, Clustered, Quad), the 8 and 16-bit storage capabilities and the float atomics (AtomicFloat16AddEXT, AtomicFloat32AddEXT, AtomicFloat16MinMaxEXT, AtomicFloat32MinMaxEXT); the Logical and PhysicalStorageBuffer64 addressing models with the GLSL450 or Vulkan memory model; the execution models GLCompute, Vertex and Fragment; void, bool, integer, float, vector, matrix (of float columns), array, runtime array, struct, pointer (OpTypeForwardPointer declares one before its pointee) and function types; constants, composites, null and undefined values, specialization constants and OpSpecConstantOp on integers; storage classes Input, Output, Uniform, StorageBuffer, Workgroup, Private, Function, PushConstant and PhysicalStorageBuffer; structured control flow; the GLSL.std.450 extended set.
+Decorations are kept as data on the module (`decoration`, `memberDecoration`); the lowering reads BuiltIn, DescriptorSet, Binding, Offset, ArrayStride, MatrixStride and RowMajor.
 
 An unsupported feature is refused by name, with the instruction: `OpTypeImage %5: not supported by the compiler`, `OpCapability: capability Geometry is not supported`.
 `unsupported` lists, without parsing, everything in a binary the compiler would refuse: instructions, capabilities, execution models, decorations and storage classes.
@@ -75,7 +75,8 @@ Constants are values, not instructions, so they dominate everything and are shar
 
 Types are `void`, scalars `i1`, `i8`, `i16`, `i32`, `i64`, `f16`, `f32`, `f64` (integers carry no sign; the operation does), vectors of two to four scalars until the scalarisation pass, and pointers.
 A pointer carries its address space: `global` (a 64-bit device address), `storage`, `uniform` (read only), `push`, `workgroup`, `private` and `function`.
-Structs and arrays are not values: the lowering flattens them to their leaves, and a load or store of one becomes an access for each leaf.
+Structs, arrays and matrices are not values: the lowering flattens them to their leaves (a matrix's are its column vectors, MatrixStride apart in memory, or their natural stride), and a load or store of one becomes an access for each leaf.
+The matrix instructions (OpMatrixTimesVector, OpVectorTimesMatrix, OpMatrixTimesMatrix, OpMatrixTimesScalar, OpOuterProduct, OpTranspose) are written out on the columns: a product as a multiply of the first column and fused multiply-adds of the rest, as the GLSL front end writes them.
 
 Operations (`IROp`):
 
@@ -186,7 +187,7 @@ vx-shaders(1), loinnir(2), mali(3)
 A subgroup reduction or scan costs 16 permutes; vector 8 and 16-bit arithmetic is scalarised, not paired in the half-register forms.
 Derivatives in a compute shader, of 16-bit floats and of a cube image's explicit gradients are refused; the spec leaves open what the cube's four derivative words mean (12b.5.8).
 A fragment shader's Layer is read from the frame argument, where the driver must write it; a vertex shader's PointSize is accepted and not stored.
-Matrices, ClipDistance and CullDistance, geometry and tessellation, subgroup operations at a scope other than Subgroup, group operations other than Reduce, InclusiveScan, ExclusiveScan and ClusteredReduce, and OpFRem and OpFMod are refused.
+Row-major matrices, the Determinant and MatrixInverse extended instructions, ClipDistance and CullDistance, geometry and tessellation, subgroup operations at a scope other than Subgroup, group operations other than Reduce, InclusiveScan, ExclusiveScan and ClusteredReduce, and OpFRem and OpFMod are refused.
 Functions are not inlined by the compiler; a function with a vector or aggregate parameter or result is refused by the scalarisation or the lowering (the Valhall backend inlines first).
 Arrays of buffers are refused.
 

@@ -273,16 +273,19 @@ import Testing
   }
 
   @Test func unreadableThingsAreRefusedNotGuessed() {
-    // A matrix type.
-    let mat = refusal(
+    // A matrix of integers, which SPIR-V doesn't have.
+    let ints = refusal(
       """
       OpCapability Shader
       OpMemoryModel Logical GLSL450
-      %f = OpTypeFloat 32
-      %v = OpTypeVector %f 4
+      %i = OpTypeInt 32 1
+      %v = OpTypeVector %i 4
       %m = OpTypeMatrix %v 4
       """, lower: true)
-    #expect(mat.contains("OpTypeMatrix") && mat.contains("not supported"), "\(mat)")
+    #expect(ints.contains("OpTypeMatrix") && ints.contains("a vector of floats"), "\(ints)")
+    // A row-major matrix in a block: refused by name, not read as column-major.
+    let rows = refusal(compute(replacing: "OpMemberDecorate %M 1 ColMajor", with: "OpMemberDecorate %M 1 RowMajor", in: Corpus.matrix), lower: true)
+    #expect(rows.contains("row-major matrices are not supported"), "\(rows)")
   }
 }
 

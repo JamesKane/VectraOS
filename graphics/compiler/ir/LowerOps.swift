@@ -350,6 +350,8 @@ extension Lowerer {
       }
     case Op.compositeExtract, Op.compositeInsert:
       try lowerCompositeAccess(i)
+    case Op.matrixTimesScalar, Op.vectorTimesMatrix, Op.matrixTimesVector, Op.matrixTimesMatrix, Op.outerProduct, Op.transpose:
+      try lowerMatrixOp(i)
     case Op.extInst:
       try lowerExtInst(i)
     case Op.fRem, Op.fMod:
@@ -357,6 +359,87 @@ extension Lowerer {
     default:
       if let info = OpTable.info(i.op) { throw fail(i, "\(info.name) is not supported yet") }
       throw fail(i, "unknown instruction")
+    }
+  }
+
+  /// A float matrix's columns (its leaves), checked against its type.
+  mutating func columns(_ id: UInt32, _ i: SPIRVInstruction) throws(CompileError) -> [ValueID] {
+    guard case .matrix(_, let n)? = m.type(m.idType[Int(id)]) else { throw fail(i, "operand %\(id) is not a matrix") }
+    let cs = try leaves(id, i)
+    guard cs.count == n else { throw fail(i, "operand %\(id) has \(cs.count) columns, not \(n)") }
+    return cs
+  }
+
+  /// m * v: the first column times v's first lane, and a fused multiply-add of each other column with its lane.
+  mutating func matrixTimesVector(_ cs: [ValueID], _ v: ValueID) -> ValueID {
+    let l = lanes(v)
+    let ct = f.type(cs[0])
+    var acc = emit(.fmul, ct, [cs[0], splatValue(l[0], to: ct)])
+    for k in 1..<cs.count { acc = emit(.fma, ct, [cs[k], splatValue(l[k], to: ct), acc]) }
+    return acc
+  }
+
+  /// The matrix operations, on matrices as their columns (the GLSL front end writes the same products itself).
+  mutating func lowerMatrixOp(_ i: SPIRVInstruction) throws(CompileError) {
+    let o = i.operands
+    guard o.count >= 1 else { throw fail(i, "needs operands") }
+    func resultColumns() throws(CompileError) -> (IRType, Int) {
+      guard case .matrix(let c, let n)? = m.type(i.type) else { throw fail(i, "the result is not a matrix") }
+      return (try irType(c, i), n)
+    }
+    switch i.op {
+    case Op.matrixTimesScalar:
+      guard o.count == 2 else { throw fail(i, "needs a matrix and a scalar") }
+      let cs = try columns(o[0], i)
+      let s = try val(o[1], i)
+      lv[Int(i.result)] = cs.map { emit(.fmul, f.type($0), [$0, splatValue(s, to: f.type($0))]) }
+    case Op.matrixTimesVector:
+      guard o.count == 2 else { throw fail(i, "needs a matrix and a vector") }
+      let cs = try columns(o[0], i)
+      let v = try val(o[1], i)
+      guard f.type(v).lanes == cs.count else { throw fail(i, "the vector's width is not the matrix's column count") }
+      lv[Int(i.result)] = [matrixTimesVector(cs, v)]
+    case Op.vectorTimesMatrix:
+      guard o.count == 2 else { throw fail(i, "needs a vector and a matrix") }
+      let v = try val(o[0], i)
+      let cs = try columns(o[1], i)
+      let lv0 = lanes(v)
+      var r: [ValueID] = []
+      for c in cs {
+        let lc = lanes(c)
+        guard lc.count == lv0.count else { throw fail(i, "the vector's width is not the matrix's row count") }
+        let et = f.type(c).element
+        var acc = emit(.fmul, et, [lv0[0], lc[0]])
+        for k in 1..<lc.count { acc = emit(.fma, et, [lv0[k], lc[k], acc]) }
+        r.append(acc)
+      }
+      lv[Int(i.result)] = [makeVector(r)]
+    case Op.matrixTimesMatrix:
+      guard o.count == 2 else { throw fail(i, "needs two matrices") }
+      let a = try columns(o[0], i)
+      let b = try columns(o[1], i)
+      var r: [ValueID] = []
+      for c in b {
+        guard f.type(c).lanes == a.count else { throw fail(i, "the matrices' shapes don't multiply") }
+        r.append(matrixTimesVector(a, c))
+      }
+      lv[Int(i.result)] = r
+    case Op.outerProduct:
+      guard o.count == 2 else { throw fail(i, "needs two vectors") }
+      let c = try val(o[0], i)
+      let rv = try val(o[1], i)
+      let (ct, n) = try resultColumns()
+      let l = lanes(rv)
+      guard l.count == n, f.type(c) == ct else { throw fail(i, "the vectors' widths are not the result's shape") }
+      lv[Int(i.result)] = l.map { emit(.fmul, ct, [c, splatValue($0, to: ct)]) }
+    default:  // OpTranspose
+      let cs = try columns(o[0], i)
+      let (ct, n) = try resultColumns()
+      let ls = cs.map { lanes($0) }
+      guard ls.allSatisfy({ $0.count == n }), ct.lanes == cs.count else { throw fail(i, "the result is not the transpose's shape") }
+      var r: [ValueID] = []
+      for row in 0..<n { r.append(makeVector(ls.map { $0[row] })) }
+      lv[Int(i.result)] = r
     }
   }
 
@@ -378,6 +461,10 @@ extension Lowerer {
         guard idx[k] < UInt32(truncatingIfNeeded: try evalInt(len, i)) else { throw fail(i, "index \(idx[k]) is out of range") }
         off += Int(idx[k]) * (try leafCount(e, i))
         cur = e
+      case .matrix(let c, let n)?:
+        guard Int(idx[k]) < n else { throw fail(i, "column \(idx[k]) is out of range") }
+        off += Int(idx[k])
+        cur = c
       case .vector(let e, let n)?:
         guard k == idx.count - 1, Int(idx[k]) < n else { throw fail(i, "a bad vector index") }
         return (off, 1, Int(idx[k]), e)

@@ -237,7 +237,7 @@ struct Lowerer {
 
   func isAggregate(_ t: UInt32) -> Bool {
     switch m.type(t) {
-    case .structure?, .array?, .runtimeArray?: return true
+    case .structure?, .array?, .runtimeArray?, .matrix?: return true
     default: return false
     }
   }
@@ -275,7 +275,7 @@ struct Lowerer {
       guard case .scalar(let s) = try irType(e, i) else { throw fail(i, "a vector of non-scalars") }
       return .vector(s, n)
     case .pointer(let sc, _): return .ptr(try addrSpace(sc, i))
-    case .structure, .array, .runtimeArray: throw fail(i, "an aggregate type has no single IR type")
+    case .structure, .array, .runtimeArray, .matrix: throw fail(i, "an aggregate type has no single IR type")
     case .function: throw fail(i, "a function type has no value")
     case .image, .sampler, .sampledImage: throw fail(i, "an image or a sampler is not a value the shader can hold (it is only loaded and sampled)")
     }
@@ -289,6 +289,7 @@ struct Lowerer {
       return n
     case .array(let e, let len)?:
       return try leafCount(e, i) * Int(try evalInt(len, i))
+    case .matrix(_, let n)?: return n
     case .runtimeArray?: throw fail(i, "a runtime array has no value")
     default: return 1
     }
@@ -301,6 +302,8 @@ struct Lowerer {
     case .array(let e, let len)?:
       let n = Int(try evalInt(len, i))
       for _ in 0..<n { try leafTypes(e, i, into: &into) }
+    case .matrix(let c, let n)?:
+      for _ in 0..<n { into.append(try irType(c, i)) }
     case .runtimeArray?: throw fail(i, "a runtime array has no value")
     default: into.append(try irType(t, i))
     }
@@ -332,6 +335,9 @@ struct Lowerer {
     case .runtimeArray(let e):
       let (_, a) = try sizeAlign(e, i)
       return (0, a)
+    case .matrix(let c, let n):
+      let (_, a) = try sizeAlign(c, i)
+      return (try matrixStride(c, nil, i) * n, a)
     default: throw fail(i, "a type with no size")
     }
   }
@@ -342,6 +348,20 @@ struct Lowerer {
     return Lowerer.alignUp(s, a)
   }
 
+  /// The distance between a matrix's columns: the MatrixStride its struct member is decorated with (`decorated`), or its
+  /// column's size rounded up to the column's alignment.
+  func matrixStride(_ column: UInt32, _ decorated: Int?, _ i: SPIRVInstruction) throws(CompileError) -> Int {
+    if let s = decorated { return s }
+    let (s, a) = try sizeAlign(column, i)
+    return Lowerer.alignUp(s, a)
+  }
+
+  /// A struct member's MatrixStride, for the matrices it is or holds; a row-major member is refused.
+  func memberMatrixStride(_ t: UInt32, _ k: Int, _ i: SPIRVInstruction) throws(CompileError) -> Int? {
+    if m.memberDecoration(t, k, Decor.rowMajor) != nil { throw fail(i, "row-major matrices are not supported yet") }
+    return m.memberDecoration(t, k, Decor.matrixStride)?.first.map { Int($0) }
+  }
+
   func structLayout(_ t: UInt32, _ i: SPIRVInstruction) throws(CompileError) -> (offsets: [Int], size: Int, align: Int)
   {
     guard case .structure(let ms)? = m.type(t) else { throw fail(i, "%\(t) is not a struct") }
@@ -349,7 +369,8 @@ struct Lowerer {
     var off = 0
     var maxAlign = 1
     for (k, mt) in ms.enumerated() {
-      let (s, a) = try sizeAlign(mt, i)
+      var (s, a) = try sizeAlign(mt, i)
+      if case .matrix(let c, let n)? = m.type(mt), let ds = try memberMatrixStride(t, k, i) { s = try matrixStride(c, ds, i) * n }
       if let o = m.memberDecoration(t, k, Decor.offset)?.first {
         off = Int(o)
       } else {
@@ -495,6 +516,10 @@ struct Lowerer {
     case .array(let e, let len)?:
       var all: [ValueID] = []
       for _ in 0..<Int(try evalInt(len, i)) { all.append(contentsOf: try zeroLeaves(e, i)) }
+      return all
+    case .matrix(let c, let n)?:
+      var all: [ValueID] = []
+      for _ in 0..<n { all.append(contentsOf: try zeroLeaves(c, i)) }
       return all
     case .pointer?: throw fail(i, "a null pointer is not supported")
     default:
@@ -947,7 +972,8 @@ struct Lowerer {
   }
 
   mutating func loadLeaves(
-    _ t: UInt32, ptr: ValueID, off: Int, space: AddrSpace, align: Int, volatile: Bool, _ i: SPIRVInstruction
+    _ t: UInt32, ptr: ValueID, off: Int, space: AddrSpace, align: Int, volatile: Bool, mstride: Int? = nil,
+    _ i: SPIRVInstruction
   ) throws(CompileError) -> [ValueID] {
     switch m.type(t) {
     case .structure(let ms)?:
@@ -955,7 +981,15 @@ struct Lowerer {
       var all: [ValueID] = []
       for (k, mt) in ms.enumerated() {
         all.append(
-          contentsOf: try loadLeaves(mt, ptr: ptr, off: off + l.offsets[k], space: space, align: align, volatile: volatile, i))
+          contentsOf: try loadLeaves(mt, ptr: ptr, off: off + l.offsets[k], space: space, align: align, volatile: volatile,
+                                     mstride: try memberMatrixStride(t, k, i), i))
+      }
+      return all
+    case .matrix(let c, let n)?:
+      let stride = try matrixStride(c, mstride, i)
+      var all: [ValueID] = []
+      for k in 0..<n {
+        all.append(contentsOf: try loadLeaves(c, ptr: ptr, off: off + k * stride, space: space, align: align, volatile: volatile, i))
       }
       return all
     case .array(let e, let len)?:
@@ -965,7 +999,8 @@ struct Lowerer {
       var all: [ValueID] = []
       for k in 0..<n {
         all.append(
-          contentsOf: try loadLeaves(e, ptr: ptr, off: off + k * stride, space: space, align: align, volatile: volatile, i))
+          contentsOf: try loadLeaves(e, ptr: ptr, off: off + k * stride, space: space, align: align, volatile: volatile,
+                                     mstride: mstride, i))
       }
       return all
     case .runtimeArray?: throw fail(i, "a runtime array can't be loaded whole")
@@ -988,25 +1023,33 @@ struct Lowerer {
     _ i: SPIRVInstruction
   ) throws(CompileError) {
     var idx = at
-    try storeWalk(t, ptr: ptr, off: off, values: values, idx: &idx, align: align, volatile: volatile, i)
+    try storeWalk(t, ptr: ptr, off: off, values: values, idx: &idx, align: align, volatile: volatile, mstride: nil, i)
   }
 
   mutating func storeWalk(
-    _ t: UInt32, ptr: ValueID, off: Int, values: [ValueID], idx: inout Int, align: Int, volatile: Bool,
+    _ t: UInt32, ptr: ValueID, off: Int, values: [ValueID], idx: inout Int, align: Int, volatile: Bool, mstride: Int?,
     _ i: SPIRVInstruction
   ) throws(CompileError) {
     switch m.type(t) {
     case .structure(let ms)?:
       let l = try structLayout(t, i)
       for (k, mt) in ms.enumerated() {
-        try storeWalk(mt, ptr: ptr, off: off + l.offsets[k], values: values, idx: &idx, align: align, volatile: volatile, i)
+        try storeWalk(mt, ptr: ptr, off: off + l.offsets[k], values: values, idx: &idx, align: align, volatile: volatile,
+                      mstride: try memberMatrixStride(t, k, i), i)
+      }
+    case .matrix(let c, let n)?:
+      let stride = try matrixStride(c, mstride, i)
+      for k in 0..<n {
+        try storeWalk(c, ptr: ptr, off: off + k * stride, values: values, idx: &idx, align: align, volatile: volatile,
+                      mstride: nil, i)
       }
     case .array(let e, let len)?:
       let stride = try arrayStride(t, e, i)
       let n = Int(try evalInt(len, i))
       guard n <= 4096 else { throw fail(i, "storing a whole array of \(n) elements is not supported") }
       for k in 0..<n {
-        try storeWalk(e, ptr: ptr, off: off + k * stride, values: values, idx: &idx, align: align, volatile: volatile, i)
+        try storeWalk(e, ptr: ptr, off: off + k * stride, values: values, idx: &idx, align: align, volatile: volatile,
+                      mstride: mstride, i)
       }
     case .runtimeArray?: throw fail(i, "a runtime array can't be stored whole")
     default:
@@ -1067,6 +1110,8 @@ struct Lowerer {
     var dyn: ValueID? = nil
     var cur_ = pointee
     var indexAt = 1
+    // The MatrixStride of the struct member the chain went through last, for a matrix in it.
+    var mstride: Int? = nil
 
     func addTerm(_ l: inout Lowerer, _ idId: UInt32, stride: Int) throws(CompileError) {
       let iv = try l.val(idId, i)
@@ -1100,7 +1145,11 @@ struct Lowerer {
         let mi = Int(try evalInt(o[k], i))
         guard mi < ms.count else { throw fail(i, "member \(mi) is out of range") }
         cOff += try structLayout(cur_, i).offsets[mi]
+        mstride = try memberMatrixStride(cur_, mi, i)
         cur_ = ms[mi]
+      case .matrix(let c, _):
+        try addTerm(&self, o[k], stride: try matrixStride(c, mstride, i))
+        cur_ = c
       case .array(let e, _):
         try addTerm(&self, o[k], stride: try arrayStride(cur_, e, i))
         cur_ = e
