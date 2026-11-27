@@ -74,6 +74,8 @@ public struct MaliJob: Sendable, Equatable {
   public var queue: UInt32
   public var address: UInt64
   public var size: UInt32
+  /// The flush token of the kernel's flush before the job (0: always flush; panthor 10 `latest_flush`).
+  public var flush: UInt32 = 0
   public init(queue: UInt32, address: UInt64, size: UInt32) {
     self.queue = queue
     self.address = address

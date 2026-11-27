@@ -221,6 +221,8 @@ public struct DrawPassRequest: Sendable {
   public var viewMask: UInt32 = 0
   /// A probe of the hardware: hand back only the last context's chunk list (the leak of 07 section 7.10), to see what shows it.
   public var finishLastContextOnly = false
+  /// A probe of the pass's own time: eight 64-bit timestamps stored here as the streams run (`PassStamp`), or nil.
+  public var stamps: UInt64?
   /// The first colour target's writeback (08 section 8.3.2) and the distance between its sample surfaces.
   public var colourMSAA: UInt32 = 0
   /// The first colour target's block format (08 section 8.4.3): 2 linear, 8 the 64 KiB interleaved layout.
@@ -710,6 +712,14 @@ extension RenderPass {
     let fragmentSlot = r.layout == .singleQueue ? singleFragmentSlot : tilingSlot
     let fragmentMask = UInt16(1) << UInt16(fragmentSlot)
 
+    // The probe's timestamps (`stamps`): the slot's work waited for first, where a mask is given, then the store waited for.
+    func stamp(_ b: inout CSBuilder, _ k: PassStamp, after mask: UInt16 = 0) {
+      guard let at = r.stamps else { return }
+      if mask != 0 { b.wait(mask: mask) }
+      b.move64(CSRegisterMap.firstScratch, at + UInt64(8 * k.rawValue))
+      b.emit(CSInstruction.storeState(address: CSRegisterMap.firstScratch, state: .timestamp))
+      b.wait(mask: b.scoreboards.slotMask(dataSlot))
+    }
     func prologue(_ b: inout CSBuilder, resources: CSResources, fragment: Bool = false) {
       if r.initialiseQueues {
         b.initialiseSlotState()
@@ -810,20 +820,29 @@ extension RenderPass {
     var b0 = CSBuilder(address: va(stream0At), capacityBytes: max(capacity - stream0At, 0), registers: registers,
                        scoreboards: scoreboards)
     if r.layout == .singleQueue {
+      stamp(&b0, .tilingStream)
       prologue(&b0, resources: resourcesTiling | .fragment)
+      stamp(&b0, .tilingStart)
       tiling(&b0)
       b0.wait(mask: tilingMask | b0.scoreboards.slotMask(CSScoreboards.deferredSyncSlot))
+      stamp(&b0, .tiled)
+      stamp(&b0, .fragmentStart)
       zeroReports(&b0)
       fragment(&b0)
+      stamp(&b0, .finished, after: b0.scoreboards.slotMask(finishSlot))
       tail(&b0)
+      stamp(&b0, .cleaned)
       readbackReport(&b0)
       b0.endStep(r.chain)
       let s0: CSStream
       do throws(CSBuildError) { s0 = try b0.finish() } catch { throw .stream(error) }
       streams = [s0]
     } else {
+      stamp(&b0, .tilingStream)
       prologue(&b0, resources: resourcesTiling)
+      stamp(&b0, .tilingStart)
       tiling(&b0)
+      stamp(&b0, .tiled, after: tilingMask | b0.scoreboards.slotMask(CSScoreboards.deferredSyncSlot))
       b0.move64(syncAddressRegister, syncVA)
       b0.move64(syncValueRegister, 1)
       b0.emit(CSInstruction.syncAdd64(address: syncAddressRegister, value: syncValueRegister, waitMask: tilingMask,
@@ -836,13 +855,17 @@ extension RenderPass {
       let stream1At = alignUp(stream0At + s0.size, 64)
       var b1 = CSBuilder(address: va(stream1At), capacityBytes: max(capacity - stream1At, 0), registers: registers,
                          scoreboards: scoreboards)
+      stamp(&b1, .fragmentStream)
       prologue(&b1, resources: .fragment, fragment: true)
       b1.move64(syncAddressRegister, syncVA)
       b1.move64(syncValueRegister, 1)
       zeroReports(&b1)
       b1.emit(CSInstruction.syncWait64(address: syncAddressRegister, reference: syncValueRegister, condition: .greater))
+      stamp(&b1, .fragmentStart)
       fragment(&b1)
+      stamp(&b1, .finished, after: b1.scoreboards.slotMask(finishSlot))
       tail(&b1)
+      stamp(&b1, .cleaned)
       readbackReport(&b1)
       b1.endStep(r.chain)
       let s1: CSStream
@@ -1011,4 +1034,11 @@ extension RenderPass {
       fragmentPointer: fbdPointer)
     return (image, records, resourcePointer)
   }
+}
+
+/// The probe's timestamps of a pass (`DrawPassRequest.stamps`), by index: when each stream began, when its chain wait (and
+/// the tiling stream's resources) let it start, the tiling's end, the fragment stream's start after its wait for the tiling,
+/// the fragment work's end with its chunks handed back, and the tail's clean.
+public enum PassStamp: Int, CaseIterable, Sendable {
+  case tilingStream, tilingStart, tiled, fragmentStream, fragmentStart, finished, cleaned
 }

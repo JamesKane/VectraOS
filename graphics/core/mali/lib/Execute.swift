@@ -703,8 +703,12 @@ extension MaliDevice {
 
   /// Runs `jobs` in `group`, in pieces of as many as the driver takes at once; with a signal, the timeline's when the last is
   /// done, and without one, the CPU waits for them (a step run alone, outside a submission).
-  func launch(group: UInt32, jobs: [MaliJob], signal: UInt64?) throws(GPUError) {
+  func launch(group: UInt32, jobs given: [MaliJob], signal: UInt64?) throws(GPUError) {
     let t0 = clock()
+    var jobs = given
+    if probeFlushToken != 0 {
+      for i in (probeFlushTokenFirstJob ? 0 : 1)..<max(jobs.count, 1) where i < jobs.count { jobs[i].flush = probeFlushToken }
+    }
     if let signal {
       var at = 0
       while at < jobs.count {
@@ -996,6 +1000,7 @@ extension MaliDevice {
     request.layers = pass.layers
     request.viewMask = pass.viewMask
     request.finishLastContextOnly = probeFinishLastContextOnly
+    if probePassStamps { request.stamps = try chainSync().address + UInt64(Self.stampsOffset) }
     // Multisampled (valhall 08 section 8.3): the tile holds every sample; a stored target writes each to its surface (Layered),
     // a resolved one the mean to the resolve image (Average), and one both stored and resolved gets a second descriptor over the
     // same tile for the mean.

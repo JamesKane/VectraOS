@@ -139,6 +139,43 @@ final class FrameBudgets {
       + " and the waiting thread runs \(back[m]) us after it ends (medians)")
   }
 
+  /// The pass's own timestamps (`MaliDevice.probePassStamps`): the medians over the rounds of each `PassStamp`, in microseconds after
+  /// the earlier stream's first, as one line in `PassStamp`'s order (tiling stream, its start, tiled, fragment stream, its start,
+  /// finished, cleaned).
+  func stamped(_ name: String, _ list: GPUCommandList) throws(GPUError) {
+    guard let mali, mali.counterFrequencyHertz == 1_000_000_000 else { return }
+    mali.probePassStamps = true
+    defer { mali.probePassStamps = false }
+    var rows: [[Int64]] = []
+    for _ in 0..<Self.rounds {
+      signalled += 1
+      try gpu.graphicsQueue.submit(list, wait: 0, signal: signalled)
+      try gpu.wait(signalled)
+      let t = mali.passStamps
+      guard t.count == PassStamp.allCases.count else { return }
+      // A single-queue pass has no fragment stream of its own: its start is the tiling stream's.
+      let fragmentStream = t[PassStamp.fragmentStream.rawValue] == 0 ? t[0] : t[PassStamp.fragmentStream.rawValue]
+      let zero = min(t[0], fragmentStream)
+      var row: [Int64] = []
+      for (k, v) in t.enumerated() {
+        let x = k == PassStamp.fragmentStream.rawValue ? fragmentStream : v
+        row.append((Int64(bitPattern: x) - Int64(bitPattern: zero)) / 100)
+      }
+      rows.append(row)
+      // Zero the stamps for the next round.
+      for k in 0..<t.count { mali.clearPassStamp(k) }
+    }
+    // Short: the console cuts long lines. The order is PassStamp's.
+    var line = "loinnir-test: stamps \(name):"
+    for k in 0..<PassStamp.allCases.count {
+      var col = rows.map { $0[k] }
+      col.sort()
+      let v = col[col.count / 2]
+      line += " \(v / 10).\(v % 10)"
+    }
+    print(line)
+  }
+
   /// GL's frame (glmark2's off-screen one): a colour target that is drawn and sampled but never copied, and a depth buffer that is
   /// never sampled or copied, which the Mali backend makes AFBC (gpucore(2)); and what the pixels are: a pass draws red over the
   /// left half with the depth test, a second keeps both and draws green over all of it behind the red (the depth kept), and a third
@@ -233,6 +270,7 @@ final class FrameBudgets {
       list.render(pass(target)) { l in l.draw(pipeline, root: quads.address, vertices: 6) }
       _ = try measure("clear and one draw", "gpu.mali.frame_clear_draw_us", list)
       try place("clear and one draw") { l in l.render(pass(target)) { r in r.draw(pipeline, root: quads.address, vertices: 6) } }
+      try stamped("clear and one draw", list)
       let p = try pixel(target, 400, 300)
       if p != [255, 0, 0, 255] { throw GPUError.invalid("the whole-target draw left \(p) at the centre") }
     }
@@ -260,6 +298,7 @@ final class FrameBudgets {
       list.render(pass(small)) { l in l.draw(pipeline, root: quads.address, vertices: 6) }
       _ = try measure("a 64 x 64 pass", "gpu.mali.frame_small_pass_us", list)
       try place("a 64 x 64 pass") { l in l.render(pass(small)) { r in r.draw(pipeline, root: quads.address, vertices: 6) } }
+      try stamped("a 64 x 64 pass", list)
       // Two timestamps with nothing between, on the one queue: what the placing costs by itself.
       try place("nothing") { _ in }
     }
@@ -301,9 +340,25 @@ final class FrameBudgets {
       try probe.place("clear and one draw, one queue a pass") { l in
         l.render(probe.pass(probe.target)) { r in r.draw(probe.pipeline, root: probe.quads.address, vertices: 6) }
       }
+      try probe.stamped("clear and one draw, one queue a pass", list)
       let p = try probe.pixel(probe.target, 400, 300)
       if p != [255, 0, 0, 255] { throw GPUError.invalid("one queue a pass left \(p) at the centre") }
       try probe.glFrame("_one_queue")
+    }
+    // The kernel's flush before each job, skipped (a probe: `MaliDevice.probeFlushToken`) after the first job, then for every job.
+    for all in [false, true] {
+      attempt("flush token") { () throws(GPUError) in
+        let fresh = try MaliDevice()
+        fresh.probeFlushToken = 1
+        fresh.probeFlushTokenFirstJob = all
+        let probe = try FrameBudgets(fresh, signalled: 0)
+        var list = GPUCommandList()
+        list.render(probe.pass(probe.small)) { l in l.draw(probe.pipeline, root: probe.quads.address, vertices: 6) }
+        let name = all ? "a 64 x 64 pass, no job flushes" : "a 64 x 64 pass, one job flush"
+        try probe.place(name) { l in l.render(probe.pass(probe.small)) { r in r.draw(probe.pipeline, root: probe.quads.address, vertices: 6) } }
+        try probe.stamped(name, list)
+        try probe.place(name + ", nothing") { _ in }
+      }
     }
     print("loinnir-test: frame budgets: \(failed == 0 ? "done" : "\(failed) FAILED")")
     return failed
