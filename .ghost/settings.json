@@ -16,5 +16,22 @@
   "autopilot": {
     "decisions": "recommended",
     "escalate": "contradicting an Accepted decision (a D-number); reading sources the clean-room rules restrict; pushing to GitHub origin; merging to main; a failure that 'passed on rerun'; anything that can't be undone"
+  },
+  "hosts": {
+    "board": {
+      "address": "root@192.168.0.32",
+      "hostKeyAlias": "192.168.0.19",
+      "probe": "uname -s | grep -qx FreeBSD",
+      "lease": "board",
+      "description": "The Orange Pi 6 Plus, between runs in FreeBSD. Runs go through board-run.sh (it holds /root/vx-board.lock), not RemoteJob. Use Monitor host board with a request when it needs a power-cycle."
+    },
+    "brimstone": {
+      "address": "brimstone.local",
+      "hostKeyAlias": "brimstone",
+      "loginShell": "zsh -lic",
+      "workdir": "~/Projects/OS/VectraOS",
+      "minFreeGB": 20,
+      "description": "The Linux test host. Test runs go through the brimstone gate (brimstone-run.sh takes the slot locks); no pushRemote here on purpose, so RemoteJob is for read-only commands only."
+    }
   }
 }
