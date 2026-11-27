@@ -33,5 +33,14 @@
       "minFreeGB": 20,
       "description": "The Linux test host. Test runs go through the brimstone gate (brimstone-run.sh takes the slot locks); no pushRemote here on purpose, so RemoteJob is for read-only commands only."
     }
-  }
+  },
+  "corpus": [
+    {
+      "name": "decisions",
+      "files": [
+        "docs/decisions/D*.md"
+      ],
+      "ids": "D\\d+"
+    }
+  ]
 }
