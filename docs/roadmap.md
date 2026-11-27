@@ -41,9 +41,13 @@ here, and its history, step by step, is in git and `docs/decisions/`.
   2026-11-27), with a GLSL ES front end into the compiler; glmark2, a tier
   1 port, runs every scene off-screen on the board above AbyssBSD's
   Panfrost (score 4879 against 3064; docs/boards/orangepi-6-plus/gl.md).
-  Next: the vkmark port (begun: every scene headless, a GPU fault in the
-  default order open) and the CTS as a report (D174's step 7), then the
-  video codec (the linlon-vpu spec), then the NPU.
+  vkmark 2025.01, a tier 1 port, runs every scene on the board headless
+  (score 8884 at 800x600) and in a Radharc window (score 13, the
+  presents' pacing open; docs/boards/orangepi-6-plus/vk.md), with no
+  reference yet (D177 wants panvk's on the board). Open: texture scenes
+  now and then stop the GPU, phong's rate, the window's rate. Next: those,
+  the CTS as a report (D174's step 7), then the video codec (the
+  linlon-vpu spec), then the NPU.
 - **Audio, in QEMU while the board is allocated elsewhere** (V6f item 3,
   2026-11-26): the graph and the buffer as the hardware's are decided
   (D179, D180), and its clock is a counter (D181); audio(3)'s class and
