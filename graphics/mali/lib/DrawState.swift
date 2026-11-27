@@ -390,44 +390,47 @@ public struct IDVSState: Equatable, Sendable {
   /// leaves the registers as they were, 01 section 1.9.1).
   public func load(into b: inout CSBuilder, after p: IDVSState? = nil) {
     typealias R = Register
-    if p?.vertexSRT != vertexSRT { b.move64(R.vertexSRT, vertexSRT) }
-    if p?.fragmentSRT != fragmentSRT { b.move64(R.fragmentSRT, fragmentSRT) }
-    if p?.vertexFAU != vertexFAU { b.move64(R.vertexFAU, vertexFAU) }
-    if p?.fragmentFAU != fragmentFAU { b.move64(R.fragmentFAU, fragmentFAU) }
-    if p?.vertexSPD != vertexSPD { b.move64(R.vertexSPD, vertexSPD) }
-    if p?.fragmentSPD != fragmentSPD { b.move64(R.fragmentSPD, fragmentSPD) }
-    if p?.vertexTSD != vertexTSD { b.move64(R.vertexTSD, vertexTSD) }
-    if p?.fragmentTSD != fragmentTSD { b.move64(R.fragmentTSD, fragmentTSD) }
-    if p?.globalAttributeOffset != globalAttributeOffset { b.move32(R.globalAttributeOffset, globalAttributeOffset) }
-    if p?.indexCount != indexCount { b.move32(R.indexCount, indexCount) }
-    if p?.instanceCount != instanceCount { b.move32(R.instanceCount, instanceCount) }
-    if p?.indexOffset != indexOffset { b.move32(R.indexOffset, indexOffset) }
-    if p?.vertexOffset != vertexOffset { b.move32(R.vertexOffset, vertexOffset) }
-    if p?.instanceOffset != instanceOffset { b.move32(R.instanceOffset, instanceOffset) }
-    if p?.tilerContext != tilerContext { b.move64(R.tilerContext, tilerContext) }
-    if p?.scissorArray != scissorArray || p?.scissor != scissor, let a = scissorArray {
+    // The state before unwrapped once (each `p?.` read tested the optional again): with none, every register differs.
+    let all = p == nil
+    let q = p ?? self
+    if all || q.vertexSRT != vertexSRT { b.move64(R.vertexSRT, vertexSRT) }
+    if all || q.fragmentSRT != fragmentSRT { b.move64(R.fragmentSRT, fragmentSRT) }
+    if all || q.vertexFAU != vertexFAU { b.move64(R.vertexFAU, vertexFAU) }
+    if all || q.fragmentFAU != fragmentFAU { b.move64(R.fragmentFAU, fragmentFAU) }
+    if all || q.vertexSPD != vertexSPD { b.move64(R.vertexSPD, vertexSPD) }
+    if all || q.fragmentSPD != fragmentSPD { b.move64(R.fragmentSPD, fragmentSPD) }
+    if all || q.vertexTSD != vertexTSD { b.move64(R.vertexTSD, vertexTSD) }
+    if all || q.fragmentTSD != fragmentTSD { b.move64(R.fragmentTSD, fragmentTSD) }
+    if all || q.globalAttributeOffset != globalAttributeOffset { b.move32(R.globalAttributeOffset, globalAttributeOffset) }
+    if all || q.indexCount != indexCount { b.move32(R.indexCount, indexCount) }
+    if all || q.instanceCount != instanceCount { b.move32(R.instanceCount, instanceCount) }
+    if all || q.indexOffset != indexOffset { b.move32(R.indexOffset, indexOffset) }
+    if all || q.vertexOffset != vertexOffset { b.move32(R.vertexOffset, vertexOffset) }
+    if all || q.instanceOffset != instanceOffset { b.move32(R.instanceOffset, instanceOffset) }
+    if all || q.tilerContext != tilerContext { b.move64(R.tilerContext, tilerContext) }
+    if all || q.scissorArray != scissorArray || q.scissor != scissor, let a = scissorArray {
       b.move64(R.scissor, a)
-    } else if p?.scissorArray != scissorArray || p?.scissor != scissor {
+    } else if all || q.scissorArray != scissorArray || q.scissor != scissor {
       b.move32(R.scissor, scissor.word0)
       b.move32(R.scissor + 1, scissor.word1)
     }
-    if p?.viewport != viewport {
+    if all || q.viewport != viewport {
       b.move32(R.viewportHigh, viewport.rectangle.word0)
       b.move32(R.viewportHigh + 1, viewport.rectangle.word1)
       b.move32(R.viewportHigh + 2, viewport.minDepth.bitPattern)
       b.move32(R.viewportHigh + 3, viewport.maxDepth.bitPattern)
     }
-    if p?.indexBuffer != indexBuffer { b.move64(R.indexBuffer, indexBuffer) }
-    if p?.indexBufferSize != indexBufferSize { b.move32(R.indexBufferSize, indexBufferSize) }
-    if p?.varySize != varySize { b.move32(R.varySize, varySize) }
-    if p?.depthStencil != depthStencil { b.move64(R.depthStencil, depthStencil) }
-    if p?.blend != blend { b.move64(R.blend, blend) }
-    if p?.tilerFlags != tilerFlags { b.move32(R.tilerFlags, tilerFlags) }
-    if p?.flags0 != flags0 { b.move32(R.flags0, flags0) }
-    if p?.flags1 != flags1 { b.move32(R.flags1, flags1) }
-    if p?.flags2 != flags2 { b.move32(R.flags2, flags2) }
-    if p?.primitiveSize != primitiveSize { b.move32(R.primitiveSize, primitiveSize) }
-    if p?.tilerFlags2 != tilerFlags2 { b.move32(R.tilerFlags2, tilerFlags2) }
-    if p?.occlusionQuery != occlusionQuery { b.move64(R.occlusionQuery, occlusionQuery) }
+    if all || q.indexBuffer != indexBuffer { b.move64(R.indexBuffer, indexBuffer) }
+    if all || q.indexBufferSize != indexBufferSize { b.move32(R.indexBufferSize, indexBufferSize) }
+    if all || q.varySize != varySize { b.move32(R.varySize, varySize) }
+    if all || q.depthStencil != depthStencil { b.move64(R.depthStencil, depthStencil) }
+    if all || q.blend != blend { b.move64(R.blend, blend) }
+    if all || q.tilerFlags != tilerFlags { b.move32(R.tilerFlags, tilerFlags) }
+    if all || q.flags0 != flags0 { b.move32(R.flags0, flags0) }
+    if all || q.flags1 != flags1 { b.move32(R.flags1, flags1) }
+    if all || q.flags2 != flags2 { b.move32(R.flags2, flags2) }
+    if all || q.primitiveSize != primitiveSize { b.move32(R.primitiveSize, primitiveSize) }
+    if all || q.tilerFlags2 != tilerFlags2 { b.move32(R.tilerFlags2, tilerFlags2) }
+    if all || q.occlusionQuery != occlusionQuery { b.move64(R.occlusionQuery, occlusionQuery) }
   }
 }
