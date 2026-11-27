@@ -52,6 +52,16 @@ struct UniformLocation {
   var element: Int
 }
 
+/// One uniform location as glUniform*'s common case writes it: one value, at a place in the block.
+struct LocationInfo {
+  /// 0 float, 1 int, 2 bool, 3 matrix, 4 sampler.
+  var kind: UInt8
+  /// Components of a vector, columns of a matrix.
+  var components: Int
+  var offset: Int
+  var matrixStride: Int
+}
+
 /// A program's lowered vertex stage, by the vertex layout it was lowered against.
 struct LoweredVertex {
   var layout: VertexLayout
@@ -60,9 +70,33 @@ struct LoweredVertex {
 
 /// What a draw reads of a program's attributes: for each location the program has (in `locations`), the format and the
 /// stride of the root-block vertex buffer it reads, which the vertex stage is lowered against.
+/// Packed, so that a draw makes no array: four bits of format and sixteen of stride for each of up to 8 locations.
 struct VertexLayout: Hashable {
-  var formats: [UInt8]
-  var strides: [UInt32]
+  private var formatBits: UInt32 = 0
+  private var strideLow: UInt64 = 0
+  private var strideHigh: UInt64 = 0
+  private(set) var count = 0
+
+  init() {}
+  init(formats: [UInt8], strides: [UInt32]) {
+    for (f, s) in zip(formats, strides) { append(format: f, stride: s) }
+  }
+
+  /// The largest stride a layout holds: a longer one is copied tightly packed.
+  static let maxStride: UInt32 = 0xFFFF
+
+  mutating func append(format: UInt8, stride: UInt32) {
+    let n = count
+    formatBits |= UInt32(format & 15) << UInt32(4 * n)
+    let s = UInt64(stride & 0xFFFF)
+    if n < 4 { strideLow |= s << UInt64(16 * n) } else { strideHigh |= s << UInt64(16 * (n - 4)) }
+    count += 1
+  }
+
+  func format(_ n: Int) -> UInt8 { UInt8((formatBits >> UInt32(4 * n)) & 15) }
+  func stride(_ n: Int) -> UInt32 {
+    UInt32(truncatingIfNeeded: (n < 4 ? strideLow >> UInt64(16 * n) : strideHigh >> UInt64(16 * (n - 4))) & 0xFFFF)
+  }
 }
 
 @safe final class GLProgram {
@@ -80,6 +114,7 @@ struct VertexLayout: Hashable {
   // What the last successful link made.
   var interface = ProgramInterface(vertexSPIRV: [], fragmentSPIRV: [], attributes: [], uniforms: [], uniformBlockBytes: 0)
   var locations: [UniformLocation] = []
+  var locationInfo: [LocationInfo] = []
   /// The first location of each uniform.
   var firstLocation: [Int] = []
   /// The uniform block, as glUniform* leaves it.
@@ -98,6 +133,8 @@ struct VertexLayout: Hashable {
   var attributeComponents: [Int] = []
   // Lowering and pipelines.
   var setLayout = SetLayout(bindings: [])
+  var blockRecordOffset = -1
+  var samplerRecordOffsets: [Int] = []
   var lowering = LoweringLayout()
   var fragmentBytes: [UInt8] = []
   var vertexBytes: [LoweredVertex] = []
@@ -107,7 +144,17 @@ struct VertexLayout: Hashable {
   init(name: GLuint) { self.name = name }
   deinit { unsafe block?.deallocate() }
 
+  /// Names asked for, and the locations found: a program that asks at every draw scans its uniforms once.
+  var locationCache: [String: GLint] = [:]
+
   func uniformLocation(_ name: String) -> GLint {
+    if let l = locationCache[name] { return l }
+    let l = findLocation(name)
+    if locationCache.count < 1024 { locationCache[name] = l }
+    return l
+  }
+
+  func findLocation(_ name: String) -> GLint {
     // "a", "a[0]" and "a[i]" of an array; "s.m" of a structure.
     var base = name
     var index = 0
@@ -133,11 +180,29 @@ struct VertexLayout: Hashable {
   /// lowered against.
   func install(_ i: ProgramInterface) throws(LoweringError) {
     interface = i
+    locationCache = [:]
     locations = []
     firstLocation = []
+    locationInfo = []
     for (u, uniform) in i.uniforms.enumerated() {
       firstLocation.append(locations.count)
-      for e in 0..<max(uniform.arraySize, 1) { locations.append(UniformLocation(uniform: u, element: e)) }
+      let t = uniform.type
+      let kind: UInt8
+      var components = componentCount(t)
+      switch t {
+      case GL_FLOAT, GL_FLOAT_VEC2, GL_FLOAT_VEC3, GL_FLOAT_VEC4: kind = 0
+      case GL_INT, GL_INT_VEC2, GL_INT_VEC3, GL_INT_VEC4: kind = 1
+      case GL_FLOAT_MAT2, GL_FLOAT_MAT3, GL_FLOAT_MAT4:
+        kind = 3
+        components = t == GL_FLOAT_MAT2 ? 2 : t == GL_FLOAT_MAT3 ? 3 : 4
+      case GL_SAMPLER_2D, GL_SAMPLER_CUBE: kind = 4
+      default: kind = 2
+      }
+      for e in 0..<max(uniform.arraySize, 1) {
+        locations.append(UniformLocation(uniform: u, element: e))
+        locationInfo.append(LocationInfo(kind: kind, components: components, offset: uniform.offset + e * uniform.arrayStride,
+                                         matrixStride: uniform.matrixStride))
+      }
     }
     unsafe block?.deallocate()
     blockBytes = align(max(i.uniformBlockBytes, 16), 16)
@@ -159,6 +224,15 @@ struct VertexLayout: Hashable {
     samplerUnits = [Int32](repeating: 0, count: samplerBindings.count)
     setLayout = SetLayout(bindings: bindings)
     lowering = LoweringLayout(sets: [setLayout])
+    // Where each draw writes the block's and each sampler element's descriptors in the set record.
+    blockRecordOffset = setLayout.find(0).map { Int($0.offset) } ?? -1
+    samplerRecordOffsets = samplerBindings.map { binding in
+      var at = -1
+      for b in setLayout.bindings where b.binding <= binding && binding < b.binding + b.count {
+        if let (offset, _) = setLayout.find(b.binding) { at = Int(offset) + Int(binding - b.binding) * descriptorSize }
+      }
+      return at
+    }
     attributeLocations = []
     attributeComponents = []
     for a in i.attributes.sorted(by: { $0.location < $1.location }) {
@@ -180,9 +254,9 @@ struct VertexLayout: Hashable {
     for v in vertexBytes where v.layout == layout { return v.bytes }
     var l = lowering
     for (n, location) in attributeLocations.enumerated() {
-      l.vertexBindings.append(VertexBinding(binding: location, stride: layout.strides[n]))
+      l.vertexBindings.append(VertexBinding(binding: location, stride: layout.stride(n)))
       l.vertexAttributes.append(VertexAttribute(location: location, binding: location,
-                                                format: vertexFormat(code: layout.formats[n]), offset: 0))
+                                                format: vertexFormat(code: layout.format(n)), offset: 0))
     }
     let b = try bytes(lower(spirv: vertexWords, stage: .vertex, entryPoint: "main", layout: l))
     vertexBytes.append(LoweredVertex(layout: layout, bytes: b))

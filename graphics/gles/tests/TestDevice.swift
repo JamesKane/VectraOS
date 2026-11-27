@@ -61,6 +61,7 @@ final class TestDevice: GPUDevice {
     l.features.imageRegionCopies = true
     l.features.clearAttachments = true
     l.features.alphaToCoverage = true
+    l.features.samplerMinMagFilters = true
     l.heapTextures = 4096
     l.heapSamplers = heapSamplers
     l.maxImageDimension = 4096
@@ -108,6 +109,11 @@ final class TestDevice: GPUDevice {
   func writeTexture(_ index: UInt32, _ image: GPUImage) throws(GPUError) {
     guard index < limits.heapTextures else { throw .invalid("a texture slot past the heap") }
     textures[index] = image
+  }
+  func writeTexture(_ index: UInt32, _ view: ImageView) throws(GPUError) {
+    guard index < limits.heapTextures else { throw .invalid("a texture slot past the heap") }
+    if let e = view.check(for: .texture, limits: limits) { throw e }
+    textures[index] = view.image
   }
   func writeSampler(_ index: UInt32, _ sampler: SamplerDescriptor) throws(GPUError) {
     guard index < limits.heapSamplers else { throw .invalid("a sampler slot past the heap") }
@@ -163,7 +169,15 @@ final class TestDevice: GPUDevice {
         for a in attachments {
           if case .color(let i, .float(let r, let g, let b, let al)) = a { for rect in rects { fill(p.colors[i].view.image, [r, g, b, al], rect) } }
         }
-      case .draw(let p, let root, let count, _, _, _): draws.append((p, root, false, count))
+      case .draw(let p, let root, let count, _, _, _):
+        draws.append((p, root, false, count))
+        // The library's copy by a draw (no blend state of GL's, no depth): the source texture's texels into the target.
+        if let d = pipelines[p.handle], d.attachmentBlends == nil, d.depthStencilFormat == nil, let target = pass?.colors.first,
+          let source = textures[UInt32(UnsafeRawPointer(bitPattern: UInt(root))!.load(fromByteOffset: 96, as: UInt32.self))],
+          source.width == target.view.image.width, source.height == target.view.image.height
+        {
+          contents[target.view.image.handle] = contents[source.handle]
+        }
       case .drawIndexed(let p, let root, _, _, _, let count, _, _, _, _): draws.append((p, root, true, count))
       case .copyBufferToImageRegions(let m, let image, let regions):
         for r in regions where r.subresource.mip == 0 && r.subresource.baseLayer == 0 { copy(m, r, image, toImage: true) }

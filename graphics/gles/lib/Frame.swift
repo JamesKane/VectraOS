@@ -118,6 +118,7 @@ final class UploadRing {
 /// The heap's texture and sampler slots, as the library hands them out.
 final class HeapSlots {
   let device: any GPUDevice
+  let limits: DeviceLimits
   private var nextTexture: UInt32 = 0
   private var freeTextures: [UInt32] = []
   /// Slots let go of while the open list may read them: free after its submission.
@@ -130,12 +131,17 @@ final class HeapSlots {
   }
   var samplers: [SamplerEntry] = []
   private var generations: UInt64 = 0
+  /// Sampler slots written, for the stats.
+  var writes = 0
 
-  init(device: any GPUDevice) { self.device = device }
+  init(device: any GPUDevice, limits: DeviceLimits) {
+    self.device = device
+    self.limits = limits
+  }
 
   func takeTextureSlot() throws(GPUError) -> UInt32 {
     if let s = freeTextures.popLast() { return s }
-    guard nextTexture < device.limits.heapTextures else { throw .outOfMemory("the heap's \(device.limits.heapTextures) texture slots") }
+    guard nextTexture < limits.heapTextures else { throw .outOfMemory("the heap's \(limits.heapTextures) texture slots") }
     defer { nextTexture += 1 }
     return nextTexture
   }
@@ -155,8 +161,9 @@ final class HeapSlots {
       return (UInt32(i), samplers[i].generation)
     }
     generations &+= 1
-    if samplers.count < Int(device.limits.heapSamplers) {
+    if samplers.count < Int(limits.heapSamplers) {
       try device.writeSampler(UInt32(samplers.count), d)
+      writes += 1
       samplers.append(SamplerEntry(descriptor: d, generation: generations, openUse: epoch))
       return (UInt32(samplers.count - 1), generations)
     }
@@ -167,6 +174,7 @@ final class HeapSlots {
     }
     guard pick >= 0 else { return nil }
     try device.writeSampler(UInt32(pick), d)
+    writes += 1
     samplers[pick] = SamplerEntry(descriptor: d, generation: generations, openUse: epoch)
     return (UInt32(pick), generations)
   }
@@ -189,6 +197,10 @@ struct RenderTarget: Equatable {
   var hasStencil = false
   var width: Int32 = 0
   var height: Int32 = 0
+  /// The depth and stencil image is a texture's, which a shader may read: what it holds is always stored.
+  var depthSampled = false
+  /// The colour attachment a pass has where GL's framebuffer has none: drawn into with nothing written, never stored.
+  var scratch: ImageView?
   /// A window's image, whose first row is the top: drawn with the viewport flipped.
   var flipped = false
   /// The colour attachment has alpha; without, alpha isn't written and reads 1.
@@ -197,8 +209,12 @@ struct RenderTarget: Equatable {
   var redBits: GLint = 8, greenBits: GLint = 8, blueBits: GLint = 8, alphaBits: GLint = 8
   var depthBits: GLint = 0, stencilBits: GLint = 0
 
+  /// A number for the target as the context last found it (0: none): two targets of one number are one.
+  var id: UInt64 = 0
+
   static func == (a: RenderTarget, b: RenderTarget) -> Bool {
-    a.color == b.color && a.depthStencil == b.depthStencil && a.flipped == b.flipped
+    if a.id != 0 && a.id == b.id { return true }
+    return a.color == b.color && a.depthStencil == b.depthStencil && a.flipped == b.flipped
   }
 }
 
@@ -211,10 +227,23 @@ struct PendingClear {
 
 /// The open pass, and the state it was last told. A pass is opened by the first clear or draw of a target, and its
 /// begin is recorded at its first draw: until then a clear only changes what it loads.
-struct OpenPass {
+final class OpenPass {
   var target: RenderTarget
+  init(target: RenderTarget, reads: [UInt64] = []) {
+    self.target = target
+    self.reads = reads
+  }
   var begun = false
   var clear = PendingClear()
+  /// The pass's attachments and loads, as begun; its stores are decided as it ends.
+  var info = RenderingInfo(colors: [])
+  var discardColor = false
+  var discardDepth = false
+  var discardStencil = false
+  /// What its draws and clears used of the attachments: one they didn't is neither loaded nor stored.
+  var usedColor = false
+  var usedDepth = false
+  var usedStencil = false
   var draws = 0
   /// Images its draws read.
   var reads: [UInt64] = []
@@ -232,6 +261,8 @@ struct OpenPass {
 /// A device's frame: shared by the contexts of a display, which use it one at a time.
 final class Frame {
   let device: any GPUDevice
+  /// The device's limits, read once: the device's getter makes a copy of them at every call.
+  let limits: DeviceLimits
   let ring: UploadRing
   let heap: HeapSlots
   var list = GPUCommandList()
@@ -255,13 +286,15 @@ final class Frame {
   var drawsSubmitted = 0
   var passesSubmitted = 0
   var submissions = 0
+  var stats = FrameStats()
   /// Called when the list is submitted, with its value (a window's present waits for it).
   var onSubmit: ((UInt64) -> Void)?
 
   init(device: any GPUDevice) {
     self.device = device
+    limits = device.limits
     ring = UploadRing(device: device)
-    heap = HeapSlots(device: device)
+    heap = HeapSlots(device: device, limits: limits)
     // The first epoch is 1.
     valueBase = device.completed
     lastSubmitted = device.completed
@@ -273,6 +306,9 @@ final class Frame {
     for b in spareBuffers { device.free(b.memory) }
     if let b = blackTexture { device.destroy(b.image) }
     if let b = blackCube { device.destroy(b.image) }
+    for s in scratchImages { device.destroy(s.image) }
+    for s in copyScratches { device.destroy(s) }
+    for p in blitPipelines { device.destroy(p.pipeline) }
   }
 
   func release(_ image: GPUImage) { releaseImages.append(image) }
@@ -281,18 +317,81 @@ final class Frame {
 
   /// Ends the open pass, if there is one: a pass that drew nothing is recorded only if it clears.
   func endPass() {
-    guard let p = pass else { return }
+    guard var p = pass else { return }
     if !p.begun {
       guard p.clear.color != nil || p.clear.depth != nil || p.clear.stencil != nil else {
         pass = nil
         return
       }
       begin()
+      p = pass!
     }
+    // The begin, now that what the pass stores is known (glDiscardFramebufferEXT, a swap), then what the pass recorded.
+    var info = p.info
+    if p.discardColor { for i in info.colors.indices { info.colors[i].store = .discard } }
+    if p.discardDepth { info.depthStencil?.depthStore = .discard }
+    if p.discardStencil { info.depthStencil?.stencilStore = .discard }
+    settleDepthStencil(&info, p)
+    // A colour attachment no draw wrote, and no clear: what it holds stays, neither loaded nor stored.
+    if !p.usedColor, p.target.color != nil {
+      for i in info.colors.indices where info.colors[i].load == .load {
+        info.colors[i].load = .dontCare
+        info.colors[i].store = .discard
+      }
+    }
+    list.beginRendering(info)
+    list.append(contentsOf: passList)
+    passList = GPUCommandList()
     list.endRendering()
     passesSubmitted += 1
+    stats.passes += 1
     pass = nil
   }
+
+  /// Clears of a depth and stencil image (a renderbuffer's or a surface's, which no shader reads) that no pass has stored
+  /// yet: the pass that next uses it clears it as it begins, in place of loading it.
+  var pendingClears: [(image: UInt64, depth: Float?, stencil: UInt32?)] = []
+
+  /// Settles the pass's depth and stencil loads and stores by what its draws used: an aspect no draw used isn't loaded or
+  /// stored (the image keeps what it held), and a clear of it is kept to be the load of the next pass that uses it.
+  func settleDepthStencil(_ info: inout RenderingInfo, _ p: OpenPass) {
+    guard var ds = info.depthStencil, !p.target.depthSampled else { return }
+    let h = ds.view.image.handle
+    var pending: (image: UInt64, depth: Float?, stencil: UInt32?) = pendingClears.first { $0.image == h } ?? (h, nil, nil)
+    // Depth.
+    if ds.view.image.format.hasDepth {
+      if !p.usedDepth {
+        if ds.depthLoad == .clear { pending.depth = ds.clearDepth }
+        ds.depthLoad = .dontCare
+        ds.depthStore = .discard
+      } else {
+        if ds.depthLoad == .load, let d = pending.depth {
+          ds.depthLoad = .clear
+          ds.clearDepth = d
+        }
+        if ds.depthStore == .store || ds.depthLoad != .load { pending.depth = nil }
+      }
+    }
+    if ds.view.image.format.hasStencil {
+      if !p.usedStencil {
+        if ds.stencilLoad == .clear { pending.stencil = ds.clearStencil }
+        ds.stencilLoad = .dontCare
+        ds.stencilStore = .discard
+      } else {
+        if ds.stencilLoad == .load, let s = pending.stencil {
+          ds.stencilLoad = .clear
+          ds.clearStencil = s
+        }
+        if ds.stencilStore == .store || ds.stencilLoad != .load { pending.stencil = nil }
+      }
+    }
+    pendingClears.removeAll { $0.image == h }
+    if pending.depth != nil || pending.stencil != nil { pendingClears.append(pending) }
+    info.depthStencil = ds
+  }
+
+  /// The open pass's commands, recorded after its begin as it ends.
+  var passList = GPUCommandList()
 
   /// Images written in the open list since its last barrier: a pass's attachments, a copy's destination.
   var written: [UInt64] = []
@@ -319,6 +418,7 @@ final class Frame {
     if let c = t.color { noteWrite(c.image) }
     if let d = t.depthStencil { noteWrite(d.image) }
     var colors: [Attachment] = []
+    if t.color == nil, let scratch = t.scratch { colors.append(Attachment(view: scratch, load: .dontCare, store: .discard)) }
     if let c = t.color {
       var load = LoadAction.load
       if let v = p.clear.color { load = .clear(v.0, v.1, v.2, t.colorAlpha ? v.3 : 1) }
@@ -334,7 +434,7 @@ final class Frame {
                                   depthStore: depth ? .store : .discard, stencilStore: stencil ? .store : .discard,
                                   clearDepth: p.clear.depth ?? 1, clearStencil: p.clear.stencil ?? 0)
     }
-    list.beginRendering(RenderingInfo(colors: colors, depthStencil: ds))
+    p.info = RenderingInfo(colors: colors, depthStencil: ds)
     p.begun = true
     p.clear = PendingClear()
     pass = p
@@ -349,7 +449,15 @@ final class Frame {
     let value = self.value(ofEpoch: epoch)
     let l = list
     list = GPUCommandList()
+    let counting = unsafe glesStats
+    var t0: UInt64 = 0
+    if counting {
+      t0 = unsafe glesClock()
+      if stats.frameStart != 0 { stats.recordNs &+= t0 &- stats.frameStart }
+      count(l)
+    }
     try device.graphicsQueue.submit(l, wait: 0, signal: value)
+    if counting { stats.submitNs &+= unsafe glesClock() &- t0 }
     lastSubmitted = value
     submissions += 1
     ring.submitted(value)
@@ -368,8 +476,15 @@ final class Frame {
   /// Submits and waits for the GPU to finish everything.
   func finish() throws(GPUError) {
     let v = try submit()
+    let counting = unsafe glesStats
+    let t0 = counting ? unsafe glesClock() : 0
     if v > device.completed { try device.wait(v) }
     ring.reclaim()
+    if counting {
+      let t1 = unsafe glesClock()
+      stats.waitNs &+= t1 &- t0
+      stats.frameStart = t1
+    }
   }
 
   /// The timeline value the list of `epoch` was (or will be) submitted as: each submission is the next value.
@@ -398,6 +513,20 @@ final class Frame {
       device.free(spareBuffers.removeFirst().memory)
     }
     spareBuffers.append((m, bytes, value(ofEpoch: openUse)))
+  }
+
+  /// The copy by a draw's stages and pipelines (Copies.swift), and its scratch images.
+  var blitLowered: [(kind: DrawCopy, vertex: [UInt8], fragment: [UInt8])] = []
+  var blitPipelines: [(format: PixelFormat, kind: DrawCopy, pipeline: GPUPipeline)] = []
+  var copyScratches: [GPUImage] = []
+  /// Scratch colour images by size, for passes GL gives no colour attachment.
+  var scratchImages: [(width: Int32, height: Int32, image: GPUImage)] = []
+
+  func scratchColor(width: Int32, height: Int32) throws(GPUError) -> GPUImage {
+    if let s = scratchImages.first(where: { $0.width == width && $0.height == height }) { return s.image }
+    let image = try device.makeImage(ImageDescriptor(format: .rgba8, width: width, height: height, usage: .renderTarget))
+    scratchImages.append((width, height, image))
+    return image
   }
 
   /// The slot of the texture an incomplete one reads: (0, 0, 0, 1).

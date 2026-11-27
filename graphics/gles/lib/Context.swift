@@ -98,6 +98,12 @@ public final class GLContext {
 
   /// Pipelines made, and the memory ReadPixels reads back into.
   var pipelinesMade = 0
+  /// A draw's texture and sampler slots and the images it reads, kept to be used again.
+  var drawSlots: [(UInt32, UInt32)] = []
+  var drawReads: [UInt64] = []
+  /// The last draw's pipeline and what it was found by.
+  var lastPipeline: (program: GLProgram, link: UInt64, serial: UInt64, layout: VertexLayout, topology: PrimitiveTopology,
+                     target: RenderTarget, pipeline: GPUPipeline)?
   var readback: GPUMemory?
   /// Bumps whenever a pipeline's fixed state may have changed.
   var pipelineSerial: UInt64 = 1
@@ -105,6 +111,7 @@ public final class GLContext {
   /// changes: the target is looked at again.
   var attachmentSerial: UInt64 = 1
   var targetCache: (RenderTarget, framebuffer: GLuint, serial: UInt64, surface: UInt64)?
+  var targetIDs: UInt64 = 0
 
   /// A context of the device's frame, sharing `share`'s objects.
   init(frame: Frame, share: ShareGroup?) {
@@ -284,7 +291,7 @@ public final class GLContext {
 
   func setViewport(_ x: GLint, _ y: GLint, _ w: GLsizei, _ h: GLsizei) {
     guard w >= 0, h >= 0 else { return fail(.invalidValue) }
-    let maxSize = GLsizei(max(device.limits.maxImageDimension, 4096))
+    let maxSize = GLsizei(max(frame.limits.maxImageDimension, 4096))
     viewport = (x, y, min(w, maxSize), min(h, maxSize))
   }
 
@@ -550,7 +557,7 @@ public final class GLContext {
   /// The device storage for a GL renderbuffer or depth texture format, or nil for one GL ES 2.0 (with the extensions
   /// the library has) doesn't name.
   func storage(forRenderbuffer f: GLenum) -> StorageKind? {
-    let limits = device.limits
+    let limits = frame.limits
     func depthTarget(_ p: PixelFormat) -> Bool { limits.formats(p).depthTarget }
     let depth24: PixelFormat = depthTarget(.depth24stencil8) ? .depth24stencil8 : .depth32f
     switch f {
@@ -578,7 +585,7 @@ public final class GLContext {
       }
       return fail(.invalidEnum)
     }
-    let maxSize = device.limits.maxImageDimension
+    let maxSize = frame.limits.maxImageDimension
     guard width >= 0, height >= 0, width <= maxSize, height <= maxSize else { return fail(.invalidValue) }
     guard let r = renderbuffer else { return fail(.invalidOperation) }
     if let old = r.image { releaseImage(old) }
@@ -591,7 +598,8 @@ public final class GLContext {
     guard width > 0, height > 0 else { return }
     let usage: ImageUsage
     switch kind {
-    case .color: usage = .renderTarget | .copySource | .copyDestination | .sampled
+    // Drawn into and sampled (a copy out of it is drawn into a copyable image first): what a device's passes may compress.
+    case .color: usage = .renderTarget | .sampled
     default: usage = .depthStencilTarget
     }
     do throws(GPUError) {
@@ -740,6 +748,7 @@ public final class GLContext {
       guard check((d.width, d.height)) else { return (GL_FRAMEBUFFER_INCOMPLETE_DIMENSIONS, nil) }
       depthView = d.view
       t.hasDepth = true
+      if case .texture = f.depth { t.depthSampled = true }
       t.depthBits = d.kind.pixelFormat == .depth16 ? 16 : 24
       if case .depthStencil = d.kind, f.stencil.isNone { t.hasStencil = false }
       any = true
@@ -755,6 +764,7 @@ public final class GLContext {
       if let d = depthView, d.image != s.view.image { return (GL_FRAMEBUFFER_UNSUPPORTED, nil) }
       depthView = s.view
       t.hasStencil = true
+      if case .texture = f.stencil { t.depthSampled = true }
       t.stencilBits = 8
       any = true
     }
@@ -765,7 +775,11 @@ public final class GLContext {
     }
     t.width = w
     t.height = h
-    if t.color == nil { (t.redBits, t.greenBits, t.blueBits, t.alphaBits) = (0, 0, 0, 0) }
+    if t.color == nil {
+      (t.redBits, t.greenBits, t.blueBits, t.alphaBits) = (0, 0, 0, 0)
+      // A pass with no colour attachment draws into a scratch image no one reads (the Mali backend's passes have one).
+      if let image = try? frame.scratchColor(width: w, height: h) { t.scratch = ImageView(image) }
+    }
     return (GL_FRAMEBUFFER_COMPLETE, t)
   }
 
@@ -785,10 +799,12 @@ public final class GLContext {
     let surfaceSerial = surface?.serial ?? 0
     if let c = targetCache, c.framebuffer == name, c.serial == attachmentSerial, c.surface == surfaceSerial { return c.0 }
     let (status, target) = framebufferStatus()
-    guard status == GL_FRAMEBUFFER_COMPLETE, let target else {
+    guard status == GL_FRAMEBUFFER_COMPLETE, var target else {
       fail(.invalidFramebufferOperation)
       return nil
     }
+    targetIDs &+= 1
+    target.id = targetIDs
     targetCache = (target, name, attachmentSerial, surfaceSerial)
     return target
   }

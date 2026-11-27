@@ -62,6 +62,8 @@ extension GLContext {
   func dropImage(_ t: GLTexture) {
     if let image = t.image { releaseImage(image) }
     if let s = t.slot { frame.heap.releaseTextureSlot(s) }
+    for s in t.levelSlots { frame.heap.releaseTextureSlot(s.slot) }
+    t.levelSlots = []
     t.image = nil
     t.slot = nil
     t.completeCache = nil
@@ -88,7 +90,7 @@ extension GLContext {
     case GL_TEXTURE_MAX_ANISOTROPY_EXT:
       let a = fvalue ?? Float(value ?? 1)
       guard a >= 1 else { return fail(.invalidValue) }
-      t.maxAnisotropy = device.limits.features.samplerAnisotropy ? min(a, device.limits.maxAnisotropy) : 1
+      t.maxAnisotropy = frame.limits.features.samplerAnisotropy ? min(a, frame.limits.maxAnisotropy) : 1
     default: return fail(.invalidEnum)
     }
     t.samplerSlot = nil
@@ -123,7 +125,7 @@ extension GLContext {
     return nil
   }
 
-  var maxTextureSize: Int32 { min(device.limits.maxImageDimension, 4096) }
+  var maxTextureSize: Int32 { min(frame.limits.maxImageDimension, 4096) }
 
   /// The device storage of a texture of GL format `format` and `type`.
   func textureStorage(_ format: GLenum, _ type: GLenum) -> StorageKind {
@@ -131,26 +133,35 @@ extension GLContext {
     case GL_DEPTH_COMPONENT:
       return .depth(type == GL_UNSIGNED_SHORT ? .depth16 : .depth32f)
     case GL_DEPTH_STENCIL_OES:
-      return device.limits.formats(.depth24stencil8).sampled ? .depthStencil(.depth24stencil8) : .depth(.depth32f)
+      return frame.limits.formats(.depth24stencil8).sampled ? .depthStencil(.depth24stencil8) : .depth(.depth32f)
     default: return .color(alpha: formatHasAlpha(format))
     }
   }
 
-  /// Makes the texture's image for its level 0 of `width` by `height`, of `kind`, if it hasn't one of that already.
-  func ensureImage(_ t: GLTexture, width: Int32, height: Int32, kind: StorageKind) throws(GPUError) {
+  /// The copy usages: what an upload, a CopyTexImage or a mipmap needs of a texture's image.
+  static let copies: ImageUsage = .copySource | .copyDestination
+
+  /// Makes the texture's image for its level 0 of `width` by `height`, of `kind`, if it hasn't one of that already: drawn
+  /// into and sampled, with the copy usages only where `copies` (an upload) says, and one level until another is asked for,
+  /// so that an image GL only draws into and samples is one a device lays out for its passes (Mali's AFBC). A texture
+  /// that later needs more is made again (`promote`).
+  func ensureImage(_ t: GLTexture, width: Int32, height: Int32, kind: StorageKind, copies: Bool) throws(GPUError) {
     let format = kind.pixelFormat
     let cube = t.target == GL_TEXTURE_CUBE_MAP
-    let mips: UInt32
-    let usage: ImageUsage
+    var usage: ImageUsage
     switch kind {
-    case .color:
-      mips = fullMipCount(width, height)
-      usage = .sampled | .renderTarget | .copySource | .copyDestination
-    default:
-      mips = 1
-      usage = .sampled | .depthStencilTarget | .copyDestination
+    case .color: usage = .sampled | .renderTarget
+    default: usage = .sampled | .depthStencilTarget
     }
-    if let i = t.image, i.width == width, i.height == height, i.format == format, i.mipLevels == mips { return }
+    if copies { usage = usage | GLContext.copies }
+    // As many levels as GL has given: more than one only where a level past 0 is there.
+    var given = 1
+    for f in t.levels.indices { given = max(given, t.levels[f].count) }
+    let mips: UInt32 = given > 1 ? fullMipCount(width, height) : 1
+    if let i = t.image, i.width == width, i.height == height, i.format == format {
+      try promote(t, usage: usage, mips: mips)
+      return
+    }
     dropImage(t)
     let image = try device.makeImage(ImageDescriptor(format: format, width: width, height: height, mipLevels: mips,
                                                      layers: cube ? 6 : 1, dimension: cube ? .cube : .d2, usage: usage))
@@ -159,6 +170,8 @@ extension GLContext {
     let slot = try frame.heap.takeTextureSlot()
     try device.writeTexture(slot, image)
     t.slot = slot
+    frame.stats.textureWrites += 1
+    frame.stats.images += 1
   }
 
   /// Ends the open pass if it reads `image` or draws into it: what follows in the list changes it. (A copy is never inside
@@ -174,6 +187,9 @@ extension GLContext {
   /// texture's image, at (`x`, `y`).
   func upload(_ t: GLTexture, face: Int, level: Int, x: Int32, y: Int32, width: Int32, height: Int32, format: GLenum,
               type: GLenum, pixels: UnsafeRawPointer, pixelBytes: Int) throws(GPUError) {
+    if let i = t.image, let base = t.level(face: 0, 0) {
+      try promote(t, usage: GLContext.copies, mips: level > 0 ? fullMipCount(base.width, base.height) : i.mipLevels)
+    }
     guard let image = t.image, width > 0, height > 0, level < Int(image.mipLevels) else { return }
     let deviceBytes = image.format.texelBlock.bytes
     let staging = try frame.ring.allocate(Int(width) * Int(height) * deviceBytes)
@@ -215,10 +231,16 @@ extension GLContext {
     let kind = textureStorage(format, type)
     do throws(GPUError) {
       if level == 0 && width > 0 && height > 0 {
-        try ensureImage(t, width: width, height: height, kind: kind)
+        try ensureImage(t, width: width, height: height, kind: kind, copies: unsafe pixels != nil)
         attachmentSerial &+= 1
-      } else if t.image == nil, let base = t.level(face: 0, 0), base.width > 0 {
-        try ensureImage(t, width: base.width, height: base.height, kind: textureStorage(base.internalFormat, GL_UNSIGNED_BYTE))
+      } else if let base = t.level(face: 0, 0), base.width > 0 {
+        if t.image == nil {
+          try ensureImage(t, width: base.width, height: base.height, kind: textureStorage(base.internalFormat, GL_UNSIGNED_BYTE),
+                          copies: unsafe pixels != nil)
+        }
+        // A level past 0: the full chain.
+        try promote(t, usage: unsafe pixels != nil ? GLContext.copies : ImageUsage(rawValue: 0), mips: fullMipCount(base.width, base.height))
+        attachmentSerial &+= 1
       }
       if level == 0, case .color(let alpha) = kind, case .color = t.kind { t.kind = .color(alpha: alpha) }
       if let pixels = unsafe pixels {
@@ -251,7 +273,10 @@ extension GLContext {
   /// framebuffer's (`x`, `y`) is GL's, from its bottom row, clamped to it.
   func copyFromFramebuffer(_ image: GPUImage, face: Int, level: Int, dx: Int32, dy: Int32, x: Int32, y: Int32, width: Int32,
                            height: Int32, from target: RenderTarget) {
-    guard let src = target.color else { return }
+    guard let color = target.color else { return }
+    frame.endPass()
+    let src: ImageView
+    do throws(GPUError) { src = try copyable(color, width: target.width, height: target.height) } catch { return fail(error) }
     // The part of the rectangle inside the framebuffer.
     let x0 = max(x, 0), y0 = max(y, 0)
     let x1 = min(x + width, target.width), y1 = min(y + height, target.height)
@@ -304,9 +329,10 @@ extension GLContext {
     t.completeCache = nil
     do throws(GPUError) {
       if level == 0 && width > 0 && height > 0 {
-        try ensureImage(t, width: width, height: height, kind: .color(alpha: formatHasAlpha(internalFormat)))
+        try ensureImage(t, width: width, height: height, kind: .color(alpha: formatHasAlpha(internalFormat)), copies: true)
         attachmentSerial &+= 1
       }
+      try promote(t, usage: GLContext.copies, mips: t.image?.mipLevels ?? 1)
       guard let image = t.image, width > 0, height > 0 else { return }
       copyFromFramebuffer(image, face: face, level: Int(level), dx: 0, dy: 0, x: x, y: y, width: width, height: height, from: fb)
     } catch { fail(error) }
@@ -320,6 +346,7 @@ extension GLContext {
     guard xoffset + width <= lv.width, yoffset + height <= lv.height else { return fail(.invalidValue) }
     guard let fb = currentTarget() else { return }
     guard copyCompatible(lv.internalFormat, fb) else { return fail(.invalidOperation) }
+    do throws(GPUError) { try promote(t, usage: GLContext.copies, mips: t.image?.mipLevels ?? 1) } catch { return fail(error) }
     guard let image = t.image, width > 0, height > 0 else { return }
     copyFromFramebuffer(image, face: face, level: Int(level), dx: xoffset, dy: yoffset, x: x, y: y, width: width,
                         height: height, from: fb)
@@ -339,19 +366,21 @@ extension GLContext {
     }
     t.completeCache = nil
     guard count > 1 else { return }
-    frame.endPass()
-    frame.barrier(before: [image.handle])
-    for l in 1..<count {
-      let src = image.descriptor.mipExtent(UInt32(l - 1)), dst = image.descriptor.mipExtent(UInt32(l))
-      frame.list.blitImage(image, to: image, regions: [
-        ImageBlitRegion(srcSubresource: ImageSubresourceLayers(mip: UInt32(l - 1), baseLayer: 0, layerCount: UInt32(t.faces)),
-                        srcMax: Offset3D(x: src.width, y: src.height, z: 1),
-                        dstSubresource: ImageSubresourceLayers(mip: UInt32(l), baseLayer: 0, layerCount: UInt32(t.faces)),
-                        dstMax: Offset3D(x: dst.width, y: dst.height, z: 1)),
-      ], filter: .linear)
-      frame.list.barrier(from: .transfer, to: .transfer)
-    }
-    frame.noteWrite(image)
+    // Each level drawn from the one above, filtered (a pass a level and face): the image stays one no copy reads.
+    do throws(GPUError) {
+      try promote(t, usage: ImageUsage(rawValue: 0), mips: UInt32(count))
+      guard let image = t.image else { return }
+      let linear = try sampler(for: SamplerDescriptor(filter: .linear))
+      for l in 1..<count {
+        let e = image.descriptor.mipExtent(UInt32(l))
+        for f in 0..<t.faces {
+          try frame.copyByDraw(from: ImageView(image, dimension: .d2, baseMip: UInt32(l - 1), mipCount: 1, baseLayer: UInt32(f), layerCount: 1),
+                               to: ImageView(image, dimension: .d2, baseMip: UInt32(l), mipCount: 1, baseLayer: UInt32(f), layerCount: 1),
+                               width: e.width, height: e.height, sampler: linear, kind: .downsample,
+                               sourceSlot: try levelSlot(t, level: l - 1, face: f))
+        }
+      }
+    } catch { fail(error) }
   }
 
   /// The heap slots a draw names for the texture on `unit` that a sampler of the program reads: the texture's, or the
@@ -365,7 +394,9 @@ extension GLContext {
     if let s = t.samplerSlot, frame.heap.samplerValid(s, t.samplerGeneration, epoch: frame.epoch) {
       return (slot, s, image.handle)
     }
-    let d = t.samplerDescriptor
+    var d = t.samplerDescriptor
+    // A device whose samplers have one filter (Mali, so far) takes the magnification filter for both.
+    if d.minFilter != d.magFilter && !frame.limits.features.samplerMinMagFilters { d.minFilter = d.magFilter }
     var found = try frame.heap.samplerSlot(d, epoch: frame.epoch)
     if found == nil {
       // Every sampler slot is read by the open list: submit it, and the slots are free to be written again.

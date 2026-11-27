@@ -216,6 +216,8 @@ public final class EGLSurfaceObject: DefaultFramebuffer {
   var current = 0
   private(set) var serial: UInt64 = 1
   var swapInterval: EGLint = 1
+  /// A headless window's (VECTRA_EGL_WINDOW_HEADLESS): a pbuffer's image, with a window's swap.
+  var headless = false
   var destroyed = false
   /// The context it is current to, if any (it is destroyed once that is released).
   var boundContext: EGLContextObject?
@@ -268,8 +270,8 @@ public final class EGLSurfaceObject: DefaultFramebuffer {
 
   /// A pbuffer of `width` by `height`.
   func makePbuffer() throws(GPUError) {
-    image = try device.makeImage(ImageDescriptor(format: .rgba8, width: width, height: height,
-                                                 usage: .renderTarget | .copySource | .copyDestination | .sampled))
+    // Drawn into and sampled alone (ReadPixels draws it into a copyable image), which a device's passes may compress.
+    image = try device.makeImage(ImageDescriptor(format: .rgba8, width: width, height: height, usage: .renderTarget | .sampled))
     try makeDepth()
   }
 
@@ -298,9 +300,16 @@ public final class EGLSurfaceObject: DefaultFramebuffer {
 
   /// eglSwapBuffers of a window: the frame submitted and presented, and the next image the one drawn into.
   func swap(_ frame: Frame) throws(GPUError) -> Bool {
+    // After a window's swap its depth and stencil are undefined (EGL_BUFFER_DESTROYED): its last pass doesn't store them.
+    if window != nil || headless, var p = frame.pass, p.target == target {
+      p.discardDepth = true
+      p.discardStencil = true
+      frame.pass = p
+    }
     guard let w = window else {
       // A pbuffer's swap does nothing but end what was drawn.
       try frame.submit()
+      if headless { frame.frameEnded() }
       return true
     }
     frame.endPass()
@@ -315,6 +324,7 @@ public final class EGLSurfaceObject: DefaultFramebuffer {
     case .notTaken: framesDropped += 1
     case .lost: return false
     }
+    frame.frameEnded()
     // An image the compositor didn't take is free: the next frame is drawn into it again.
     if outcome == .notTaken { return true }
     // Else the next: one the compositor doesn't read.
@@ -502,6 +512,7 @@ public final class EGLState: @unchecked Sendable {
     // pbuffer's is, and a swap only ends the frame.
     if flags & 1 != 0 {
       let s = EGLSurfaceObject(display: d, config: c, width: width, height: height)
+      s.headless = true
       do throws(GPUError) { try s.makePbuffer() } catch {
         say("a headless window surface: \(error)")
         s.release()
