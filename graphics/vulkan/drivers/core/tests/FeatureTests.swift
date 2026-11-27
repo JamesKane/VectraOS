@@ -248,8 +248,9 @@ extension VulkanCoreDriverTests {
     let vk = VK()
     var count: UInt32 = 0
     #expect(vk.fn("vkEnumerateDeviceExtensionProperties", PFN_vkEnumerateDeviceExtensionProperties.self)(vk.physical, nil, &count, nil) == VK_SUCCESS)
-    #expect(count == 1)
-    var props = [VkExtensionProperties](repeating: VkExtensionProperties(), count: 1)
+    // It, and the swapchain, which needs no window system (a headless surface has none).
+    #expect(count == 2)
+    var props = [VkExtensionProperties](repeating: VkExtensionProperties(), count: Int(count))
     #expect(vk.fn("vkEnumerateDeviceExtensionProperties", PFN_vkEnumerateDeviceExtensionProperties.self)(vk.physical, nil, &count, &props) == VK_SUCCESS)
     let name = withUnsafeBytes(of: props[0].extensionName) { String(cString: $0.bindMemory(to: CChar.self).baseAddress!) }
     #expect(name == "VK_EXT_descriptor_buffer")
@@ -312,7 +313,8 @@ extension VulkanCoreDriverTests {
       return result
     }
     #expect(create(["VK_EXT_descriptor_buffer"]) == VK_SUCCESS)
-    #expect(create(["VK_KHR_swapchain"]) == VK_ERROR_EXTENSION_NOT_PRESENT)
+    #expect(create(["VK_KHR_swapchain"]) == VK_SUCCESS)
+    #expect(create(["VK_KHR_display_swapchain"]) == VK_ERROR_EXTENSION_NOT_PRESENT)
   }
 
   @Test func theDescriptorBufferSequence() throws {
