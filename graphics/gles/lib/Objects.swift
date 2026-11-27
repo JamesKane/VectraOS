@@ -77,8 +77,9 @@ final class GLTexture {
   var levels: [[TextureLevel?]] = []
   var image: GPUImage?
   var kind: StorageKind = .color(alpha: true)
-  /// The heap's texture slot of `image`.
+  /// The heap's texture slot of `image`, and of views of its levels (by face * 32 + level) that mipmaps are drawn from.
   var slot: UInt32?
+  var levelSlots: [(key: Int, slot: UInt32)] = []
   // Sampler state.
   var minFilter: GLenum = GL_NEAREST_MIPMAP_LINEAR
   var magFilter: GLenum = GL_LINEAR

@@ -78,7 +78,8 @@ extension GLTests {
     #expect(tex.image!.mipLevels == 3)
     #expect(tex.samplerDescriptor.mipmapMode == .linear)
     gles_glFinish()
-    #expect(h.test.commands.contains { if case .blitImage = $0 { true } else { false } })
+    // Each level a pass of the library's own, drawn from the one above.
+    #expect(h.test.passes.filter { $0.colors.first?.view.baseMip ?? 0 > 0 }.count == 2)
     // A filter without mips reads level 0 alone, keeping the magnification filter.
     gles_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GLint(GL_NEAREST))
     #expect(tex.samplerDescriptor.maxLod == 0.25 && tex.samplerDescriptor.magFilter == .linear)

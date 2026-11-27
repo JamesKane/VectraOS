@@ -298,10 +298,13 @@ nonisolated(unsafe) var stringCache: [GLenum: UnsafeMutablePointer<GLubyte>] = u
 }
 @c(gles_glDiscardFramebufferEXT) public func gles_glDiscardFramebufferEXT(_ target: GLenum, _ count: GLsizei,
                                                                           _ attachments: UnsafePointer<GLenum>?) {
-  // A hint: what the pass stores is kept as it is.
   guard let c = gl() else { return }
   guard target == GL_FRAMEBUFFER else { return c.fail(.invalidEnum) }
   guard count >= 0 else { return c.fail(.invalidValue) }
+  guard let attachments = unsafe attachments else { return }
+  var list: [GLenum] = []
+  for i in 0..<Int(count) { list.append(unsafe attachments[i]) }
+  c.discard(list)
 }
 
 // MARK: Shaders and programs
@@ -441,32 +444,32 @@ func uniformValues<T>(_ values: T...) -> [T] { values }
   unsafe gl()?.uniform(l, count: 1, components: 1, integers: false, &v)
 }
 @c(gles_glUniform2f) public func gles_glUniform2f(_ l: GLint, _ x: GLfloat, _ y: GLfloat) {
-  let v = [x, y]
-  unsafe v.withUnsafeBytes { unsafe gl()?.uniform(l, count: 1, components: 2, integers: false, $0.baseAddress) }
+  var v = (x, y)
+  unsafe withUnsafeBytes(of: &v) { unsafe gl()?.uniform(l, count: 1, components: 2, integers: false, $0.baseAddress) }
 }
 @c(gles_glUniform3f) public func gles_glUniform3f(_ l: GLint, _ x: GLfloat, _ y: GLfloat, _ z: GLfloat) {
-  let v = [x, y, z]
-  unsafe v.withUnsafeBytes { unsafe gl()?.uniform(l, count: 1, components: 3, integers: false, $0.baseAddress) }
+  var v = (x, y, z)
+  unsafe withUnsafeBytes(of: &v) { unsafe gl()?.uniform(l, count: 1, components: 3, integers: false, $0.baseAddress) }
 }
 @c(gles_glUniform4f) public func gles_glUniform4f(_ l: GLint, _ x: GLfloat, _ y: GLfloat, _ z: GLfloat, _ w: GLfloat) {
-  let v = [x, y, z, w]
-  unsafe v.withUnsafeBytes { unsafe gl()?.uniform(l, count: 1, components: 4, integers: false, $0.baseAddress) }
+  var v = (x, y, z, w)
+  unsafe withUnsafeBytes(of: &v) { unsafe gl()?.uniform(l, count: 1, components: 4, integers: false, $0.baseAddress) }
 }
 @c(gles_glUniform1i) public func gles_glUniform1i(_ l: GLint, _ x: GLint) {
   var v = x
   unsafe gl()?.uniform(l, count: 1, components: 1, integers: true, &v)
 }
 @c(gles_glUniform2i) public func gles_glUniform2i(_ l: GLint, _ x: GLint, _ y: GLint) {
-  let v = [x, y]
-  unsafe v.withUnsafeBytes { unsafe gl()?.uniform(l, count: 1, components: 2, integers: true, $0.baseAddress) }
+  var v = (x, y)
+  unsafe withUnsafeBytes(of: &v) { unsafe gl()?.uniform(l, count: 1, components: 2, integers: true, $0.baseAddress) }
 }
 @c(gles_glUniform3i) public func gles_glUniform3i(_ l: GLint, _ x: GLint, _ y: GLint, _ z: GLint) {
-  let v = [x, y, z]
-  unsafe v.withUnsafeBytes { unsafe gl()?.uniform(l, count: 1, components: 3, integers: true, $0.baseAddress) }
+  var v = (x, y, z)
+  unsafe withUnsafeBytes(of: &v) { unsafe gl()?.uniform(l, count: 1, components: 3, integers: true, $0.baseAddress) }
 }
 @c(gles_glUniform4i) public func gles_glUniform4i(_ l: GLint, _ x: GLint, _ y: GLint, _ z: GLint, _ w: GLint) {
-  let v = [x, y, z, w]
-  unsafe v.withUnsafeBytes { unsafe gl()?.uniform(l, count: 1, components: 4, integers: true, $0.baseAddress) }
+  var v = (x, y, z, w)
+  unsafe withUnsafeBytes(of: &v) { unsafe gl()?.uniform(l, count: 1, components: 4, integers: true, $0.baseAddress) }
 }
 @c(gles_glUniform1fv) public func gles_glUniform1fv(_ l: GLint, _ n: GLsizei, _ v: UnsafePointer<GLfloat>?) {
   unsafe gl()?.uniform(l, count: n, components: 1, integers: false, v)

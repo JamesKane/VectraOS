@@ -12,7 +12,7 @@
 //   - render to texture: a framebuffer object's texture drawn into, then sampled by a second pass;
 //   - 20 draws in one pass, each its own column;
 //   - client-side arrays: positions as floats and colours as normalized bytes from the program's memory;
-// and on a window of Radharc's, where there is a compositor: frames swapped at interval 1 and at 0.
+// and on a window of Radharc's, where there is a compositor: 4 frames swapped at interval 1 and 60 at 0.
 // Then the budgets: `gl.frame_us.empty` (a clear and glFinish) and `gl.frame_us.draw` (a clear, one draw and
 // glFinish), each the median of 200 frames. It prints `gl-test: ok: gl NAME` for each check that passed and exits 0
 // only if all did. Its programs are GLSL ES 1.00, compiled by the library's front end; the triangle is drawn again by
@@ -496,7 +496,9 @@ static void test_window(EGLDisplay d) {
   for (int interval = 1; interval >= 0; interval--) {
     eglSwapInterval(d, interval);
     uint64_t start = now_ns();
-    for (int i = 0; i < 60; i++) {
+    // Interval 1 waits for Radharc's frames, which a window not in front gets slowly: few of those.
+    int swaps = interval ? 4 : 60;
+    for (int i = 0; i < swaps; i++) {
       glClearColor((float)(i % 2), 0, (float)((i + 1) % 2), 1);
       glClear(GL_COLOR_BUFFER_BIT);
       if (!eglSwapBuffers(d, s)) {
@@ -505,7 +507,7 @@ static void test_window(EGLDisplay d) {
         break;
       }
     }
-    printf("gl-test: window: 60 swaps at interval %d in %llu us\n", interval, (unsigned long long)((now_ns() - start) / 1000));
+    printf("gl-test: window: %d swaps at interval %d in %llu us\n", swaps, interval, (unsigned long long)((now_ns() - start) / 1000));
   }
   // What is drawn reads back, the window's first row its top.
   glClearColor(0, 1, 0, 1);

@@ -17,7 +17,20 @@ import VX
 @_silgen_name("td_venus_connect")
 func connectVenus() -> @convention(c) (OpaquePointer?, UnsafePointer<CChar>?) -> UnsafeRawPointer?
 
-func defaultPlatform() -> (any GLPlatform)? { NativePlatform() }
+func defaultPlatform() -> (any GLPlatform)? {
+  // The library's messages go to the program's output; the stats' clock is the monotonic one, and Mali's account of a
+  // submission is its last profile.
+  unsafe glesLog = { print($0) }
+  unsafe glesClock = { Deadline.now.ns }
+  unsafe glesDeviceProfile = { device in
+    guard let mali = device as? MaliDevice else { return nil }
+    let p = mali.lastProfile
+    return "\(p.steps) steps, \(p.buffers) buffers; us: plan \(p.planNanoseconds / 1000) (draws \(p.drawNanoseconds / 1000)), "
+      + "recipe \(p.recipeNanoseconds / 1000), copy \(p.copyNanoseconds / 1000), submit \(p.submitNanoseconds / 1000), "
+      + "wait \(p.waitNanoseconds / 1000), total \(p.totalNanoseconds / 1000)"
+  }
+  return NativePlatform()
+}
 
 /// The process's loop, made when the first window opens.
 final class LoopBox {
@@ -33,7 +46,10 @@ final class NativePlatform: GLPlatform {
     if GPUContext.namespace == nil { GPUContext.namespace = Namespace.process }
     let device: any GPUDevice
     if CSFContext.isOffered() {
-      device = try MaliDevice()
+      let mali = try MaliDevice()
+      // The stats print its submissions' profile (gles(2), ENVIRONMENT).
+      if unsafe glesStats { mali.profiling = true }
+      device = mali
     } else {
       let venus = unsafe unsafeBitCast(connectVenus(), to: PFN_vkGetInstanceProcAddr.self)
       device = try VulkanDevice(choose: .anyPreferDiscrete, storageImages: false, texelBuffers: false,
