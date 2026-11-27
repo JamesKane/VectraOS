@@ -1146,10 +1146,19 @@ extension MaliDevice {
     }
     let registers = CSRegisterMap(workRegisters: info.workRegisters, unpreserved: info.unpreservedRegisters)
     let scoreboards = CSScoreboards(count: info.scoreboards)
+    // Each distinct program is laid out once (RenderPass.build), so the block's room is for those: a pass of hundreds of draws of a
+    // few pipelines needs room for a few.
     var codeWords = 0
+    var programs: [[UInt64]] = []
+    func count(_ code: [UInt64], extra: Int = 0) {
+      if programs.contains(where: { $0 == code }) { return }
+      programs.append(code)
+      codeWords += code.count + extra
+    }
     for d in pass.draws {
-      codeWords += d.vertexShader.code.count + d.fragmentShader.code.count
-      for (_, code) in d.blendShaders { codeWords += code.count + 16 }
+      count(d.vertexShader.code)
+      count(d.fragmentShader.code)
+      for (_, code) in d.blendShaders { count(code, extra: 16) }
     }
     request.chain = chain
     request.sampleTable = try sampleTable().address

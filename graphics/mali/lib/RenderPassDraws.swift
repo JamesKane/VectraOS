@@ -42,33 +42,35 @@ public struct IndirectArguments: Sendable, Equatable {
 /// one is written; the counts, offsets and push constants are the draw's own. A pass copies its draws several times as it
 /// is planned and laid out, and the shared part is many references: counting them for each copy was most of a draw's cost.
 public struct PassDraw: Sendable {
+  // The fields are written only through `own()`, which copies a shared object first: no access to one overlaps another, so
+  // they are not checked at run time (`@exclusivity(unchecked)`).
   final class Shared: @unchecked Sendable {
-    var vertexShader: VertexShader
-    var fragmentShader: FragmentShader
-    var blend: BlendDescriptor
-    var images: [BindingHandle]
-    var dummySampler: UInt32
-    var state: DrawPipelineState = DrawPipelineState()
-    var extraBlends: [BlendDescriptor] = []
-    var blendShaders: [Int: [UInt64]] = [:]
-    var blendConstants: [Float] = []
+    @exclusivity(unchecked) var vertexShader: VertexShader
+    @exclusivity(unchecked) var fragmentShader: FragmentShader
+    @exclusivity(unchecked) var blend: BlendDescriptor
+    @exclusivity(unchecked) var images: [BindingHandle]
+    @exclusivity(unchecked) var dummySampler: UInt32
+    @exclusivity(unchecked) var state: DrawPipelineState = DrawPipelineState()
+    @exclusivity(unchecked) var extraBlends: [BlendDescriptor] = []
+    @exclusivity(unchecked) var blendShaders: [Int: [UInt64]] = [:]
+    @exclusivity(unchecked) var blendConstants: [Float] = []
     init(vertexShader: VertexShader, fragmentShader: FragmentShader, blend: BlendDescriptor, images: [BindingHandle], dummySampler: UInt32) {
-      self.vertexShader = vertexShader
-      self.fragmentShader = fragmentShader
-      self.blend = blend
-      self.images = images
-      self.dummySampler = dummySampler
+      unsafe self.vertexShader = vertexShader
+      unsafe self.fragmentShader = fragmentShader
+      unsafe self.blend = blend
+      unsafe self.images = images
+      unsafe self.dummySampler = dummySampler
     }
     init(copying o: Shared) {
-      vertexShader = o.vertexShader
-      fragmentShader = o.fragmentShader
-      blend = o.blend
-      images = o.images
-      dummySampler = o.dummySampler
-      state = o.state
-      extraBlends = o.extraBlends
-      blendShaders = o.blendShaders
-      blendConstants = o.blendConstants
+      unsafe vertexShader = unsafe o.vertexShader
+      unsafe fragmentShader = unsafe o.fragmentShader
+      unsafe blend = unsafe o.blend
+      unsafe images = unsafe o.images
+      unsafe dummySampler = unsafe o.dummySampler
+      unsafe state = unsafe o.state
+      unsafe extraBlends = unsafe o.extraBlends
+      unsafe blendShaders = unsafe o.blendShaders
+      unsafe blendConstants = unsafe o.blendConstants
     }
   }
   var shared: Shared
@@ -79,12 +81,12 @@ public struct PassDraw: Sendable {
   }
 
   public var vertexShader: VertexShader {
-    _read { yield shared.vertexShader }
-    _modify { yield &own().vertexShader }
+    _read { yield unsafe shared.vertexShader }
+    _modify { yield unsafe &own().vertexShader }
   }
   public var fragmentShader: FragmentShader {
-    _read { yield shared.fragmentShader }
-    _modify { yield &own().fragmentShader }
+    _read { yield unsafe shared.fragmentShader }
+    _modify { yield unsafe &own().fragmentShader }
   }
   /// The vertices (non-indexed) and the instances.
   public var vertexCount: Int
@@ -93,17 +95,17 @@ public struct PassDraw: Sendable {
   public var push: [UInt32]
   /// The blend descriptor of the pass's one colour target (09: the position must equal the target).
   public var blend: BlendDescriptor {
-    _read { yield shared.blend }
-    _modify { yield &own().blend }
+    _read { yield unsafe shared.blend }
+    _modify { yield unsafe &own().blend }
   }
   /// The heap handle of element 0 of each image and sampler binding the fragment shader names, and the dummy sampler's.
   public var images: [BindingHandle] {
-    _read { yield shared.images }
-    _modify { yield &own().images }
+    _read { yield unsafe shared.images }
+    _modify { yield unsafe &own().images }
   }
   public var dummySampler: UInt32 {
-    _read { yield shared.dummySampler }
-    _modify { yield &own().dummySampler }
+    _read { yield unsafe shared.dummySampler }
+    _modify { yield unsafe &own().dummySampler }
   }
   /// `RUN_IDVS2`'s vertex shading mode (01 section 1.9.3): early (false, the reference driver's) or deferred.
   public var deferredShading: Bool = false
@@ -126,24 +128,24 @@ public struct PassDraw: Sendable {
   /// The fixed-function state beyond the colour-only opaque triangle list (PipelineState.swift): the primitive mode, culling, the
   /// depth/stencil test, a viewport and scissor.
   public var state: DrawPipelineState {
-    _read { yield shared.state }
-    _modify { yield &own().state }
+    _read { yield unsafe shared.state }
+    _modify { yield unsafe &own().state }
   }
   /// The blend descriptors of the pass's colour targets after the first, in order (each one's `renderTarget` is its index, 09 section 9.2.3).
   public var extraBlends: [BlendDescriptor] {
-    _read { yield shared.extraBlends }
-    _modify { yield &own().extraBlends }
+    _read { yield unsafe shared.extraBlends }
+    _modify { yield unsafe &own().extraBlends }
   }
   /// The code of the blend shader of each colour target whose descriptor is in mode Shader (by target; 09 section 9.9). The recipe
   /// places each in the pass's block, so it lies in the fragment shader's 4 GiB region, and puts its address in the descriptor.
   public var blendShaders: [Int: [UInt64]] {
-    _read { yield shared.blendShaders }
-    _modify { yield &own().blendShaders }
+    _read { yield unsafe shared.blendShaders }
+    _modify { yield unsafe &own().blendShaders }
   }
   /// The blend constants (red, green, blue, alpha) the blend shaders read from the fragment FAU (`GraphicsFauLayout.blendConstantWord`).
   public var blendConstants: [Float] {
-    _read { yield shared.blendConstants }
-    _modify { yield &own().blendConstants }
+    _read { yield unsafe shared.blendConstants }
+    _modify { yield unsafe &own().blendConstants }
   }
 
   public init(
