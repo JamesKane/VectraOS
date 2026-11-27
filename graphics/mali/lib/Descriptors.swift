@@ -16,6 +16,18 @@ public struct MemoryImage: Equatable, Sendable {
   public mutating func extend(to size: Int) {
     if size > bytes.count { bytes.append(contentsOf: [UInt8](repeating: 0, count: size - bytes.count)) }
   }
+  /// Words stored at `offset` plus 4 times each index given to `put`, within `words` words, the range checked once (a draw's FAU
+  /// block: a pass stores hundreds).
+  public mutating func storeWords(at offset: Int, words count: Int, _ body: (_ put: (Int, UInt32) -> Void) -> Void) {
+    precondition(offset >= 0 && offset + 4 * count <= bytes.count, "a store past the image")
+    bytes.withUnsafeMutableBytes { b in
+      body { i, v in
+        precondition(i >= 0 && i < count, "a store past the block")
+        unsafe b.storeBytes(of: v.littleEndian, toByteOffset: offset + 4 * i, as: UInt32.self)
+      }
+    }
+  }
+
   // The stores check the range once and write whole words (a pass stores thousands).
   public mutating func store(_ value: UInt32, at offset: Int) {
     precondition(offset >= 0 && offset + 4 <= bytes.count, "a store past the image")

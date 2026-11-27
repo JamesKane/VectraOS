@@ -377,7 +377,12 @@ extension MaliDevice {
           }
         } else {
           var storage = false
-          for d in draws where d.fragmentShader.layout.imageBindings.contains(where: { $0.binding >= 2 && $0.binding <= 4 }) { storage = true }
+          var previous: PassDraw? = nil
+          for d in draws {
+            if let p = previous, d.sharesState(with: p) { continue }
+            if d.fragmentShader.layout.imageBindings.contains(where: { $0.binding >= 2 && $0.binding <= 4 }) { storage = true }
+            previous = d
+          }
           steps.append(.render(DrawPass(
             target: record, clear: clear, draws: draws, usesHeap: usesHeap, usesStorage: storage, load: loads,
             queries: queryReports, extra: extraTargets, zs: zs, samples: samples, stores: stores, resolves: resolves, views: views,
@@ -595,7 +600,7 @@ extension MaliDevice {
     if !probing, let i = drawCache.firstIndex(where: { $0.pipeline == p.handle && $0.version == dynVersion && $0.pass == planPass }),
       let template = drawCache[i].template
     {
-      if indirect == nil && vertices < template.state.minimumVertices { return }
+      if indirect == nil && vertices < drawCache[i].minimumVertices { return }
       usesHeap = usesHeap || drawCache[i].heapDraw
       var draw = PassDraw(sharingState: template, vertexCount: vertices, instanceCount: instances, root: root)
       draw.indices = indices
@@ -708,6 +713,7 @@ extension MaliDevice {
       drawCache[i].template = draw
       drawCache[i].pass = planPass
       drawCache[i].heapDraw = heapDraw
+      drawCache[i].minimumVertices = pipelineState.minimumVertices
     }
     draws.append(draw)
   }
@@ -1027,6 +1033,17 @@ extension MaliDevice {
     request.viewMask = pass.viewMask
     request.finishLastContextOnly = probeFinishLastContextOnly
     if probePassStamps { request.stamps = try chainSync().address + UInt64(Self.stampsOffset) }
+    request.wantsRecords = probeScissorMode != 0
+    if profiling {
+      nonisolated(unsafe) let t = transport
+      request.clock = { unsafe t.nanoseconds() }
+      recipeCount += 1
+      if recipeCount % 500 == 0 {
+        let p = unsafe RenderPass.phaseNanoseconds.map { $0 / 500 / 100 }
+        print("mali: recipe phases (0.1 us a pass): place \(p[0]) pre \(p[1]) states \(p[2]) streams \(p[3]) bytes \(p[4])")
+        unsafe RenderPass.phaseNanoseconds = [0, 0, 0, 0, 0]
+      }
+    }
     // Multisampled (valhall 08 section 8.3): the tile holds every sample; a stored target writes each to its surface (Layered),
     // a resolved one the mean to the resolve image (Average), and one both stored and resolved gets a second descriptor over the
     // same tile for the mean.
@@ -1154,7 +1171,10 @@ extension MaliDevice {
       programs.append(code)
       codeWords += code.count + extra
     }
+    var previous: PassDraw? = nil
     for d in pass.draws {
+      if let p = previous, d.sharesState(with: p) { continue }
+      previous = d
       count(d.vertexShader.code)
       count(d.fragmentShader.code)
       for (_, code) in d.blendShaders { count(code, extra: 16) }

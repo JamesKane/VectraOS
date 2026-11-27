@@ -186,7 +186,7 @@ extension GraphicsFauLayout {
     into m: inout MemoryImage, at offset: Int, viewport: ViewportTransform? = nil, push: [UInt32] = [], root: UInt64? = nil,
     images: [BindingHandle] = [], dummySampler: UInt32 = 0, blendConstants: [Float] = [], viewportTable: UInt64 = 0
   ) {
-    func put(_ word: Int, _ v: UInt32) { m.store(v, at: offset + 4 * word) }
+    m.storeWords(at: offset, words: words) { put in
     if viewportWord >= 0, let v = viewport {
       put(viewportWord, v.scale.x.bitPattern)
       put(viewportWord + 1, v.offset.x.bitPattern)
@@ -215,6 +215,7 @@ extension GraphicsFauLayout {
         put(pushWord + i, i < push.count ? push[i] : 0)
       }
       i += 1
+    }
     }
   }
 }

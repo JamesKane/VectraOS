@@ -176,6 +176,8 @@ struct DrawCache {
   var template: PassDraw? = nil
   var pass = -1
   var heapDraw = false
+  /// The template's `state.minimumVertices` (read here, not through the draw's accessor, which allocates its frame outside MaliCore).
+  var minimumVertices = 0
 }
 
 enum PipelineRecord {
@@ -339,6 +341,7 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   /// A probe of a pass's own time: each pass stores the timestamps of `PassStamp` as its streams run, in the chain's buffer; the
   /// last pass's are `passStamps` once it is done.
   public var probePassStamps = false
+  var recipeCount = 0
   /// A probe of the kernel's flush before each job: this token (nonzero: one that has long passed, so the flush is skipped) on every
   /// job of a submission after the first, or on the first too.
   public var probeFlushToken: UInt32 = 0
