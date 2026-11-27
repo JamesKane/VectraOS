@@ -108,6 +108,32 @@ The rest did not run. What it shows:
   the backend now samples in the vertex stage.
 - The heavy scenes (phong, cel, high-poly, buffer) beat the reference.
 
+## The compiler, 2026-11-26 (gl after 23a80838)
+
+effect2d was compute-bound in our own code: the 3x3 kernel's fragment
+shader was about 200 instructions (nine taps, five of them zero; the
+combined image sampler's handle words loaded again for every tap; each
+weight made again for each channel). Folding `x * 0`, merging equal loads
+of a block, contracting products into fused multiply-adds, and making a
+constant and a handle pair once a block brought it to 63. Graphics
+shaders were then all class 64; 37 of glmark2's 39 fragment shaders fit
+class 32, twice the resident threads. A subset run on the board (FPS):
+
+| Scene | Reference | Before | Folds | Class 32 | Ratio |
+|---|---:|---:|---:|---:|---:|
+| effect2d 3x3 | 5678 | 3717 | 6181 | 6199 | 1.09 |
+| effect2d 5x3 | 4091 | 2779 | 3892 | 4481 | 1.10 |
+| texture | 4925 | 4973 | 4924 | 5297 | 1.08 |
+| pulsar | 4742 | 4636 | 4582 | 5078 | 1.07 |
+| bump normals | 5506 | 6343 | 6278 | 6540 | 1.19 |
+| desktop shadow | 2256 | | 1281 | 1294 | 0.57 |
+| ideas | 973 | | 429 | 441 | 0.45 |
+| jellyfish | 2615 | | 1721 | 1860 | 0.71 |
+
+"Before" for effect2d 5x3 is after the zero fold alone (it has no zero
+weights). desktop and ideas are bound by the per-pass and per-draw costs,
+not by their shaders.
+
 ## The shaders glmark2 compiles
 
 `MESA_SHADER_DUMP_PATH` on the same run, every scene at 0.3 s: 69 distinct
