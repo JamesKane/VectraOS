@@ -522,7 +522,7 @@ let text: [Target] = [
   // C names exported. Hosted it has no platform (hosted/); its tests give it a fake device, and the Mali backend over the
   // fake transport, where the real lowering and the Valhall compiler take its pipelines.
   .target(name: "GLES", dependencies: ["GLSL", "GPUCore", "VulkanLowering"], path: "graphics/gles",
-          exclude: ["c", "include", "native", "tests", "README.md"], sources: ["lib", "hosted"], swiftSettings: tier0),
+          exclude: ["c", "include", "native", "tests", "shaders", "README.md"], sources: ["lib", "hosted"], swiftSettings: tier0),
   .testTarget(name: "GLESTests", dependencies: ["GLES", "GPUCore", "VulkanLowering", "GPUCoreMali", "MaliFakeTransport"],
               path: "graphics/gles/tests", exclude: ["shaders"]),
   // The transfers' kernels run on the interpreter over the fake transport's memory (TransferTests.swift).
