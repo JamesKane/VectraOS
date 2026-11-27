@@ -59,6 +59,31 @@ private func byte(_ x: Int, _ y: Int, _ l: Int, _ c: Int) -> UInt8 { UInt8(trunc
     #expect(read(back, 8) == [7, 0, 0, 0, 1, 2, 3, 4])
   }
 
+  @Test func aWholeClearOfARenderTargetIsAPassThatDrawsIt() throws {
+    let (gpu, t, runner) = try kernelDevice()
+    let target = try gpu.makeImage(ImageDescriptor(format: .bgra8srgb, width: 64, height: 64, usage: .renderTarget | .copyDestination))
+    let levels = try gpu.makeImage(ImageDescriptor(format: .rgba8, width: 64, height: 64, mipLevels: 2, usage: .renderTarget | .copyDestination))
+    var list = GPUCommandList()
+    list.clear(target, color: .float(0.25, 0.5, 0.75, 1))
+    list.clear(levels, color: .float(1, 0, 0, 1))
+    var held: [Region] = []
+    let steps = try gpu.plan(list, held: &held)
+    // The one-level render target: a pass whose fragment work clears it and draws the clear; the image of two levels: the kernel.
+    #expect(steps.count == 2)
+    guard case .render(let pass) = steps[0] else {
+      Issue.record("the clear of a render target is not a pass")
+      return
+    }
+    #expect(pass.target.descriptor.format == .bgra8srgb && pass.clear == [0.25, 0.5, 0.75, 1] && pass.draws.count == 1 && !pass.load)
+    guard case .dispatch(_, _, _, _, _, _, let kernel) = steps[1] else {
+      Issue.record("the clear of an image of two levels is not a kernel")
+      return
+    }
+    #expect(kernel == .copy)
+    gpu.retire(held)
+    _ = (t, runner)
+  }
+
   @Test func bufferRegionsMoveRowsOfOneTwoFourEightAndSixteenBytes() throws {
     let (gpu, _, _) = try kernelDevice()
     let usage: ImageUsage = .copySource | .copyDestination
