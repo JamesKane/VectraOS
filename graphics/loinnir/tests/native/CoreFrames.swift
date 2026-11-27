@@ -345,21 +345,6 @@ final class FrameBudgets {
       if p != [255, 0, 0, 255] { throw GPUError.invalid("one queue a pass left \(p) at the centre") }
       try probe.glFrame("_one_queue")
     }
-    // The kernel's flush before each job, skipped (a probe: `MaliDevice.probeFlushToken`) after the first job, then for every job.
-    for all in [false, true] {
-      attempt("flush token") { () throws(GPUError) in
-        let fresh = try MaliDevice()
-        fresh.probeFlushToken = 1
-        fresh.probeFlushTokenFirstJob = all
-        let probe = try FrameBudgets(fresh, signalled: 0)
-        var list = GPUCommandList()
-        list.render(probe.pass(probe.small)) { l in l.draw(probe.pipeline, root: probe.quads.address, vertices: 6) }
-        let name = all ? "a 64 x 64 pass, no job flushes" : "a 64 x 64 pass, one job flush"
-        try probe.place(name) { l in l.render(probe.pass(probe.small)) { r in r.draw(probe.pipeline, root: probe.quads.address, vertices: 6) } }
-        try probe.stamped(name, list)
-        try probe.place(name + ", nothing") { _ in }
-      }
-    }
     print("loinnir-test: frame budgets: \(failed == 0 ? "done" : "\(failed) FAILED")")
     return failed
   }

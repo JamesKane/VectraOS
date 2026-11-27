@@ -155,8 +155,9 @@ public final class CSFTransport: MaliTransport {
     // the driver, in another process, tells the GPU to look.
     croi_dma_complete()
     do throws(CSFClientError) {
-      try context.submit(group: group, jobs: list, waits: waits.map { (id: $0.sync, value: $0.value) },
-                         signals: signals.map { (id: $0.sync, value: $0.value) })
+      // One-way: the driver's part (its rings and doorbells) runs while this process goes on; a refusal shows in the group's state.
+      try context.post(group: group, jobs: list, waits: waits.map { (id: $0.sync, value: $0.value) },
+                       signals: signals.map { (id: $0.sync, value: $0.value) })
     } catch { throw Self.core(error, "submit") }
   }
 }

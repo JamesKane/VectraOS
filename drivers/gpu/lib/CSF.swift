@@ -31,7 +31,7 @@ public enum GPUCapset {
   public static let csf: UInt32 = 0x1000
 }
 
-@IPCLibrary(id: "todhchai.gpu.csf", version: 4)
+@IPCLibrary(id: "todhchai.gpu.csf", version: 5)
 public enum GPUCSFIPC {
   public enum GPUError: Int32, IPCErrorCode, Sendable {
     /// An argument breaks a rule of the object model.
@@ -283,5 +283,9 @@ public enum GPUCSFIPC {
     /// raised to its value, well or not (`groupState` says). A group that
     /// ended gives `lost`.
     func submit(group: UInt32, jobs: [Job], waits: [SyncValue], signals: [SyncValue]) throws(GPUError)
+
+    /// `submit` with no answer: the call returns once the request is sent, and the driver does the rest while the client goes
+    /// on. A submission the driver refuses raises its signals and sets bit 3 of its group's `state`.
+    @since(5) @oneway func post(group: UInt32, jobs: [Job], waits: [SyncValue], signals: [SyncValue])
   }
 }
