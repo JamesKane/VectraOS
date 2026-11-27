@@ -12,7 +12,7 @@ benchmarks (thirteen scenes, ten seconds each) until it ends, and reboot into
 FreeBSD:
 
     ninja -C build/arm64 esp-board-vkmark esp-board-vkmark-window
-    BOARD_DEADLINE=600 BOARD_PASS="vkmark Score:" BOARD_FAIL="launcher exited with [1-9]|panic" \
+    BOARD_DEADLINE=600 BOARD_PASS="vkmark Score:" BOARD_FAIL="exited with -?[1-9]|PANIC" \
       .claude/skills/board-run/board-run.sh build/arm64/esp-board-vkmark LOG
 
 - `esp-board-vkmark`: `vkmark --winsys headless -s 800x600`, no compositor.
@@ -25,65 +25,93 @@ FreeBSD:
 The serial console carries each scene's line, `[scene] options: FPS: N
 FrameTime: T ms`, and the end's `vkmark Score: N`.
 
-## Headless, 2026-11-27 (branch at 083bf61b)
+## Headless, 2026-11-27 (branch at a1af5fe2)
 
-`esp-board-vkmark`, 800x600, `B8G8R8A8_SRGB`, on whatever core the
-scheduler gives it. The first run had only four scenes before the shader
-compiler took matrices (every scene but effect2d and clear failed with
-`OpTypeMatrix: not supported by the compiler`); with matrices, two runs:
-one of the default list in order, which stopped with a GPU fault after
-texture anisotropy=16 (below), and one of the default list with texture
-anisotropy=16 moved to the end, which ran every scene.
+`esp-board-vkmark`: the default list in order, 800x600, `B8G8R8A8_SRGB`, on
+whatever core the scheduler gives it.
 
-| Scene | FPS | Frame (ms) | Run |
-|---|---:|---:|---|
-| vertex device-local=true | 11471 | 0.087 | default order |
-| vertex device-local=false | 10924 | 0.092 | default order |
-| texture anisotropy=0 | 10379 | 0.096 | default order |
-| texture anisotropy=16 | 10048 | 0.100 | moved to the end |
-| shading shading=gouraud | 7477 | 0.134 | moved |
-| shading shading=blinn-phong-inf | 7315 | 0.137 | moved |
-| shading shading=phong | 607 | 1.647 | moved |
-| shading shading=cel | 5666 | 0.176 | moved |
-| effect2d kernel=edge | 11974 | 0.084 | moved |
-| effect2d kernel=blur | 6385 | 0.157 | moved |
-| desktop | 5842 | 0.171 | moved |
-| cube | 11027 | 0.091 | moved |
-| clear | 117 | 8.547 | moved |
+| Scene | FPS | Frame (ms) |
+|---|---:|---:|
+| vertex device-local=true | 11235 | 0.089 |
+| vertex device-local=false | 10771 | 0.093 |
+| texture anisotropy=0 | 10331 | 0.097 |
+| texture anisotropy=16 | 10047 | 0.100 |
+| shading shading=gouraud | 7525 | 0.133 |
+| shading shading=blinn-phong-inf | 7275 | 0.137 |
+| shading shading=phong | 597 | 1.675 |
+| shading shading=cel | 5631 | 0.178 |
+| effect2d kernel=edge | 11942 | 0.084 |
+| effect2d kernel=blur | 6388 | 0.157 |
+| desktop | 5849 | 0.171 |
+| cube | 12134 | 0.082 |
+| clear | 15777 | 0.063 |
 
-The second run's score: **6645** (its ten scenes; the first run's three
-scenes before texture anisotropy=16 are not in it). The mean of all
-thirteen rows above is 7633.
+vkmark score: **8884**.
+
+What it took to get here, on the board:
+
+- Every scene but effect2d and clear first failed with `OpTypeMatrix: not
+  supported by the compiler`. glslang's SPIR-V has matrices, which our GLSL
+  front end never wrote; the shader compiler now lowers them as their columns
+  (shadercompiler(2)).
+- clear ran at 117 FPS (8.5 ms a frame). The Mali backend ran
+  `vkCmdClearColorImage` as its `copy` kernel, a texel a thread. A whole
+  clear of a one-level render target is now a pass that draws the clear:
+  15777 FPS.
+
+## In a window, 2026-11-27 (branch at a1af5fe2)
+
+`esp-board-vkmark-window`: the default list in a window of 800x600 on the
+Radharc of the display (1920x1080 at 60 Hz), presented FIFO.
+
+| Scene | FPS | Scene | FPS |
+|---|---:|---|---:|
+| vertex device-local=true | 14 | shading cel | 13 |
+| vertex device-local=false | 12 | effect2d edge | 14 |
+| texture anisotropy=0 | 15 | effect2d blur | 13 |
+| texture anisotropy=16 | 12 | desktop | 13 |
+| shading gouraud | 15 | cube | 14 |
+| shading blinn-phong-inf | 12 | clear | 13 |
+| shading phong | 14 | | |
+
+vkmark score: **13**. Every scene runs, at 12 to 15 frames a second whatever
+its GPU work (the same scenes run at 600 to 16000 frames a second headless):
+the window's presents are paced at about one in four or five of the
+display's vblanks, not at each one. Why is not yet known; see below.
 
 ## Known problems
 
-- **A GPU fault after texture anisotropy=16 in the default order.** In
-  the default list texture anisotropy=16 directly follows texture
-  anisotropy=0. It ran slower there (6328 FPS, and 13.8 s for a 10 s scene)
-  and ended with `vulkan-core: failed: a pass ended its group (group state 9,
-  bit 1 is a fatal fault)` at its teardown's `waitIdle`. vkmark then aborted
-  (`vkmark-offscreen exited -1028`). Run last, after other scenes, the same
-  scene ran its 10 s at 10048 FPS without a fault. So it is not
-  anisotropy by itself; the repeated texture scene's resources are the
-  suspect. Not reproduced or fixed yet: the run that would have isolated it
-  (texture anisotropy=0 three times, then 16) never booted (next item).
-- **The board didn't come back after a reboot.** After the run with every
-  scene (the second above) the board came back to FreeBSD and took the next
-  image (texture repeated, `esp-board-vkmark`). After FreeBSD's reboot into
-  it, the serial console stayed silent, with no firmware output, and the board
-  answered nothing for 17 minutes.
-- **clear: 8.5 ms a frame.** vkmark's clear scene records
-  `vkCmdClearColorImage` every frame; the Mali backend runs it as its `copy`
-  kernel (Transfers.swift). 8.547 ms is far more than an 800x600 clear
-  costs, and the same every frame; not yet looked into.
-- **phong: 1.6 ms a frame**, a tenth of gouraud's. Its fragment shader has
-  `pow(x, 250.0)`, beyond the compiler's products by squaring (exponents to
-  128), so it takes the accurate exp2(y log2 x) path; whether that is the
-  cost is not yet measured.
-
-## In a window
-
-Not yet run (`esp-board-vkmark-window`): the board was down.
+- **Texture scenes hang the GPU after some seconds.** A run of the texture
+  scene of 50 s ended, every time, with `vulkan-core: failed: a pass ended
+  its group (group state 9, bit 1 is a fatal fault)` at its teardown, and
+  mali's status says why: `CSG 0 progress timer expired`, the group was told to
+  terminate and didn't acknowledge, and the GPU was reset. No MMU fault.
+  - It came after 9, 17, 20 and 26 s, with anisotropy 16, 16, 2 and 0, with
+    the 64 KiB tiled texture layout and without it.
+  - A 50 s run of the vertex scene (570 000 frames, no texture) didn't hang,
+    and nor did 20 s of the texture scene, nor the full default list
+    (10 s each) on its last run. Two earlier runs of the default list hung in
+    texture anisotropy=16.
+  - So something in a pass that samples a texture stops the GPU now and then.
+    Not found yet.
+- **The windowed rate.** 12 to 15 frames a second where the display gives
+  60. Radharc composes windows on the GPU here (radharc(4)), and vkmark's
+  frames are presented FIFO; neither the compositor's rate nor the present's
+  wait has been measured yet.
+- **phong: 1.7 ms a frame**, a tenth of gouraud's. Not pow: its
+  `pow(x, 250.0)` takes the general exp2(y log2 x) path, but blinn-phong-inf's
+  fragment shader takes the same path (its exponent is a uniform) at
+  7275 FPS. phong's fragment shader calls a function with its parameters
+  passed by pointer; what the compiler makes of that has not been looked at.
+- **Twice the board didn't come back after a reboot.**
+  - Before main's quiesce fix (devmgr halts and disables mali's MCU and
+    soft-resets the GPU before a reset), the console stayed silent after
+    FreeBSD's reboot into the next image.
+  - With it, once: a boot in which vkmark never started (the diagnostic's
+    manifest was wrong) quiesced mali (`the MCU (enabled) halted, disabled
+    and the GPU soft reset`), printed `croi kernel: rebooting`, and the
+    firmware and FreeBSD's loader came up. The console ended after the
+    loader's framebuffer information, in FreeBSD's kernel start.
 
 ## The reference
 
