@@ -212,3 +212,24 @@ func gpu(_ r: Recorder, pulse: UInt32? = 20) -> PowerController {
   let all = PowerOrder.steps(links: links, services: services, clocks: [], powered: true)
   #expect(all.contains(.reset(service: "sky1-reset-RST0", index: 114)))
 }
+
+@Test func quiesceEndsEachDeviceThatIsOnAndCutsNothing() {
+  let r = Recorder()
+  var c = gpu(r)
+  let up = c.powerUp(0, r)
+  #expect(up)
+  // A second device that is down is left alone.
+  c.devices.append(PowerDevice(service: "other", path: "\\_SB_.OTHR", steps: [.domain(7)], pulse: nil))
+  r.log = []
+  let done = c.quiesce(supplies: r, host: r)
+  #expect(done == [0])
+  #expect(r.log == ["supplies end mali-acpi-_SB_.GPU_ 500 ms", "host end"])
+  #expect(c.devices[0].state == "quiesced" && c.devices[0].detail.isEmpty)
+  #expect(c.devices[1].state == "down")
+  // Done twice, nothing more happens; restore powers it up and starts its host.
+  r.log = []
+  let again = c.quiesce(supplies: r, host: r)
+  #expect(again.isEmpty && r.log.isEmpty)
+  let back = c.restore(0, r, supplies: r, host: r)
+  #expect(back && c.devices[0].state == "on")
+}

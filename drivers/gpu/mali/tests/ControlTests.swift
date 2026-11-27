@@ -41,6 +41,10 @@ final class ModelGPU: GPURegisterFile {
   var jobRaw: UInt32 = 0
   var asStatusPolls = 0
   var asCommandAt: Int64?
+  /// MCU_STATUS, and when MCU_CONTROL 0 makes it 0 (never, without `mcuStops`).
+  var mcuStatus: UInt32 = 0
+  var mcuStops = true
+  var mcuOffAt: Int64?
 
   init(clock: ModelClock) { self.clock = clock }
 
@@ -68,6 +72,12 @@ final class ModelGPU: GPURegisterFile {
         mcuAt = nil
       }
       return jobRaw
+    case GPUControlRegister.mcuStatus:
+      if let at = mcuOffAt, clock.time >= at {
+        mcuStatus = 0
+        mcuOffAt = nil
+      }
+      return mcuStatus
     case GPUControlRegister.coherencyProtocol:
       return coherencyReadsBack ? memory[o] ?? 0 : 0
     case GPUControlRegister.coherencyFeatures:
@@ -99,6 +109,7 @@ final class ModelGPU: GPURegisterFile {
       jobRaw &= ~v
     case GPUControlRegister.mcuControl:
       if v == MCU.enableAuto, mcuBoots { mcuAt = clock.time + 40_000_000 }
+      if v == 0, mcuStops { mcuOffAt = clock.time + 20_000 }
     case GPUControlRegister.as0 + ASRegister.command:
       asCommandAt = clock.time + 50_000
     default: break
@@ -162,6 +173,30 @@ func rig() -> (ModelGPU, GPUControl<ModelGPU, ModelClock>, ModelClock) {
   }
   #expect(clock.time >= ControlTimeout.reset)
   #expect(clock.time < ControlTimeout.reset + 1_000_000)
+}
+
+@Test func stoppingForGoodDisablesTheMCUThenSoftResets() throws {
+  let (gpu, control, _) = rig()
+  gpu.mcuStatus = 2  // halted
+  #expect(control.stopForGood() == "")
+  // The JOB block masked, MCU_CONTROL 0, MCU_STATUS 0 waited for, then the reset.
+  let mask = try #require(gpu.index(of: GPUControlRegister.jobIrqMask))
+  let disable = try #require(gpu.index(of: GPUControlRegister.mcuControl))
+  let reset = try #require(gpu.index(of: GPUControlRegister.command))
+  #expect(mask < disable && disable < reset)
+  #expect(gpu.wrote(GPUControlRegister.mcuControl) == 0)
+  #expect(gpu.wrote(GPUControlRegister.command) == GPUCommand.softReset)
+  #expect(gpu.mcuStatus == 0)
+}
+
+@Test func anMCUThatWontStopIsStillReset() {
+  let (gpu, control, clock) = rig()
+  gpu.mcuStatus = 1  // enabled, and it stays so
+  gpu.mcuStops = false
+  let problems = control.stopForGood()
+  #expect(problems.utf8.starts(with: "MCU_STATUS enabled after 100 ms".utf8))
+  #expect(gpu.wrote(GPUControlRegister.command) == GPUCommand.softReset)
+  #expect(clock.time >= ControlTimeout.mcuDisable)
 }
 
 @Test func coherencyIsAceLiteWithTheShareableBitWhereTheGPUHasIt() throws {

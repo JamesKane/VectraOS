@@ -355,6 +355,34 @@ documentation only (provenance.md).
      mapping of a non-RAM address may be cacheable, and a speculative
      fill near `0x218` would touch RCSU registers that stall the bus.
      VectraOS maps them as Device memory and reads all three safely.
+4. **A reset back to FreeBSD after GPU work sometimes hung FreeBSD's
+   boot** (2026-11-27). After glmark2, vkmark or a Mali probe image ended
+   with `userboot.shutdown=reboot`, the firmware and FreeBSD's loader ran
+   and the board then never answered; a power cycle was needed (vk3,
+   and others that day; most runs came back). FreeBSD's kernel
+   prints nothing on COM2 (its console is the framebuffer), so where it
+   stopped is unknown. What VectraOS left: the launcher killed every
+   service at once, so mali's MCU was never halted and the GPU went into
+   PSCI SYSTEM_RESET with its CSF firmware running, executing from our
+   pages through its own MMU (no SMMU stands between it and memory), with
+   address spaces bound to page tables in our memory and, after a GPU
+   client, command-stream groups resident; the kernel's own lines said so
+   (`bti: BTI ... went with N quarantined PMTs: their pages stay
+   pinned`). Nothing on this board says the reset resets the GPU:
+   AbyssBSD's notes have the MCU and its slot 0 surviving a warm reset,
+   and the S5 reset controller holding `gpu_reset` is the always-on
+   domain's. FreeBSD loads its kernel into, and boots on, the memory that
+   firmware ran from. That is the likely cause, not a proven one: five
+   reboot cycles of a short glmark2 image (eight scenes, 2 s each) built
+   without the fix all came back, as did five with it and board-test.
+   What changed: at the launcher's stop, devmgr quiesces (`shutdown
+   dev/reboot quiesce`, reboot(8)), which ends mali's supplies, and mali
+   halts the MCU, disables it and soft resets the GPU before it exits
+   (`mali: supply ending: the MCU (enabled) halted, disabled and the GPU
+   soft reset`); PCI bus mastering goes off too. No power is cut, so
+   FreeBSD finds the GPU powered, as the firmware leaves it. To see where
+   a hang stops, FreeBSD's kernel console would have to be put on COM2
+   too (`boot_multicons`), which the board doesn't have yet.
 
 ## Against the Q8B
 

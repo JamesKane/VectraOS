@@ -34,6 +34,8 @@
 //     app Tracker             # an app (D114): not started at boot; started by ctl's `start`, listed in `apps`
 //                             # by this name
 //     preferences             # an app that's a preference app (Deskbar's Preferences submenu, as Be's)
+//     shutdown dev/reboot quiesce   # at the launcher's stop, before any service ends: TEXT written to FILE
+//                             # in its own tree, waited for (5 s at most); devmgr's quiesces the devices
 //
 // Every process is given the UTC page to read (D48), if the launcher has
 // one; `clock` gives it writable too.
@@ -150,6 +152,10 @@ public struct Manifest: Sendable {
   public var noteGroup = ""
   public var noteGroupLine = 0
   public var serviceLine = 0
+  /// `shutdown FILE TEXT`: what the launcher writes to the file in the
+  /// service's tree when it stops, before any service ends; nil for none.
+  public var shutdown: (file: String, text: String)? = nil
+  public var shutdownLine = 0
 
   /// "file:line: message"
   func error(_ line: Int, _ message: String) -> LaunchError { LaunchError("\(file):\(line): \(message)") }
@@ -158,7 +164,7 @@ public struct Manifest: Sendable {
   public static let directives: [StaticString] = [
     "service", "program", "arg", "env", "export", "use", "mount", "srv", "restart", "resource", "programs",
     "bootdata", "debuglog", "libraries", "bootfs", "launcher", "clock", "early", "jobs", "tracing",
-    "notegroup", "grant", "info", "reload", "app", "preferences",
+    "notegroup", "grant", "info", "reload", "app", "preferences", "shutdown",
   ]
 
   public init(file: String, text: String) throws(LaunchError) {
@@ -318,11 +324,19 @@ public struct Manifest: Sendable {
         try count(0...0)
         preferences = true
         preferencesLine = lineNumber
+      } else if `is`(directive, "shutdown") {
+        guard rest.count >= 2 else { throw error(lineNumber, "'shutdown' takes a file and what to write to it") }
+        guard shutdown == nil else { throw error(lineNumber, "a second 'shutdown'") }
+        let names = NodeIPC.names(rest[0])
+        guard !names.isEmpty, names.allSatisfy(NodeIPC.isValidName) else { throw error(lineNumber, "bad file '\(rest[0])'") }
+        shutdown = (rest[0], rest.dropFirst().joined(separator: " "))
+        shutdownLine = lineNumber
       }
     }
     guard !service.isEmpty else { throw LaunchError("\(file): no 'service'") }
     guard !program.isEmpty else { throw LaunchError("\(file): no 'program'") }
     if preferences && app == nil { throw error(preferencesLine, "'preferences' needs 'app'") }
+    if shutdown != nil && !exports { throw error(shutdownLine, "'shutdown' needs 'export'") }
   }
 }
 

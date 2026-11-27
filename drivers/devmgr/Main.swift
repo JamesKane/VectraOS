@@ -387,17 +387,37 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
     tree.directory("dev")
     tree.directory("net")
     tree.directory("platform")
-    // /dev/reboot (D79): a command a line, `reboot`, `poweroff` or
-    // `warmboot`, through the power resource; poweroff on amd64 takes \_S5's
-    // sleep types, known once ACPI's namespace has loaded. A warm boot
-    // (D101) takes the images written to /dev/warm, with every PCI
-    // function's bus mastering off first, and every running tree device
-    // held in reset (each put back if the kernel refuses). A driver whose
+    // /dev/reboot (D79): a command a line, `reboot`, `poweroff`,
+    // `warmboot` or `quiesce`, through the power resource; poweroff on amd64
+    // takes \_S5's sleep types, known once ACPI's namespace has loaded.
+    // Each of the first three quiesces first, and `quiesce` alone is the
+    // launcher's at its shutdown (devmgr's manifest): every device devmgr
+    // powers by its graph has its supplies and host ended, so its driver
+    // stops it (mali(3) its MCU) before a reset that may not reset it, then
+    // every PCI function's bus mastering goes off. A warm boot (D101) takes
+    // the images written to /dev/warm, with every running tree device held
+    // in reset too (each put back if the kernel refuses). A driver whose
     // manifest says `poweroff` (a PMIC's) takes poweroff first, through
     // its ctl, and the firmware is asked only if it can't.
     let sleepTypes = Locked<(UInt8, UInt8)?>(nil)
+    let graphPower = Locked<(stop: @Sendable () -> Void, restore: @Sendable () -> Void)?>(nil)
     let busMastering = Locked<(stop: @Sendable () -> Void, restore: @Sendable () -> Void)?>(nil)
     let treeResets = Locked<(stop: @Sendable () -> Void, restore: @Sendable () -> Void)?>(nil)
+    // Once: a second quiesce (the launcher's, then rc's reboot) finds the
+    // devices already stopped.
+    let quiesced = Locked(false)
+    let quiesce: @Sendable () -> Void = {
+      let first = quiesced.withLock { q -> Bool in
+        if q { return false }
+        q = true
+        return true
+      }
+      guard first else { return }
+      let t = Clock.monotonic()
+      graphPower.withLock { $0 }?.stop()
+      busMastering.withLock { $0 }?.stop()
+      print("devmgr: quiesced in \((Clock.monotonic() - t) / 1_000_000) ms")
+    }
     let driverPowerOff = Locked<(service: String, off: @Sendable () -> Bool)?>(nil)
     // The devicetree's thermal zones' lines (D160), once their sensors'
     // drivers can be asked, and its CPUs' (D161), once their providers'.
@@ -418,11 +438,15 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
       for line in Directives.lines(text) where !line.isEmpty {
         let power = Handle(raw: powerRaw)  // borrowed: devmgr's for its life
         var failed: Status?
-        if same(line, "reboot") {
+        if same(line, "quiesce") {
+          quiesce()
+        } else if same(line, "reboot") {
           print("devmgr: rebooting, as /dev/reboot asked")
+          quiesce()
           do throws(Status) { try Power.reboot(power) } catch { failed = error }
         } else if same(line, "poweroff") {
           print("devmgr: powering off, as /dev/reboot asked")
+          quiesce()
           if let d = driverPowerOff.withLock({ $0 }) {
             if d.off() {
               _ = power.release()
@@ -432,7 +456,9 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
           }
           do throws(Status) { try Power.poweroff(power, sleepTypes: sleepTypes.withLock { $0 }) } catch { failed = error }
         } else if same(line, "warmboot") {
-          failed = warmboot(power, warm, tree, [busMastering.withLock { $0 }, treeResets.withLock { $0 }].compactMap { $0 })
+          let already = quiesced.withLock { $0 }
+          let stops = (already ? [] : [graphPower.withLock { $0 }, busMastering.withLock { $0 }]) + [treeResets.withLock { $0 }]
+          failed = warmboot(power, warm, tree, stops.compactMap { $0 })
         } else {
           _ = power.release()
           throw .invalid
@@ -969,6 +995,37 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
       print("devmgr: \(device.service): power \(on ? "on" : "off"): \(device.state), \(device.last)"
         + "\(device.detail.isEmpty ? "" : ": " + device.detail)")
       powerBusy.withLock { $0 = false }
+    }
+    // The quiesce's part (/dev/reboot): every device that is on, its
+    // supplies and host ended and nothing cut; a refused warm boot powers
+    // each up again and restarts its host.
+    graphPower.withLock {
+      $0 = (stop: {
+        // Not beside a `power` transition: wait for one to end (each is bounded).
+        while !powerBusy.withLock({ b -> Bool in
+          if b { return false }
+          b = true
+          return true
+        }) { sleep(until: Clock.monotonic() + 10_000_000) }
+        var local = PowerController(now: { Clock.monotonic() })
+        local.devices = powers.withLock { $0.devices }
+        let done = local.quiesce(supplies: supplies, host: powerHost)
+        let after = local.devices
+        powers.withLock { $0.devices = after }
+        for i in done {
+          print("devmgr: \(after[i].service): \(after[i].last)\(after[i].detail.isEmpty ? "" : ": " + after[i].detail)")
+        }
+        powerBusy.withLock { $0 = false }
+      }, restore: {
+        // Off the dispatcher's thread, as `ctl`'s: a host's start reads devmgr's tree.
+        let indices = powers.withLock { p in p.devices.indices.filter { same(p.devices[$0].state, "quiesced") } }
+        _ = try? Thread.spawn {
+          for i in indices {
+            powerBusy.withLock { $0 = true }
+            transition(i, true)
+          }
+        }.release()
+      })
     }
     tree.text("power", read: { powers.withLock { $0.text } })
     tree.text("ctl", read: { powers.withLock { $0.text } }, write: { (text: String) throws(NodeError) in
