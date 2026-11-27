@@ -79,21 +79,65 @@ its GPU work (the same scenes run at 600 to 16000 frames a second headless):
 the window's presents are paced at about one in four or five of the
 display's vblanks, not at each one. Why is not yet known; see below.
 
-## Known problems
+## The texture scenes' GPU hang: empty tile read (fixed, 2026-11-27)
 
-- **Texture scenes hang the GPU after some seconds.** A run of the texture
-  scene of 50 s ended, every time, with `vulkan-core: failed: a pass ended
-  its group (group state 9, bit 1 is a fatal fault)` at its teardown, and
-  mali's status says why: `CSG 0 progress timer expired`, the group was told to
-  terminate and didn't acknowledge, and the GPU was reset. No MMU fault.
-  - It came after 9, 17, 20 and 26 s, with anisotropy 16, 16, 2 and 0, with
-    the 64 KiB tiled texture layout and without it.
-  - A 50 s run of the vertex scene (570 000 frames, no texture) didn't hang,
-    and nor did 20 s of the texture scene, nor the full default list
-    (10 s each) on its last run. Two earlier runs of the default list hung in
-    texture anisotropy=16.
-  - So something in a pass that samples a texture stops the GPU now and then.
-    Not found yet.
+A run of the texture scene of 50 s used to end, every time, with
+`vulkan-core: failed: a pass ended its group (group state 9, bit 1 is a fatal
+fault)` at its teardown. mali's status gave `CSG 0 progress timer expired`, an
+unacknowledged TERMINATE and a GPU reset, and no MMU fault. It came after 9 to
+26 s of the scene, at any anisotropy, with tiled textures and without. The
+vertex scene never hung, even in 50 s (570 000 frames).
+
+What stopped:
+- **The fragment run never ended.** At the progress timeout a dump of each
+  queue's status (a STATUS_UPDATE, then CS_STATUS_*) showed this.
+  - The pass's queue stood at its last `WAIT`, blocked on two scoreboard
+    slots. The stream before it was `RUN_FRAGMENT`, a load of the
+    completed-chunk words, then `FINISH_FRAGMENT`, which waits on the
+    fragment run. Tiling had finished.
+  - With the pass on two queues, the fragment queue stood at the same
+    instructions.
+- **The descriptors were whole.** At the fault, the heap's GPU copy matched
+  the CPU's words, and the draws' root blocks and combined image-sampler
+  record held what they were written with.
+- **The timing repeated.** Two runs of the same image stopped at the same
+  millisecond after boot (21.07 s), and each experiment's image at a time of
+  its own.
+
+One run of each experiment, 120 s of the texture scene (60 s at anisotropy 0,
+then 60 s at 16), headless at 800x600:
+
+| What was off | Result | FPS |
+|---|---|---:|
+| nothing | hung at 20 s, twice | |
+| AFBC | hung at 14 s | |
+| tiled textures | hung | |
+| one queue a pass (`singleQueuePasses`) | hung at 14 s | |
+| CRC tables | 120 s, no hang | 7764 |
+| CRC read | 120 s, no hang | 7738 |
+| empty tile read (08 word 12 bit 28) | 120 s, no hang | 10345 |
+
+- **Empty tile read was the cause.** With only it off, the scene ran at its
+  usual rate and never stopped. Empty tile read skips the load of a tile that
+  was empty last time and is empty again. A pass that clears loads nothing,
+  so the skip gained nothing here. It is now never set (gpucore(2)). CRC read
+  and write and empty tile write stay on.
+- **Why it stops the GPU is not known.** The spec has the reference setting
+  empty tile read whenever a pass has one colour target. vkmark does what that
+  allows: three swapchain images, each with its CRC table, and one depth
+  image they share. glmark2 ran its texture scene (mipmap, then linear) for
+  60 s each with empty tile read still on, and didn't hang (6767 and 6459
+  FPS). GL wasn't seen to be affected, but no other GL scene was run that
+  long.
+- **The checks.** The Mali tests check that a pass with a CRC table never
+  sets empty tile read (RenderPassTests' textured pass, and the FBD's
+  words).
+- **Long runs on the board after the fix**, at d1aea543: 120 s of the texture
+  scene three times passed (scores 10179, 10166 and 10151). The full default
+  list passed, score 8767 (texture 10282 and 9989; cube 11227 and clear 14894,
+  against 12134 and 15777 before). Those two drops were not measured again.
+
+## Known problems
 - **The windowed rate.** 12 to 15 frames a second where the display gives
   60. Radharc composes windows on the GPU here (radharc(4)), and vkmark's
   frames are presented FIFO; neither the compositor's rate nor the present's
@@ -103,7 +147,20 @@ display's vblanks, not at each one. Why is not yet known; see below.
   fragment shader takes the same path (its exponent is a uniform) at
   7275 FPS. phong's fragment shader calls a function with its parameters
   passed by pointer; what the compiler makes of that has not been looked at.
-- **Twice the board didn't come back after a reboot.**
+- **The board not coming back after a reboot: partly an address change.**
+  - 2026-11-27, after a 60 s texture run: FreeBSD did come back, at the
+    login prompt, but DHCP had given it 192.168.0.16, and board-run looked
+    only at .32. It was not a hang. The serial console's last line was the
+    loader's framebuffer information. board-run now reaches the board by name
+    (`root@opi6plus`).
+  - The same day, after a run that ended well (vkmark exited 0 and mali's
+    MCU halted, disabled and soft reset), the board hung: the console ended
+    at `croi kernel: rebooting` and its budget lines, with no firmware
+    output after them, and the owner power-cycled it. That one was a real
+    hang, in our reboot or the firmware's reset.
+  - The two cases below are older. Nobody looked for the board at another
+    address then, so it is not known whether either was an address change
+    or a hang.
   - Before main's quiesce fix (devmgr halts and disables mali's MCU and
     soft-resets the GPU before a reset), the console stayed silent after
     FreeBSD's reboot into the next image.
@@ -111,7 +168,10 @@ display's vblanks, not at each one. Why is not yet known; see below.
     manifest was wrong) quiesced mali (`the MCU (enabled) halted, disabled
     and the GPU soft reset`), printed `croi kernel: rebooting`, and the
     firmware and FreeBSD's loader came up. The console ended after the
-    loader's framebuffer information, in FreeBSD's kernel start.
+    loader's framebuffer information, in FreeBSD's kernel start. Today's
+    address change ended the console at the same line (the serial console
+    shows nothing of FreeBSD's kernel), so this one may have been an address
+    change too; that was not checked.
 
 ## The reference
 
