@@ -372,11 +372,17 @@ documentation only (provenance.md).
    AbyssBSD's notes have the MCU and its slot 0 surviving a warm reset,
    and the S5 reset controller holding `gpu_reset` is the always-on
    domain's. FreeBSD loads its kernel into, and boots on, the memory that
-   firmware ran from. The fix: at the launcher's stop, devmgr quiesces
-   (`shutdown dev/reboot quiesce`, reboot(8)), which ends mali's supplies,
-   and mali halts the MCU, disables it and soft resets the GPU before it
-   exits; PCI bus mastering goes off too. No power is cut, so FreeBSD
-   finds the GPU powered, as the firmware leaves it.
+   firmware ran from. That is the likely cause, not a proven one: five
+   reboot cycles of a short glmark2 image (eight scenes, 2 s each) built
+   without the fix all came back, as did five with it and board-test.
+   What changed: at the launcher's stop, devmgr quiesces (`shutdown
+   dev/reboot quiesce`, reboot(8)), which ends mali's supplies, and mali
+   halts the MCU, disables it and soft resets the GPU before it exits
+   (`mali: supply ending: the MCU (enabled) halted, disabled and the GPU
+   soft reset`); PCI bus mastering goes off too. No power is cut, so
+   FreeBSD finds the GPU powered, as the firmware leaves it. To see where
+   a hang stops, FreeBSD's kernel console would have to be put on COM2
+   too (`boot_multicons`), which the board doesn't have yet.
 
 ## Against the Q8B
 
