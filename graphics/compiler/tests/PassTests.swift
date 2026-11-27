@@ -91,6 +91,26 @@ func opCount(_ f: Function, _ op: IROp) -> Int {
     #expect(opCount(f, .fmul) == 0 && opCount(f, .fadd) == 0 && opCount(f, .fma) == 0, "\(f.text())")
   }
 
+  @Test func equalLoadsMergeUntilAStoreAndAProductUsedOnceFusesIntoItsSum() throws {
+    var f = build { f, b in
+      let p = f.resource(set: 0, binding: 1, space: .storage)
+      let a = f.append(Inst(.load, .f32, [p], imm: 4), to: b)
+      let a2 = f.append(Inst(.load, .f32, [p], imm: 4), to: b)  // the same as a
+      let m = f.append(Inst(.fmul, .f32, [a, a2]), to: b)
+      let s = f.append(Inst(.fadd, .f32, [m, a]), to: b)  // a * a + a: one fma
+      f.append(Inst(.store, .void, [p, s], imm: 4), to: b)
+      let a3 = f.append(Inst(.load, .f32, [p], imm: 4), to: b)  // after a store: read again
+      keep(&f, b, a3)
+    }
+    let merged = f.eliminateCommonSubexpressions()
+    #expect(merged)
+    #expect(opCount(f, .load) == 2, "\(f.text())")
+    let fused = f.contractMultiplyAdds()
+    #expect(fused)
+    try moduleOf(f).verify()
+    #expect(opCount(f, .fmul) == 0 && opCount(f, .fadd) == 0 && opCount(f, .fma) == 1, "\(f.text())")
+  }
+
   @Test func floatsFoldInTheirOwnWidth() throws {
     var f = build { f, b in
       let h = f.constant(.f32, UInt64(Float(0.1).bitPattern))
