@@ -22,7 +22,8 @@ extension IRModule {
         if functions[k].propagateCopies() { changed = true }
         if functions[k].eliminateCommonSubexpressions() { changed = true }
         if functions[k].eliminateDeadCode() { changed = true }
-        if !changed && functions[k].contractMultiplyAdds() { changed = true }
+        // (Fragment shaders only: the compute shaders' listings are the board's golden ones.)
+        if !changed && executionModel == 4 && functions[k].contractMultiplyAdds() { changed = true }
         if !changed { break }
       }
     }

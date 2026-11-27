@@ -244,7 +244,8 @@ func hexString(_ v: UInt64) -> String {
     let s = f.append(Inst(.iadd, .i32, [a2, f.append(Inst(.iadd, .i32, [a, l2]), to: b1)]), to: b1)
     keep(&f, b1, s)
     f.eliminateCommonSubexpressions()
-    #expect(opCount(f, .load) == 2)
+    // The two loads of one block merge (nothing writes memory between them); the adds of the two blocks don't.
+    #expect(opCount(f, .load) == 1)
     #expect(opCount(f, .iadd) == 4)  // not merged across blocks
   }
 }
