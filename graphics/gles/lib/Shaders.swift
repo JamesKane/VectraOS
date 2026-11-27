@@ -144,7 +144,17 @@ struct VertexLayout: Hashable {
   init(name: GLuint) { self.name = name }
   deinit { unsafe block?.deallocate() }
 
+  /// Names asked for, and the locations found: a program that asks at every draw scans its uniforms once.
+  var locationCache: [String: GLint] = [:]
+
   func uniformLocation(_ name: String) -> GLint {
+    if let l = locationCache[name] { return l }
+    let l = findLocation(name)
+    if locationCache.count < 1024 { locationCache[name] = l }
+    return l
+  }
+
+  func findLocation(_ name: String) -> GLint {
     // "a", "a[0]" and "a[i]" of an array; "s.m" of a structure.
     var base = name
     var index = 0
@@ -170,6 +180,7 @@ struct VertexLayout: Hashable {
   /// lowered against.
   func install(_ i: ProgramInterface) throws(LoweringError) {
     interface = i
+    locationCache = [:]
     locations = []
     firstLocation = []
     locationInfo = []

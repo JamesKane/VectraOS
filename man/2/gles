@@ -5,7 +5,8 @@ names GL_SHADER_BINARY_FORMAT_SPIR_V glShaderBinary glMapBufferOES glUnmapBuffer
 src graphics/gles/lib/Types.swift graphics/gles/lib/Objects.swift graphics/gles/lib/Shaders.swift graphics/gles/lib/Spirv.swift
 src graphics/gles/lib/Pixels.swift graphics/gles/lib/Frame.swift graphics/gles/lib/Context.swift graphics/gles/lib/Textures.swift
 src graphics/gles/lib/Programs.swift graphics/gles/lib/Draw.swift graphics/gles/lib/Queries.swift graphics/gles/lib/ExportsGL.swift
-src graphics/gles/lib/GLSLFrontEnd.swift graphics/gles/lib/Stats.swift graphics/gles/lib/generated/Constants.swift graphics/gles/hosted/Platform.swift
+src graphics/gles/lib/GLSLFrontEnd.swift graphics/gles/lib/Stats.swift graphics/gles/lib/Copies.swift
+src graphics/gles/shaders/blit.vert graphics/gles/shaders/blit.frag graphics/gles/lib/generated/GLESShaders.swift graphics/gles/lib/generated/Constants.swift graphics/gles/hosted/Platform.swift
 src graphics/gles/c/libGLESv2.c graphics/gles/c/generate.sh graphics/gles/include/GLES2/gl2.h graphics/gles/include/GLES2/gl2ext.h
 src graphics/gles/include/GLES2/gl2platform.h graphics/gles/include/KHR/khrplatform.h graphics/gles/README.md
 src graphics/gles/tests/Support.swift graphics/gles/tests/TestDevice.swift graphics/gles/tests/StateTests.swift
@@ -59,10 +60,14 @@ A buffer keeps its bytes on the CPU, which every call writes, and a copy on the 
 
 Every colour texture and renderbuffer is the device's `rgba8`, whatever its GL format: an upload is converted on the CPU into the ring and copied into the image (`GL_RGBA`, `GL_RGB`, `GL_LUMINANCE`, `GL_ALPHA`, `GL_LUMINANCE_ALPHA` and `GL_BGRA_EXT` of `GL_UNSIGNED_BYTE`, and `GL_UNSIGNED_SHORT_5_6_5`, `4_4_4_4` and `5_5_5_1`), with `GL_UNPACK_ALIGNMENT`.
 A format without alpha reads alpha 1; a colour attachment without alpha is drawn with alpha's write off and cleared with alpha 1.
-A texture's image has the full mip chain of its level 0's size; a level GL never gave is never read, since a texture is complete (GL ES 2.0's 3.7.10) or reads (0, 0, 0, 1).
+An image GL only draws into and samples is made with no copy usage and one level, so that a device may lay it out for its passes alone (Mali's AFBC): a pbuffer's and a headless window's image, a colour renderbuffer, a depth texture made with no texels, a texture made with no texels.
+A texture given texels is made with the copy usages; one given a level past 0, or `glGenerateMipmap`, has the full mip chain of its level 0's size.
+A texture that needs what its image hasn't (an upload into a texture made with no texels, mipmaps, `glCopyTexImage2D` into it) is made again, its texels copied, or, from an image no copy reads, its level 0 drawn over by a pass of the library's own (a triangle over the target fetching each texel, graphics/gles/shaders).
+`glReadPixels` and `glCopyTexImage2D` from an image no copy reads draw it into a copyable scratch image first.
+A level GL never gave is never read, since a texture is complete (GL ES 2.0's 3.7.10) or reads (0, 0, 0, 1).
 A minification filter without mipmaps reads level 0 alone (a sampler's level of detail clamped to 0.25, which keeps the choice of the magnification filter).
 `glGenerateMipmap` is a blit of each level from the one above.
-A depth texture (`GL_OES_depth_texture`) is `depth16` (`GL_UNSIGNED_SHORT`) or `depth32f` (`GL_UNSIGNED_INT`).
+A depth texture (`GL_OES_depth_texture`) is `depth16` (`GL_UNSIGNED_SHORT`) or `depth32f` (`GL_UNSIGNED_INT`); one made with no texels is drawn into and sampled alone.
 A depth renderbuffer of 24 or 32 bits is `depth32f`, and a depth and stencil one (`GL_OES_packed_depth_stencil`) the device's combined format, where it has one.
 A texture's heap slot is its image's; samplers are kept by their state, one heap slot for each distinct one, written only when nothing in the open list reads the slot (the Mali backend has 16).
 
@@ -101,6 +106,7 @@ egl(2), glsl(2), gpucore(2), vulkanlowering(2), gl-test(8)
 A pass split by a draw that reads what the frame wrote loads its attachments again; a depth and stencil attachment of both planes can't be loaded on Mali.
 An upload into a texture, a `glCopyTexImage2D` and a `glGenerateMipmap` end the open pass even when it doesn't read the image.
 A clear with the colour mask partly off clears every channel; a partial stencil write mask clears all of the stencil.
+A texture drawn into and then made again keeps only level 0 of each face; the depth textures made again lose what they held (said on `gles:`).
 `glCopyTexImage2D` into `GL_LUMINANCE` or `GL_ALPHA` keeps the framebuffer's other channels in the texture, which a shader reads.
 A cube map's sampler is refused by vulkanlowering(2) (`a cube image`), so a program with a `samplerCube` doesn't link.
 A program given as SPIR-V draws into a window with the viewport flipped, so its `gl_FragCoord.y` counts from the window's top and `gl_PointCoord.y` is inverted there.
