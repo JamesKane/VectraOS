@@ -126,6 +126,18 @@ extension Selector {
       kind = x
     } else if i.type == .ptr(.global) {
       kind = .i64
+    } else if case .vector(.i32, let n) = i.type, n >= 2 && n <= 4 {
+      // Words at consecutive addresses, one message (Prep.combineLoads); each word is an `extract` of it.
+      switch p.base {
+      case .push, .stack: throw BackendError.unsupported("a vector load of the stack or the push constants")
+      default: break
+      }
+      let r = newReg(n)
+      loc[i.result] = .reg(r)
+      let (a, imm) = address(p, wide: true)
+      message("LOAD", ["i64", "i96", "i128"][n - 2], address: a, offset: imm, write: .reg(r, 0), memory: 1,
+              named: [("access", accessFor(p))])
+      return
     } else {
       throw BackendError.unsupported("a vector load")
     }
@@ -350,6 +362,7 @@ extension Selector {
     case IRBuiltin.viewportTable:
       guard gfau.viewportTableWord >= 0 else { throw BackendError.invalidIR("the viewport table with no FAU slot") }
       loc[i.result] = .ptr(PtrVal(base: .binding(gfau.viewportTableWord / 2), offset: 0))
+    case IRBuiltin.shaderOutput: alu("MOV", "i32", dst: def32(i), .special(3, 4, 0))
     case IRBuiltin.fragCoord, IRBuiltin.frontFacing: try selectFragmentBuiltin(i)
     default: try selectStageBuiltin(i)
     }

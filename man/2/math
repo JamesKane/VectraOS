@@ -1,8 +1,8 @@
 page math 2
 summary mathematical functions
-names math floor ceil trunc round roundeven rint nearbyint fabs sqrt exp exp2 log log2 log10 sin cos floorf ceilf truncf roundf roundevenf rintf nearbyintf fabsf sqrtf expf exp2f logf log2f log10f sinf cosf copysign fmod remainder copysignf fmodf remainderf fma fmaf ldexp scalbn frexp modf
-src system/libc/include/math.h system/libc/math/Exact.swift system/libc/math/Transcendental.swift system/libc/native/Exports.swift
-keys libm floating point rounding sine cosine logarithm square root
+names math floor ceil trunc round roundeven rint nearbyint fabs sqrt exp exp2 log log2 log10 sin cos tan atan atan2 asin acos pow floorf ceilf truncf roundf roundevenf rintf nearbyintf fabsf sqrtf expf exp2f logf log2f log10f sinf cosf tanf atanf atan2f asinf acosf powf copysign fmod remainder copysignf fmodf remainderf fma fmaf ldexp scalbn frexp modf modff
+src system/libc/include/math.h system/libc/math/Exact.swift system/libc/math/Transcendental.swift system/libc/math/Inverse.swift system/libc/math/Power.swift system/libc/native/Exports.swift
+keys libm floating point rounding sine cosine tangent arctangent power logarithm square root
 lang c
 
 # SYNOPSIS
@@ -26,6 +26,12 @@ double log2(double x);
 double log10(double x);
 double sin(double x);
 double cos(double x);
+double tan(double x);
+double atan(double x);
+double atan2(double y, double x);
+double asin(double x);
+double acos(double x);
+double pow(double x, double y);
 float floorf(float x);
 float ceilf(float x);
 float truncf(float x);
@@ -42,6 +48,12 @@ float log2f(float x);
 float log10f(float x);
 float sinf(float x);
 float cosf(float x);
+float tanf(float x);
+float atanf(float x);
+float atan2f(float y, float x);
+float asinf(float x);
+float acosf(float x);
+float powf(float x, float y);
 double copysign(double x, double y);
 double fmod(double x, double y);
 double remainder(double x, double y);
@@ -54,6 +66,7 @@ double ldexp(double x, int n);
 double scalbn(double x, int n);
 double frexp(double x, int *e);
 double modf(double x, double *i);
+float modff(float x, float *i);
 ```
 
 # DESCRIPTION
@@ -72,17 +85,21 @@ These have one right answer and give it, bit for bit as glibc does.
 `fma` computes x times y plus z rounded once; `fmaf` rounds once to `float`.
 `ldexp` and `scalbn` (the radix is 2, so they are the same function) return x times 2 to the <n>, rounded once.
 `frexp` returns a significand in [0.5, 1) and stores the exponent in <e>; for zero, infinity and NaN it returns x and stores 0.
-`modf` returns the fractional part of x and stores the integer part in <i>, both with x's sign.
+`modf` returns the fractional part of x and stores the integer part in <i>, both with x's sign; `modff` is its float form, exact as well.
 `fmodf` and `remainderf` are exact too.
 
 ## Transcendental functions
 
-`exp`, `exp2`, `log`, `log2`, `log10`, `sin` and `cos` are within one unit in the last place of the true value, measured against glibc; they are not always correctly rounded.
+`exp`, `exp2`, `log`, `log2`, `log10`, `sin`, `cos`, `tan`, `atan`, `atan2`, `asin`, `acos` and `pow` are within one unit in the last place of the true value, measured against glibc; they are not always correctly rounded.
 The `float` versions (`expf`, `sinf` and the rest) compute the `double` result and round it, so they can differ from the correctly rounded `float` in rare cases.
 `exp` of a large argument is infinity, and of a very negative one zero.
 `log` of a negative number is NaN and of zero is negative infinity.
 `sin` and `cos` of an infinity are NaN.
-Large arguments to `sin` and `cos` are reduced exactly.
+Large arguments to `sin`, `cos` and `tan` are reduced exactly.
+`tan` of an infinity is NaN.
+`asin` and `acos` of a number beyond ±1 are NaN.
+`atan2` and `pow` take C23 Annex F's special cases: `atan2` of signed zeros and infinities gives the signed multiples of π/4 the annex lists, `pow(x, ±0)` and `pow(1, y)` are 1 even for a NaN, a negative x has a power only for an integer y (NaN otherwise), and powers of ±0 and ±infinity follow the sign rules for odd integers.
+`pow` overflows to infinity and underflows to zero.
 
 ## Header
 
@@ -95,4 +112,4 @@ stdlib(2)
 # BUGS
 
 No function sets `errno` or raises a floating-point exception, and `math_errhandling` is not defined.
-The header declares no `pow`, `tan`, `asin`, `acos`, `atan`, `atan2`, the hyperbolic functions, `cbrt`, `hypot`, `expm1`, `log1p`, `fmin`, `fmax`, `lround`, `lrint`, `nan`, `ilogb` or `logb`, no `long double` functions, and no `M_PI_2` and the other constants but `M_PI` and `M_E`.
+The header declares no hyperbolic functions, `cbrt`, `hypot`, `expm1`, `log1p`, `fmin`, `fmax`, `lround`, `lrint`, `nan`, `ilogb` or `logb`, no `long double` functions, and no `M_PI_2` and the other constants but `M_PI` and `M_E`.

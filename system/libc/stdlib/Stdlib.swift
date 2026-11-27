@@ -210,3 +210,16 @@ public func getenv(_ name: UnsafePointer<CChar>, in environment: UnsafePointer<U
   }
   return nil
 }
+
+/// rand's state (§7.24.2): a 64-bit linear congruential generator (Knuth's
+/// MMIX multiplier and increment), seeded 1 until srand.
+nonisolated(unsafe) var randState: UInt64 = 1
+
+/// The next pseudo-random number in 0...RAND_MAX (2^31 - 1): the state's
+/// top 31 bits. Not for threads at once, nor for secrets (getentropy is).
+public func rand() -> Int32 {
+  unsafe randState = randState &* 6364136223846793005 &+ 1442695040888963407
+  return unsafe Int32(truncatingIfNeeded: randState >> 33)
+}
+
+public func srand(_ seed: UInt32) { unsafe randState = UInt64(seed) }

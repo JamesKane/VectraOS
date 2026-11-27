@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
-// <math.h>'s exponentials, logarithms, sine and cosine (M6c), from the
-// published methods: argument reduction (Cody and Waite's, with
+// <math.h>'s exponentials, logarithms, sine, cosine and tangent (M6c), from
+// the published methods: argument reduction (Cody and Waite's, with
 // mathgen's splits of ln 2 and π/2; Payne and Hanek's for large
 // arguments, over 2/π's bits) and series on the reduced argument, their
 // coefficients 1/n! and 2/(2k+1) as the compiler rounds them exactly
 // (n! is exact in a double this far). Within a unit in the last place of
-// the true value: the tests measure it against glibc. The float versions
+// the true value: the tests measure it against glibc. tan is sine over
+// cosine, both and the quotient in double-double. The float versions
 // are the double ones rounded. Runtime-free.
 
 // MARK: exp, exp2
@@ -281,3 +282,69 @@ public func cos(_ x: Double) -> Double {
 
 public func sinf(_ x: Float) -> Float { Float(sin(Double(x))) }
 public func cosf(_ x: Float) -> Float { Float(cos(Double(x))) }
+
+// MARK: tan
+
+/// a + b = s + e exactly (Knuth's two-sum: any order of magnitude).
+@inline(__always) func twoSum(_ a: Double, _ b: Double) -> (Double, Double) {
+  let s = a + b
+  let bb = s - a
+  return (s, (a - (s - bb)) + (b - bb))
+}
+
+/// (n + nLo) / (d + dLo) as q + qLo: the quotient, then its remainder
+/// (n - q·d exactly, by Dekker's product) divided again.
+@inline(__always) func divideDD(_ n: Double, _ nLo: Double, _ d: Double, _ dLo: Double) -> (Double, Double) {
+  let q = n / d
+  let (p, pLo) = twoProduct(q, d)
+  return (q, (((n - p) - pLo) + nLo - q * dLo) / d)
+}
+
+/// sin(r + rLo) for |r| <= π/4 as a double-double: sinKernel's series,
+/// r³/6 in double-double (it is a tenth of the sum at π/4), and rLo times
+/// cos r's first terms.
+@inline(__always) func sinKernelDD(_ r: Double, _ rLo: Double) -> (Double, Double) {
+  let (z, zLo) = twoProduct(r, r)
+  let (c, cLo) = twoProduct(z, r)
+  let (c6, c6Lo) = divideDD(c, cLo + zLo * r, 6, 0)
+  let p = 1.0 / 120 + z * (-1.0 / 5040 + z * (1.0 / 362880 + z * (-1.0 / 39916800
+    + z * (1.0 / 6227020800 + z * (-1.0 / 1307674368000 + z * (1.0 / 355687428096000
+    + z * (-1.0 / 121645100408832000 + z * (1.0 / 51090942171709440000))))))))
+  let (h, l) = twoSum(r, -c6)
+  let t = l + ((c * z * p - c6Lo) + rLo * (1 - 0.5 * z))
+  let hi = h + t
+  return (hi, (h - hi) + t)
+}
+
+/// cos(r + rLo) for |r| <= π/4 as a double-double: r² exactly, so that
+/// only 1 - r²/2's rounding is left, and it is put back.
+@inline(__always) func cosKernelDD(_ r: Double, _ rLo: Double) -> (Double, Double) {
+  let (z, zLo) = twoProduct(r, r)
+  let p = 1.0 / 24 + z * (-1.0 / 720 + z * (1.0 / 40320 + z * (-1.0 / 3628800 + z * (1.0 / 479001600
+    + z * (-1.0 / 87178291200 + z * (1.0 / 20922789888000 + z * (-1.0 / 6402373705728000
+    + z * (1.0 / 2432902008176640000))))))))
+  let hz = 0.5 * z
+  let w = 1 - hz
+  let t = ((1 - w) - hz) + (z * z * p - (0.5 * zLo + r * rLo))
+  let hi = w + t
+  return (hi, (w - hi) + t)
+}
+
+/// tan = sin / cos of the reduced argument, each a double-double and the
+/// quotient taken in double-double, so only the last rounding is a whole
+/// half ulp: -cos / sin in the odd quadrants.
+public func tan(_ x: Double) -> Double {
+  if !x.isFinite { return .nan }
+  if abs(x) < 0x1p-27 { return x }
+  let (n, r, rLo) = reduceHalfPi(x)
+  let (s, sLo) = sinKernelDD(r, rLo)
+  let (c, cLo) = cosKernelDD(r, rLo)
+  if n & 1 == 0 {
+    let (q, qLo) = divideDD(s, sLo, c, cLo)
+    return q + qLo
+  }
+  let (q, qLo) = divideDD(c, cLo, s, sLo)
+  return -(q + qLo)
+}
+
+public func tanf(_ x: Float) -> Float { Float(tan(Double(x))) }

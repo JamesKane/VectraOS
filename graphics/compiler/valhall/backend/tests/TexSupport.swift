@@ -28,7 +28,7 @@ func shaderWords(_ name: String) throws -> [UInt32] {
 func compileShader(_ name: String, options: BackendOptions = BackendOptions()) throws -> CompiledGraphicsShader {
   let c = try ValhallBackend.compileGraphics(spirv: try shaderWords(name), options: options)
   // The backend validates what it makes; run the validator again here, so a test names the rule it broke.
-  let o = ValidatorOptions(arch: 12, stage: c.vertex != nil ? .vertex : .fragment, registerClass: .class64)
+  let o = ValidatorOptions(arch: 12, stage: c.vertex != nil ? .vertex : .fragment, registerClass: (c.vertex?.registerClass ?? c.fragment?.registerClass) == .r32 ? .class32 : .class64)
   let broken = ISATable.shared.validate(c.instructions, options: o)
   #expect(broken.isEmpty, "\(name): \(broken.map { $0.rule + ": " + $0.message })")
   return c

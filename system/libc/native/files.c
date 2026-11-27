@@ -5,7 +5,10 @@
 // program's fdio (system/fdio, M6g) gives the real ones, and a strong
 // definition wins. Until fdio lands, a program that only mentions them
 // (FoundationEssentials does) still links. In C because a weak definition
-// is what Swift can't write, and open is variadic.
+// is what Swift can't write, and open is variadic. After them, what is
+// made of them, beside them (openat is variadic too): the *at calls,
+// truncate, pathconf, and the calls that have nothing to reach yet
+// (statvfs, utimes, fdopendir); and gettimeofday, the realtime clock.
 //
 // A path names nothing (ENOENT), a descriptor is none of a file's
 // (EBADF), and the working directory is "/", where fdio starts one.
@@ -14,8 +17,11 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <fts.h>
+#include <stdarg.h>
 #include <stdlib.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
+#include <sys/time.h>
 #include <unistd.h>
 
 #define WEAK __attribute__((weak))
@@ -198,4 +204,111 @@ WEAK int fts_set(FTS *fts, FTSENT *entry, int instruction) {
 WEAK int fts_close(FTS *fts) {
   (void)fts;
   return no_descriptor();
+}
+
+// The *at calls over the calls above, relative to the working directory
+// (AT_FDCWD) or with an absolute path; another directory's descriptor is
+// ENOSYS until fdio resolves a path from one. Not weak: fdio has none.
+static int not_relative(int dirfd, const char *path) {
+  if (dirfd == AT_FDCWD || (path != NULL && path[0] == '/')) return 0;
+  errno = ENOSYS;
+  return 1;
+}
+
+int openat(int dirfd, const char *path, int flags, ...) {
+  if (not_relative(dirfd, path)) return -1;
+  mode_t mode = 0;
+  if (flags & O_CREAT) {
+    va_list ap;
+    va_start(ap, flags);
+    mode = va_arg(ap, unsigned);
+    va_end(ap);
+  }
+  return open(path, flags, mode);
+}
+
+int unlinkat(int dirfd, const char *path, int flags) {
+  if (not_relative(dirfd, path)) return -1;
+  if (flags & ~AT_REMOVEDIR) {
+    errno = EINVAL;
+    return -1;
+  }
+  return flags & AT_REMOVEDIR ? rmdir(path) : unlink(path);
+}
+
+// A symbolic link has no mode of its own to change.
+int fchmodat(int dirfd, const char *path, mode_t mode, int flags) {
+  if (not_relative(dirfd, path)) return -1;
+  if (flags & AT_SYMLINK_NOFOLLOW) {
+    errno = ENOTSUP;
+    return -1;
+  }
+  return chmod(path, mode);
+}
+
+int truncate(const char *path, off_t size) {
+  int fd = open(path, O_WRONLY);
+  if (fd < 0) return -1;
+  int r = ftruncate(fd, size);
+  int saved = errno;
+  close(fd);
+  errno = saved;
+  return r;
+}
+
+// fdio opens a directory by its path only.
+DIR *fdopendir(int fd) {
+  (void)fd;
+  errno = ENOSYS;
+  return 0;
+}
+
+static long limit(int name) {
+  switch (name) {
+  case _PC_NAME_MAX: return 255;
+  case _PC_PATH_MAX: return 4096;
+  case _PC_PIPE_BUF: return 4096;
+  case _PC_LINK_MAX:
+  case _PC_MAX_CANON:
+  case _PC_MAX_INPUT: return -1;  // no limit
+  default: errno = EINVAL; return -1;
+  }
+}
+long pathconf(const char *path, int name) {
+  (void)path;
+  return limit(name);
+}
+long fpathconf(int fd, int name) {
+  (void)fd;
+  return limit(name);
+}
+
+// No file system's capacity, nor a file's times, can be read or set yet.
+int statvfs(const char *restrict path, struct statvfs *restrict buf) {
+  (void)path;
+  (void)buf;
+  errno = ENOSYS;
+  return -1;
+}
+int fstatvfs(int fd, struct statvfs *buf) {
+  (void)fd;
+  (void)buf;
+  errno = ENOSYS;
+  return -1;
+}
+int utimes(const char *path, const struct timeval times[2]) {
+  (void)path;
+  (void)times;
+  errno = ENOSYS;
+  return -1;
+}
+
+// The realtime clock, as clock_gettime gives it.
+int gettimeofday(struct timeval *restrict tv, void *restrict zone) {
+  (void)zone;
+  struct timespec ts;
+  if (clock_gettime(CLOCK_REALTIME, &ts) != 0) return -1;
+  tv->tv_sec = ts.tv_sec;
+  tv->tv_usec = ts.tv_nsec / 1000;
+  return 0;
 }

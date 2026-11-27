@@ -66,9 +66,27 @@ int fsync(int fd);
 int ftruncate(int fd, off_t size);
 int unlink(const char *path);
 int rmdir(const char *path);
+// unlinkat: relative to AT_FDCWD, or with an absolute path (<fcntl.h>).
+int unlinkat(int dirfd, const char *path, int flags);
+int truncate(const char *path, off_t size);
+// pathconf: the limits every file has (a name of 255 bytes, a path of
+// 4096); -1 with errno unchanged for what has none, EINVAL for an unknown
+// name.
+#define _PC_LINK_MAX 0
+#define _PC_MAX_CANON 1
+#define _PC_MAX_INPUT 2
+#define _PC_NAME_MAX 3
+#define _PC_PATH_MAX 4
+#define _PC_PIPE_BUF 5
+long pathconf(const char *path, int name);
+long fpathconf(int fd, int name);
 int access(const char *path, int mode);
 char *getcwd(char *buffer, size_t size);
 int chdir(const char *path);
+// POSIX's getopt (<getopt.h> has it and the long forms).
+extern char *optarg;
+extern int optind, opterr, optopt;
+int getopt(int argc, char *const argv[], const char *options);
 
 #ifdef __cplusplus
 }

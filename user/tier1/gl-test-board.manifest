@@ -1,0 +1,7 @@
+# gl-test on the board (D183): the same program as boot-venus's, an app of the board's images where tier 1 is built,
+# started by `echo start gl-test >/svc/launcher/ctl` (board-test does) on a GPU that offers `csf`; with no compositor in
+# the image it skips its window, and says `gl-test: all checks passed`.
+service gl-test
+program gl-test
+app gl-test
+mount /dev devmgr/dev

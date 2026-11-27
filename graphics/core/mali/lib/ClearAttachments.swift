@@ -103,7 +103,6 @@ extension MaliDevice {
           }
           state.depthStencil = ds
         }
-        guard draws.count < 16 else { throw .unsupported("a pass of more than 16 draws") }
         // In a pass of layers, an instance for each layer cleared, which the vertex shader sends to its layer.
         let push = [colour[0].bitPattern, colour[1].bitPattern, colour[2].bitPattern, colour[3].bitPattern, depth.bitPattern, rect.baseLayer]
         var draw = PassDraw(vertexShader: multiview ?? (layers > 1 ? shaders.layered : shaders.vertex), fragmentShader: shaders.fragments[location],

@@ -146,15 +146,18 @@ public final class CSFTransport: MaliTransport {
 
   public func counterFrequency() -> UInt64 { croi_counter_frequency() }
 
+  public func counterTicks() -> UInt64 { croi_counter_value() }
+
   public func submit(group: UInt32, jobs: [MaliJob], waits: [(sync: UInt32, value: UInt64)],
                      signals: [(sync: UInt32, value: UInt64)]) throws(GPUError) {
-    let list = jobs.map { GPUCSFIPC.Job(queue: $0.queue, stream: $0.address, size: $0.size, flush: 0) }
+    let list = jobs.map { GPUCSFIPC.Job(queue: $0.queue, stream: $0.address, size: $0.size, flush: $0.flush) }
     // Everything this process stored to the GPU's memory (write-combining: it may sit in a write buffer) is out before
     // the driver, in another process, tells the GPU to look.
     croi_dma_complete()
     do throws(CSFClientError) {
-      try context.submit(group: group, jobs: list, waits: waits.map { (id: $0.sync, value: $0.value) },
-                         signals: signals.map { (id: $0.sync, value: $0.value) })
+      // One-way: the driver's part (its rings and doorbells) runs while this process goes on; a refusal shows in the group's state.
+      try context.post(group: group, jobs: list, waits: waits.map { (id: $0.sync, value: $0.value) },
+                       signals: signals.map { (id: $0.sync, value: $0.value) })
     } catch { throw Self.core(error, "submit") }
   }
 }

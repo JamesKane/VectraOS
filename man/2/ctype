@@ -1,7 +1,8 @@
 page ctype 2
 summary classify and convert characters
-names ctype isalnum isalpha isblank iscntrl isdigit isgraph islower isprint ispunct isspace isupper isxdigit tolower toupper
-src system/libc/include/ctype.h system/libc/ctype/Ctype.swift
+names ctype isalnum isalpha isblank iscntrl isdigit isgraph islower isprint ispunct isspace isupper isxdigit tolower toupper isalnum_l isalpha_l isblank_l iscntrl_l isdigit_l isgraph_l islower_l isprint_l ispunct_l isspace_l isupper_l isxdigit_l tolower_l toupper_l
+src system/libc/include/ctype.h system/libc/ctype/Ctype.swift system/libc/native/Exports.swift
+
 keys character class case lower upper digit space
 lang c
 
@@ -24,6 +25,24 @@ int isupper(int c);
 int isxdigit(int c);
 int tolower(int c);
 int toupper(int c);
+```
+
+```c
+// POSIX's forms in a locale (locale(2)).
+int isalnum_l(int c, locale_t locale);
+int isalpha_l(int c, locale_t locale);
+int isblank_l(int c, locale_t locale);
+int iscntrl_l(int c, locale_t locale);
+int isdigit_l(int c, locale_t locale);
+int isgraph_l(int c, locale_t locale);
+int islower_l(int c, locale_t locale);
+int isprint_l(int c, locale_t locale);
+int ispunct_l(int c, locale_t locale);
+int isspace_l(int c, locale_t locale);
+int isupper_l(int c, locale_t locale);
+int isxdigit_l(int c, locale_t locale);
+int tolower_l(int c, locale_t locale);
+int toupper_l(int c, locale_t locale);
 ```
 
 # DESCRIPTION
@@ -52,6 +71,10 @@ Any other <c> is returned unchanged.
 These are functions, not macros, and use no table.
 A value that is neither an `unsigned char` nor `EOF` is undefined in C; here it is in no class and maps to itself.
 Values from 128 to 255 are in no class.
+
+## In a locale
+
+The `_l` forms take a locale object (locale(2)) and behave as the functions without it, since the only locale is "C".
 
 # SEE ALSO
 

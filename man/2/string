@@ -1,7 +1,7 @@
 page string 2
 summary copy, compare and search memory and strings
-names string memcpy memmove memset memcmp memchr strlen strnlen strcmp strncmp strchr strrchr strcat strncpy strdup strndup strerror strerror_r
-src system/libc/include/string.h system/libc/string/Memory.swift system/libc/string/Strings.swift system/libc/string/Strerror.swift system/libc/native/stdlib.c
+names string memcpy memmove memset memcmp memchr strlen strnlen strcmp strncmp strchr strrchr strcat strncpy strdup strndup strerror strerror_r strcpy strncat strspn strcspn strpbrk strstr strtok_r strcoll strxfrm strcoll_l strxfrm_l
+src system/libc/include/string.h system/libc/string/Memory.swift system/libc/string/Strings.swift system/libc/string/Strerror.swift system/libc/native/stdlib.c system/libc/native/Exports.swift
 keys memory string copy length duplicate error message
 lang c
 
@@ -27,6 +27,22 @@ char *strdup(const char *s);
 char *strndup(const char *s, size_t n);
 char *strerror(int errnum);
 int strerror_r(int errnum, char *buffer, size_t size);
+```
+
+```c
+char *strcpy(char *__restrict d, const char *__restrict s);
+char *strncat(char *__restrict d, const char *__restrict s, size_t n);
+size_t strspn(const char *s, const char *set);
+size_t strcspn(const char *s, const char *set);
+char *strpbrk(const char *s, const char *set);
+char *strstr(const char *haystack, const char *needle);
+char *strtok_r(char *__restrict s, const char *__restrict sep,
+               char **__restrict state);
+int strcoll(const char *a, const char *b);
+size_t strxfrm(char *__restrict d, const char *__restrict s, size_t n);
+int strcoll_l(const char *a, const char *b, locale_t locale);
+size_t strxfrm_l(char *__restrict d, const char *__restrict s, size_t n,
+                 locale_t locale);
 ```
 
 # DESCRIPTION
@@ -64,6 +80,18 @@ A <size> of 0 writes nothing.
 `strerror` returns the same message in a buffer of 40 bytes that belongs to the calling thread and is overwritten by its next call.
 The messages are the words of POSIX's descriptions of the errors (`No such file or directory`, `Not supported`), not glibc's.
 
+## Copying, searching and splitting
+
+`strcpy` copies <s> and its NUL to <d> and returns <d>; `strncat` appends at most <n> bytes of <s>, then a NUL, to the string at <d>.
+`strspn` returns the length of the start of <s> made of bytes in <set>, and `strcspn` that of the start made of bytes not in it; `strpbrk` returns a pointer to the first byte of <s> in <set>, or a null pointer.
+`strstr` returns a pointer to the first place <needle> occurs in <haystack>, <haystack> itself for an empty <needle>, or a null pointer.
+`strtok_r` returns the next token of <s> delimited by bytes of <sep>, writing a NUL after it, and keeps its place in <state>; with a null <s> it goes on from <state>, and it returns a null pointer when no token is left.
+
+## Collation
+
+In the C locale strings collate by byte value: `strcoll` is `strcmp`, and `strxfrm` copies <s> and its NUL to <d> when they fit in <n> bytes and returns the length of <s> either way.
+The `_l` forms take a locale object (locale(2)) and do the same.
+
 # SEE ALSO
 
 strings(2), stdlib(2)
@@ -75,4 +103,4 @@ strings(2), stdlib(2)
 
 The functions do not test their arguments: a null pointer faults.
 
-`<string.h>` declares no `strstr`, `strtok`, `strcpy`, `strncat`, `strpbrk`, `strspn`, `strcspn`, `strcoll`, `strxfrm` or `memccpy`.
+`<string.h>` declares no `strtok` (`strtok_r` is there) or `memccpy`.

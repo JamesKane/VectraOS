@@ -78,6 +78,8 @@ struct MInst {
   var memory = 0
   /// A varying load that uses the interpolation hidden register (12c.2.4): the next such load waits for it.
   var hidden = false
+  /// Such a load that only reads the register (`retrieve`): it waits for the last that stored, and later ones don't wait for it.
+  var hiddenRetrieve = false
   /// The slot a message must use (ATEST and ZS_EMIT: slot 0), or -1.
   var fixedSlot = -1
   /// Virtual registers an instruction keeps alive without reading them (the colour a blend shader reads after the jump into it).

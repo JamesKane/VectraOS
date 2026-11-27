@@ -76,7 +76,9 @@ extension Selector {
   }
 
   mutating func selectTexture(_ i: Inst) throws(BackendError) {
-    guard !isVertex else { throw BackendError.unsupported("a texture access in a vertex shader") }
+    // A vertex shader samples as a fragment shader does, from the same heap, but has no derivatives: an implicit level is the
+    // base level (12b: LOD mode none), and a bias has nothing to bias.
+    if isVertex && TexFlags.kind(i.imm) == TexFlags.bias { throw BackendError.unsupported("a biased texture access in a vertex shader") }
     for g in texGroups where g.block == cur && g.imm == i.imm && g.args == i.args && g.payload == i.payload {
       loc[i.result] = .part(g.reg, texPosition(g.mask, i.imm2))
       return
@@ -93,13 +95,21 @@ extension Selector {
     let gradient = i.imm & TexFlags.gradient != 0
     let query = i.imm & TexFlags.lodQuery != 0
     let gather = i.imm & TexFlags.gather != 0
-    let h = newReg(2)
-    heapHandle(into: .reg(h, 1), key: i.payload[0], index: i.args[0])
-    if i.payload[1] == UInt64.max {
-      guard dummySamplerWord >= 0 else { throw BackendError.invalidIR("a fetch of a plain image with no dummy sampler") }
-      alu("MOV", "i32", dst: .reg(h, 0), .user(dummySamplerWord / 2, dummySamplerWord % 2))
+    // The handle pair of an image and a sampler is made once a block (every tap of a filter names the same two).
+    let h: Int
+    if let c = handlePairs.first(where: { $0.block == cur && $0.texture == i.payload[0] && $0.sampler == i.payload[1]
+      && $0.textureIndex == i.args[0] && $0.samplerIndex == i.args[1] }) {
+      h = c.reg
     } else {
-      heapHandle(into: .reg(h, 0), key: i.payload[1], index: i.args[1])
+      h = newReg(2)
+      heapHandle(into: .reg(h, 1), key: i.payload[0], index: i.args[0])
+      if i.payload[1] == UInt64.max {
+        guard dummySamplerWord >= 0 else { throw BackendError.invalidIR("a fetch of a plain image with no dummy sampler") }
+        alu("MOV", "i32", dst: .reg(h, 0), .user(dummySamplerWord / 2, dummySamplerWord % 2))
+      } else {
+        heapHandle(into: .reg(h, 0), key: i.payload[1], index: i.args[1])
+      }
+      handlePairs.append((cur, i.payload[0], i.payload[1], i.args[0], i.args[1], h))
     }
     let derivatives = gradient ? 2 * dims : 0
     let count = TexFlags.argumentCount(i.imm) - 2 - derivatives
@@ -166,7 +176,7 @@ extension Selector {
         inst.put("lod", "grdesc")
       } else {
         switch kind {
-        case TexFlags.implicit: inst.put("lod", "computed")
+        case TexFlags.implicit: inst.put("lod", isVertex ? "none" : "computed")
         case TexFlags.bias: inst.put("lod", "computed_bias")
         default: inst.put("lod", i.imm & TexFlags.hasLevel != 0 ? "explicit" : "none")
         }

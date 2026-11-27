@@ -31,6 +31,16 @@ enum MathConstants {
   @inline(__always) static var halfPi3: Double { Double(bitPattern: 0x3BA3198A2E037073) }
   /// 2/π (0.6366197723675814)
   @inline(__always) static var twoOverPiDouble: Double { Double(bitPattern: 0x3FE45F306DC9C883) }
+  /// π/2 - halfPi (6.123233995736766e-17)
+  @inline(__always) static var halfPiLo: Double { Double(bitPattern: 0x3C91A62633145C07) }
+  /// atan 1/2 (0.4636476090008061)
+  @inline(__always) static var atanHalf: Double { Double(bitPattern: 0x3FDDAC670561BB4F) }
+  /// atan 1/2 - atanHalf (2.2698777452961687e-17)
+  @inline(__always) static var atanHalfLo: Double { Double(bitPattern: 0x3C7A2B7F222F65E2) }
+  /// atan 2 = π/2 - atan 1/2 (1.1071487177940904)
+  @inline(__always) static var atanTwo: Double { Double(bitPattern: 0x3FF1B6E192EBBE44) }
+  /// atan 2 - atanTwo (9.40447137356638e-17)
+  @inline(__always) static var atanTwoLo: Double { Double(bitPattern: 0x3C9B1B466A88828E) }
   /// 2/π's first 1216 bits after the point, hex, most significant first
   /// (Payne-Hanek reduction of large arguments).
   static let twoOverPiBits: StaticString = "a2f9836e4e441529fc2757d1f534ddc0db6295993c439041fe5163abdebbc561b7246e3a424dd2e006492eea09d1921cfe1deb1cb129a73ee88235f52ebb4484e99c7026b45f7e413991d639835339f49c845f8bbdf9283b1ff897ffde05980fef2f118b5a0a6d1f6d367ecf27cb09b74f463f669e5fea2d7527bac7ebe5f17b3d0739f78a5292ea6bfb5fb11f8d5d0856033046fc7b6bab"
