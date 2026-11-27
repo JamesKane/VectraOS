@@ -6,7 +6,7 @@ src graphics/gles/lib/Types.swift graphics/gles/lib/Objects.swift graphics/gles/
 src graphics/gles/lib/Pixels.swift graphics/gles/lib/Frame.swift graphics/gles/lib/Context.swift graphics/gles/lib/Textures.swift
 src graphics/gles/lib/Programs.swift graphics/gles/lib/Draw.swift graphics/gles/lib/Queries.swift graphics/gles/lib/ExportsGL.swift
 src graphics/gles/lib/GLSLFrontEnd.swift graphics/gles/lib/Stats.swift graphics/gles/lib/Copies.swift
-src graphics/gles/shaders/blit.vert graphics/gles/shaders/blit.frag graphics/gles/lib/generated/GLESShaders.swift graphics/gles/lib/generated/Constants.swift graphics/gles/hosted/Platform.swift
+src graphics/gles/shaders/blit.vert graphics/gles/shaders/blit.frag graphics/gles/shaders/downsample.frag graphics/gles/lib/generated/GLESShaders.swift graphics/gles/lib/generated/Constants.swift graphics/gles/hosted/Platform.swift
 src graphics/gles/c/libGLESv2.c graphics/gles/c/generate.sh graphics/gles/include/GLES2/gl2.h graphics/gles/include/GLES2/gl2ext.h
 src graphics/gles/include/GLES2/gl2platform.h graphics/gles/include/KHR/khrplatform.h graphics/gles/README.md
 src graphics/gles/tests/Support.swift graphics/gles/tests/TestDevice.swift graphics/gles/tests/StateTests.swift
@@ -66,7 +66,7 @@ A texture that needs what its image hasn't (an upload into a texture made with n
 `glReadPixels` and `glCopyTexImage2D` from an image no copy reads draw it into a copyable scratch image first.
 A level GL never gave is never read, since a texture is complete (GL ES 2.0's 3.7.10) or reads (0, 0, 0, 1).
 A minification filter without mipmaps reads level 0 alone (a sampler's level of detail clamped to 0.25, which keeps the choice of the magnification filter).
-`glGenerateMipmap` is a blit of each level from the one above.
+`glGenerateMipmap` draws each level from the one above, a pass a level and face of the library's own that filters four texels into one (graphics/gles/shaders/downsample.frag), reading views of the levels whose heap slots are written once while the image lives.
 A depth texture (`GL_OES_depth_texture`) is `depth16` (`GL_UNSIGNED_SHORT`) or `depth32f` (`GL_UNSIGNED_INT`); one made with no texels is drawn into and sampled alone.
 A depth renderbuffer of 24 or 32 bits is `depth32f`, and a depth and stencil one (`GL_OES_packed_depth_stencil`) the device's combined format, where it has one.
 A texture's heap slot is its image's; samplers are kept by their state, one heap slot for each distinct one, written only when nothing in the open list reads the slot (the Mali backend has 16).
