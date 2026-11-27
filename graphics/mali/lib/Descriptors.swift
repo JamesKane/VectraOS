@@ -16,17 +16,26 @@ public struct MemoryImage: Equatable, Sendable {
   public mutating func extend(to size: Int) {
     if size > bytes.count { bytes.append(contentsOf: [UInt8](repeating: 0, count: size - bytes.count)) }
   }
+  // The stores check the range once and write whole words (a pass stores thousands).
   public mutating func store(_ value: UInt32, at offset: Int) {
-    for i in 0..<4 { bytes[offset + i] = UInt8(truncatingIfNeeded: value >> UInt32(8 * i)) }
+    precondition(offset >= 0 && offset + 4 <= bytes.count, "a store past the image")
+    bytes.withUnsafeMutableBytes { unsafe $0.storeBytes(of: value.littleEndian, toByteOffset: offset, as: UInt32.self) }
   }
   public mutating func store(_ value: UInt64, at offset: Int) {
-    for i in 0..<8 { bytes[offset + i] = UInt8(truncatingIfNeeded: value >> UInt64(8 * i)) }
+    precondition(offset >= 0 && offset + 8 <= bytes.count, "a store past the image")
+    bytes.withUnsafeMutableBytes { unsafe $0.storeBytes(of: value.littleEndian, toByteOffset: offset, as: UInt64.self) }
   }
   public mutating func store(words: [UInt32], at offset: Int) {
-    for (i, w) in words.enumerated() { store(w, at: offset + 4 * i) }
+    precondition(offset >= 0 && offset + 4 * words.count <= bytes.count, "a store past the image")
+    bytes.withUnsafeMutableBytes { b in
+      for (i, w) in words.enumerated() { unsafe b.storeBytes(of: w.littleEndian, toByteOffset: offset + 4 * i, as: UInt32.self) }
+    }
   }
   public mutating func store(words: [UInt64], at offset: Int) {
-    for (i, w) in words.enumerated() { store(w, at: offset + 8 * i) }
+    precondition(offset >= 0 && offset + 8 * words.count <= bytes.count, "a store past the image")
+    bytes.withUnsafeMutableBytes { b in
+      for (i, w) in words.enumerated() { unsafe b.storeBytes(of: w.littleEndian, toByteOffset: offset + 8 * i, as: UInt64.self) }
+    }
   }
   public mutating func store(bytes b: [UInt8], at offset: Int) {
     for (i, v) in b.enumerated() { bytes[offset + i] = v }

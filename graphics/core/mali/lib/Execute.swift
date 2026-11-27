@@ -249,6 +249,7 @@ extension MaliDevice {
         target = record
         extraTargets = []
         planTargets = [record]
+        planPass &+= 1
         samples = Int(info.samples)
         stores = []
         resolves = []
@@ -587,6 +588,26 @@ extension MaliDevice {
     let t0 = clock()
     defer { lastProfile.drawNanoseconds &+= clock() &- t0 }
     guard let record = target else { throw .invalid("a draw outside a pass") }
+    // The draw before's, for a draw of the same pipeline in the same pass with the same dynamic state: its template (shared, not
+    // copied) with this draw's counts, offsets and push words. Nothing of the pipeline's record is read again.
+    let probing = probeScissorArrayLength != nil || probeScissorMode != 0 || probeViewports != nil || probeScissors != nil
+      || probeScissorArrayFill != nil || probeFlags0.or != 0 || probeFlags0.clear != 0
+    if !probing, let i = drawCache.firstIndex(where: { $0.pipeline == p.handle && $0.version == dynVersion && $0.pass == planPass }),
+      let template = drawCache[i].template
+    {
+      if indirect == nil && vertices < template.state.minimumVertices { return }
+      usesHeap = usesHeap || drawCache[i].heapDraw
+      var draw = PassDraw(sharingState: template, vertexCount: vertices, instanceCount: instances,
+                          push: [UInt32(truncatingIfNeeded: root), UInt32(truncatingIfNeeded: root >> 32)])
+      draw.indices = indices
+      draw.firstIndex = firstIndex
+      draw.vertexOffset = vertexOffset
+      draw.firstInstance = firstInstance
+      draw.indirect = indirect
+      draw.occlusionQuery = query
+      draws.append(draw)
+      return
+    }
     guard case .graphics(let vs, let fs, let format, var blend, let state)? = pipelines[p.handle] else {
       throw .invalid("a pipeline that isn't this device's graphics pipeline")
     }
@@ -683,6 +704,12 @@ extension MaliDevice {
     draw.state = pipelineState
     draw.flags0Or = probeFlags0.or
     draw.flags0Clear = probeFlags0.clear
+    if !probing, let i = drawCache.firstIndex(where: { $0.pipeline == p.handle && $0.version == dynVersion && $0.width == planSize.width
+      && $0.height == planSize.height && $0.constants == constants }) {
+      drawCache[i].template = draw
+      drawCache[i].pass = planPass
+      drawCache[i].heapDraw = heapDraw
+    }
     draws.append(draw)
   }
 

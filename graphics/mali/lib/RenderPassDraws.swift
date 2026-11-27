@@ -37,22 +37,76 @@ public struct IndirectArguments: Sendable, Equatable {
   public init(address: UInt64) { self.address = address }
 }
 
-/// One draw of a pass.
+/// One draw of a pass. What its pipeline and the pass's dynamic state make (the shaders, the blends, the fixed-function
+/// state, the bindings) lives in one object, shared by the draws that have the same (`sharingState`) and copied when a shared
+/// one is written; the counts, offsets and push constants are the draw's own. A pass copies its draws several times as it
+/// is planned and laid out, and the shared part is many references: counting them for each copy was most of a draw's cost.
 public struct PassDraw: Sendable {
-  public var vertexShader: VertexShader
-  public var fragmentShader: FragmentShader
+  final class Shared: @unchecked Sendable {
+    var vertexShader: VertexShader
+    var fragmentShader: FragmentShader
+    var blend: BlendDescriptor
+    var images: [BindingHandle]
+    var dummySampler: UInt32
+    var state: DrawPipelineState = DrawPipelineState()
+    var extraBlends: [BlendDescriptor] = []
+    var blendShaders: [Int: [UInt64]] = [:]
+    var blendConstants: [Float] = []
+    init(vertexShader: VertexShader, fragmentShader: FragmentShader, blend: BlendDescriptor, images: [BindingHandle], dummySampler: UInt32) {
+      self.vertexShader = vertexShader
+      self.fragmentShader = fragmentShader
+      self.blend = blend
+      self.images = images
+      self.dummySampler = dummySampler
+    }
+    init(copying o: Shared) {
+      vertexShader = o.vertexShader
+      fragmentShader = o.fragmentShader
+      blend = o.blend
+      images = o.images
+      dummySampler = o.dummySampler
+      state = o.state
+      extraBlends = o.extraBlends
+      blendShaders = o.blendShaders
+      blendConstants = o.blendConstants
+    }
+  }
+  var shared: Shared
+  /// The shared part, made this draw's own before a write.
+  mutating func own() -> Shared {
+    if !isKnownUniquelyReferenced(&shared) { shared = Shared(copying: shared) }
+    return shared
+  }
+
+  public var vertexShader: VertexShader {
+    _read { yield shared.vertexShader }
+    _modify { yield &own().vertexShader }
+  }
+  public var fragmentShader: FragmentShader {
+    _read { yield shared.fragmentShader }
+    _modify { yield &own().fragmentShader }
+  }
   /// The vertices (non-indexed) and the instances.
   public var vertexCount: Int
   public var instanceCount: Int
   /// The push constants, the same words for both stages.
   public var push: [UInt32]
   /// The blend descriptor of the pass's one colour target (09: the position must equal the target).
-  public var blend: BlendDescriptor
+  public var blend: BlendDescriptor {
+    _read { yield shared.blend }
+    _modify { yield &own().blend }
+  }
   /// The heap handle of element 0 of each image and sampler binding the fragment shader names, and the dummy sampler's.
-  public var images: [BindingHandle]
-  public var dummySampler: UInt32
+  public var images: [BindingHandle] {
+    _read { yield shared.images }
+    _modify { yield &own().images }
+  }
+  public var dummySampler: UInt32 {
+    _read { yield shared.dummySampler }
+    _modify { yield &own().dummySampler }
+  }
   /// `RUN_IDVS2`'s vertex shading mode (01 section 1.9.3): early (false, the reference driver's) or deferred.
-  public var deferredShading = false
+  public var deferredShading: Bool = false
   /// `VARY_SIZE` when it is not the vertex shader's own `varyingBytes` (06 section 6.6.2), for probes.
   public var varyingBytes: UInt32?
   /// The index data (an indexed draw), the first index and the base vertex added to each index; for a draw with no
@@ -71,27 +125,43 @@ public struct PassDraw: Sendable {
   public var flags0Clear: UInt32 = 0
   /// The fixed-function state beyond the colour-only opaque triangle list (PipelineState.swift): the primitive mode, culling, the
   /// depth/stencil test, a viewport and scissor.
-  public var state = DrawPipelineState()
+  public var state: DrawPipelineState {
+    _read { yield shared.state }
+    _modify { yield &own().state }
+  }
   /// The blend descriptors of the pass's colour targets after the first, in order (each one's `renderTarget` is its index, 09 section 9.2.3).
-  public var extraBlends: [BlendDescriptor] = []
+  public var extraBlends: [BlendDescriptor] {
+    _read { yield shared.extraBlends }
+    _modify { yield &own().extraBlends }
+  }
   /// The code of the blend shader of each colour target whose descriptor is in mode Shader (by target; 09 section 9.9). The recipe
   /// places each in the pass's block, so it lies in the fragment shader's 4 GiB region, and puts its address in the descriptor.
-  public var blendShaders: [Int: [UInt64]] = [:]
+  public var blendShaders: [Int: [UInt64]] {
+    _read { yield shared.blendShaders }
+    _modify { yield &own().blendShaders }
+  }
   /// The blend constants (red, green, blue, alpha) the blend shaders read from the fragment FAU (`GraphicsFauLayout.blendConstantWord`).
-  public var blendConstants: [Float] = []
+  public var blendConstants: [Float] {
+    _read { yield shared.blendConstants }
+    _modify { yield &own().blendConstants }
+  }
 
   public init(
     vertexShader: VertexShader, fragmentShader: FragmentShader, vertexCount: Int, instanceCount: Int = 1, push: [UInt32] = [],
     blend: BlendDescriptor = BlendDescriptor(renderTarget: 0), images: [BindingHandle] = [], dummySampler: UInt32 = 0
   ) {
-    self.vertexShader = vertexShader
-    self.fragmentShader = fragmentShader
+    shared = Shared(vertexShader: vertexShader, fragmentShader: fragmentShader, blend: blend, images: images, dummySampler: dummySampler)
     self.vertexCount = vertexCount
     self.instanceCount = instanceCount
     self.push = push
-    self.blend = blend
-    self.images = images
-    self.dummySampler = dummySampler
+  }
+
+  /// A draw with `template`'s shaders, blends, state and bindings (shared, not copied) and counts and push constants of its own.
+  public init(sharingState template: PassDraw, vertexCount: Int, instanceCount: Int = 1, push: [UInt32] = []) {
+    shared = template.shared
+    self.vertexCount = vertexCount
+    self.instanceCount = instanceCount
+    self.push = push
   }
 }
 
@@ -301,9 +371,12 @@ extension RenderPass {
     for d in r.draws { guard d.extraBlends.count == targetCount - 1 else { throw .badRequest } }
     // A target in mode Shader has its shader (and a draw with a shader has the constants' words in its FAU).
     for d in r.draws {
-      for (i, b) in ([d.blend] + d.extraBlends).enumerated() where b.mode == .shader {
+      func check(_ i: Int, _ b: BlendDescriptor) throws(RenderError) {
+        guard b.mode == .shader else { return }
         guard let code = d.blendShaders[i], !code.isEmpty, d.fragmentShader.layout.blendConstantWord >= 0 else { throw .badRequest }
       }
+      try check(0, d.blend)
+      for (i, b) in d.extraBlends.enumerated() { try check(i + 1, b) }
     }
     for t in r.extraTargets { guard t.clear.count == 4, t.address & 63 == 0 else { throw .badRequest } }
     guard let pattern = SamplePatterns.pattern(samples: r.samples) else { throw .badRequest }
@@ -732,11 +805,15 @@ extension RenderPass {
     func tiling(_ b: inout CSBuilder) {
       b.emit(CSInstruction.setState(.endpointSlot, immediate: UInt32(tilingSlot)))
       b.emit(CSInstruction.heapOperation(.vertexTilerStarted))
+      // Each run's registers are those the last run read but for what differs (a draw of the same pipeline: its counts and FAU).
+      var last: IDVSState? = nil
       for k in 0..<contexts {
       for (n, var s) in states.enumerated() {
         if k > 0 && !r.draws[n].vertexShader.writesLayer { continue }
         s.tilerContext = va(tilerAt) + UInt64(k * TilerContext.size)
-        s.load(into: &b)
+        s.load(into: &b, after: last)
+        // An indirect draw's counts come from memory into the registers: the next draw sets them all again.
+        last = r.draws[n].indirect == nil ? s : nil
         if let a = r.draws[n].indirect {
           // The counts come from memory when the stream runs: the words land in the count registers (33 to 37) and the
           // run waits for the load (01 section 1.4.2, a load signals the load/store slot).

@@ -171,6 +171,11 @@ struct DrawCache {
   var blend: BlendDescriptor
   var extra: [BlendDescriptor]
   var shaders: [Int: [UInt64]]
+  /// A draw of this pipeline and state (its shared part is the next draw's, `PassDraw(sharingState:)`), the pass of the plan it
+  /// was checked against (`planPass`), and whether it samples the heap.
+  var template: PassDraw? = nil
+  var pass = -1
+  var heapDraw = false
 }
 
 enum PipelineRecord {
@@ -256,6 +261,8 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   /// values (each `set` command, each pass) that says whether it still holds.
   var drawCache: [DrawCache] = []
   var dynVersion = 0
+  /// Counts the passes planned, so a draw's template is used only in the pass whose targets it was checked against.
+  var planPass = 0
   /// The heap's handles a draw's FAU block names: with the textures and samplers, and without.
   let bindingHandles: (heap: [BindingHandle], none: [BindingHandle]) = {
     var storage: [BindingHandle] = []
