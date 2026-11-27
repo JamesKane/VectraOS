@@ -53,11 +53,15 @@ in input attachments).
 
 ## What the script handles, and why
 
-- **Address.** The board is `root@192.168.0.32`, with
-  `-o HostKeyAlias=192.168.0.19`. Its FreeBSD is the same install that
-  answered at .19, with the same host key. A different FreeBSD briefly
-  answered at .32 with other keys, so never connect to .32 without the
-  alias. `BOARD` and `BOARD_ALIAS` override both.
+- **Address.** The board is `root@opi6plus`, with
+  `-o HostKeyAlias=192.168.0.19`. FreeBSD takes its address by DHCP, and
+  the lease changes across boots (.19, .32, .16); the router's DNS
+  follows it by name. A board that doesn't answer at an old address may
+  be up at a new one: look it up (`dscacheutil -q host -a name opi6plus`)
+  before calling it hung. The host key is the install's from .19, kept
+  through the alias; a different FreeBSD once answered at .32 with other
+  keys, so never connect without the alias. `BOARD` and `BOARD_ALIAS`
+  override both.
 - **Lock.** The lock is `/root/vx-board.lock`, holding host, pid, start
   time and tag. It is taken atomically. A lock is stale, and the script
   breaks it, when its owner is a dead process on this Mac or it is older

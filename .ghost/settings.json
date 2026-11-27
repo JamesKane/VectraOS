@@ -19,7 +19,7 @@
   },
   "hosts": {
     "board": {
-      "address": "root@192.168.0.32",
+      "address": "root@opi6plus",
       "hostKeyAlias": "192.168.0.19",
       "probe": "uname -s | grep -qx FreeBSD",
       "lease": "board",

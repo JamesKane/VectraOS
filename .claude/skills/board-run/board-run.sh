@@ -31,7 +31,8 @@
 # console's middle.
 #
 # Settings (environment):
-#   BOARD        root@192.168.0.32
+#   BOARD        root@opi6plus (the name follows FreeBSD's DHCP lease: it
+#                has been .19, .32 and .16)
 #   BOARD_ALIAS  192.168.0.19 (the board's FreeBSD has .19's host key;
 #                a different install once answered at .32 with other
 #                keys, so never connect to .32 without the alias)
@@ -42,7 +43,7 @@ image=${1:?usage: board-run.sh IMAGE_DIR LOG [BACKUP_NAME]}
 log=${2:?usage: board-run.sh IMAGE_DIR LOG [BACKUP_NAME]}
 backup=${3:-}
 here=$(cd "$(dirname "$0")" && pwd)
-board=${BOARD:-root@192.168.0.32}
+board=${BOARD:-root@opi6plus}
 alias_=${BOARD_ALIAS:-192.168.0.19}
 tty=${BOARD_TTY:-/dev/cu.usbserial-ABSCDIMD}
 entry=${BOOT_ENTRY:-000A}
