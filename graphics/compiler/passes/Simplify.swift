@@ -352,3 +352,31 @@ extension Function {
     }
   }
 }
+
+extension Function {
+  /// A sum with a product used nowhere else, in the same block, is one fused multiply-add: `a * b + c` is `fma(a, b, c)` (SPIR-V
+  /// lets an implementation contract unless an operation says NoContraction, which the readers drop). A sum of weighted taps is
+  /// then a chain of FMAs. 32-bit floats only. Returns whether anything changed.
+  @discardableResult
+  public mutating func contractMultiplyAdds() -> Bool {
+    let uses = useCounts()
+    var blockOf = [Int](repeating: -1, count: insts.count)
+    for (bi, b) in blocks.enumerated() { for id in b.insts { blockOf[id] = bi } }
+    var changed = false
+    for bi in 0..<blocks.count {
+      for id in blocks[bi].insts where insts[id].op == .fadd && insts[id].type == .f32 {
+        let i = insts[id]
+        for k in 0..<2 {
+          guard case .inst(let m) = values[i.args[k]].kind, blockOf[m] == bi, insts[m].op == .fmul, insts[m].type == .f32,
+            uses[i.args[k]] == 1 else { continue }
+          insts[id] = Inst(.fma, .f32, [insts[m].args[0], insts[m].args[1], i.args[1 - k]])
+          insts[id].result = i.result
+          changed = true
+          break
+        }
+      }
+    }
+    if changed { eliminateDeadCode() }
+    return changed
+  }
+}

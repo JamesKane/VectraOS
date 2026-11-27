@@ -40,7 +40,8 @@ extension Function {
   }
 
   /// Merge equal pure instructions within a block: the later one's uses go
-  /// to the earlier. Commutative operations match in either operand order.
+  /// to the earlier. Commutative operations match in either operand order. Equal
+  /// loads merge too while nothing between them writes memory.
   @discardableResult
   public mutating func eliminateCommonSubexpressions() -> Bool {
     var repl = [ValueID](repeating: -1, count: values.count)
@@ -49,10 +50,28 @@ extension Function {
       var table = HashTable()
       var seen: [Int] = []  // instruction ids, by the table's ids
       var kept: [Int] = []
+      var loads: [Int] = []
       for id in blocks[bi].insts {
         var i = insts[id]
         for k in 0..<i.args.count { i.args[k] = resolve(i.args[k], repl) }
         insts[id].args = i.args
+        // A load of what an earlier load of the block read, with no write of memory between, is that load (a combined image
+        // sampler's handle words, read again for every access).
+        if i.op == .load && i.result >= 0 {
+          if let e = loads.first(where: { let o = self.insts[$0]; return o.args == i.args && o.type == i.type && o.imm == i.imm
+            && o.imm2 == i.imm2 && o.payload == i.payload }) {
+            repl[i.result] = insts[e].result
+            changed = true
+            continue
+          }
+          loads.append(id)
+          kept.append(id)
+          continue
+        }
+        switch i.op {
+        case .store, .atomic, .barrier, .membar, .call, .imgstore: loads.removeAll()
+        default: break
+        }
         guard i.op.isPure, i.result >= 0 else {
           kept.append(id)
           continue
