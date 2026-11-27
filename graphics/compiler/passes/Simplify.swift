@@ -268,6 +268,13 @@ extension Function {
     return changed
   }
 
+  /// A constant +0.0 or -0.0 of a 32 or 64-bit float, scalar or every lane.
+  func isFloatZero(_ v: ValueID) -> Bool {
+    guard let k = values[v].type.scalarKind, k == .f32 || k == .f64, let lanes = constantLanes(self, v), !lanes.isEmpty else { return false }
+    let magnitude: UInt64 = k == .f32 ? 0x7FFF_FFFF : 0x7FFF_FFFF_FFFF_FFFF
+    return lanes.allSatisfy { $0 & magnitude == 0 }
+  }
+
   private mutating func forwarded(_ i: Inst) -> ValueID? {
     func isInt(_ v: ValueID, _ n: UInt64) -> Bool {
       guard let b = constantBits(v) else { return false }
@@ -326,7 +333,21 @@ extension Function {
       let one = i.type.scalarKind == .f32 ? UInt64(Float(1).bitPattern) : i.type.scalarKind == .f64 ? Double(1).bitPattern : 1
       if isInt(i.args[1], one) && i.type.scalarKind != .f16 { return i.args[0] }
       if isInt(i.args[0], one) && i.type.scalarKind != .f16 { return i.args[1] }
+      // A product with zero is zero, and a sum with zero the other term: Vulkan's SPIR-V (and GLSL ES) need not preserve signed
+      // zeros, infinities and NaNs unless the module asks (SignedZeroInfNanPreserve, which the layer doesn't offer). A convolution
+      // weight of 0 then takes its texture access with it (glmark2's effect2d: 9 lookups, 4 weighted 0).
+      if isFloatZero(i.args[1]) && values[i.args[1]].type == i.type { return i.args[1] }
+      if isFloatZero(i.args[0]) && values[i.args[0]].type == i.type { return i.args[0] }
       return nil
+    case .fadd:
+      if isFloatZero(i.args[1]) { return i.args[0] }
+      if isFloatZero(i.args[0]) { return i.args[1] }
+      return nil
+    case .fsub:
+      return isFloatZero(i.args[1]) ? i.args[0] : nil
+    case .fma:
+      // a * b + c with a or b zero is c.
+      return isFloatZero(i.args[0]) || isFloatZero(i.args[1]) ? i.args[2] : nil
     default: return nil
     }
   }

@@ -71,6 +71,26 @@ func opCount(_ f: Function, _ op: IROp) -> Int {
     #expect(f.blocks[0].insts.count == 2)
   }
 
+  @Test func aProductWithZeroIsZeroAndASumWithZeroTheOtherTerm() throws {
+    // x * 0 + y * 1 + -0 is y (signed zeros, infinities and NaNs need not be kept): no multiply or add is left.
+    var f = build { f, b in
+      let p = f.resource(set: 0, binding: 1, space: .storage)
+      let x = f.append(Inst(.load, .f32, [p], imm: 4), to: b)
+      let y = f.append(Inst(.load, .f32, [p], imm: 4), to: b)
+      let zero = f.constant(.f32, 0)
+      let negZero = f.constant(.f32, UInt64(Float(-0.0).bitPattern))
+      let m = f.append(Inst(.fmul, .f32, [x, zero]), to: b)
+      let s = f.append(Inst(.fadd, .f32, [m, y]), to: b)
+      let t = f.append(Inst(.fadd, .f32, [s, negZero]), to: b)
+      let u = f.append(Inst(.fma, .f32, [negZero, x, t]), to: b)
+      keep(&f, b, u)
+    }
+    let changed = f.propagateCopies()
+    #expect(changed)
+    try moduleOf(f).verify()
+    #expect(opCount(f, .fmul) == 0 && opCount(f, .fadd) == 0 && opCount(f, .fma) == 0, "\(f.text())")
+  }
+
   @Test func floatsFoldInTheirOwnWidth() throws {
     var f = build { f, b in
       let h = f.constant(.f32, UInt64(Float(0.1).bitPattern))
