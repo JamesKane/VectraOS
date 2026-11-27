@@ -33,7 +33,7 @@ Each check reads the pbuffer back with `glReadPixels` and judges it pixel by pix
 - `client arrays`: positions as floats and colours as normalized bytes from the program's memory, drawn from vertex 1.
 
 It then times frames: `gl.frame_us.empty` is a clear and `glFinish`, and `gl.frame_us.draw` a clear, one draw and `glFinish`, each the median of 200 after 10 that warm up, printed as `gl-test: budget name=... value=... unit=us limit=...` (200 and 250, under glmark2's fastest frames on the board).
-Last, where there is a compositor, it opens a window of Radharc's through `eglCreateWindowSurface`, swaps 60 frames at a swap interval of 1 and 60 at 0, printing the time each 60 took, and reads a cleared pixel back (`gl-test: ok: gl window`); with no window it prints `gl-test: skipped: gl window`.
+Last, where there is a compositor, it opens a window of Radharc's through `eglCreateWindowSurface`, swaps 4 frames at a swap interval of 1 (each waits for Radharc's frame, which a window not in front gets slowly) and 60 at 0, printing the time each took, and reads a cleared pixel back (`gl-test: ok: gl window`); with no window it prints `gl-test: skipped: gl window`.
 It exits 0, after `gl-test: all checks passed`, only if every check that ran passed.
 
 # SEE ALSO
