@@ -249,6 +249,7 @@ extension MaliDevice {
         target = record
         extraTargets = []
         planTargets = [record]
+        planPass &+= 1
         samples = Int(info.samples)
         stores = []
         resolves = []
@@ -587,6 +588,26 @@ extension MaliDevice {
     let t0 = clock()
     defer { lastProfile.drawNanoseconds &+= clock() &- t0 }
     guard let record = target else { throw .invalid("a draw outside a pass") }
+    // The draw before's, for a draw of the same pipeline in the same pass with the same dynamic state: its template (shared, not
+    // copied) with this draw's counts, offsets and push words. Nothing of the pipeline's record is read again.
+    let probing = probeScissorArrayLength != nil || probeScissorMode != 0 || probeViewports != nil || probeScissors != nil
+      || probeScissorArrayFill != nil || probeFlags0.or != 0 || probeFlags0.clear != 0
+    if !probing, let i = drawCache.firstIndex(where: { $0.pipeline == p.handle && $0.version == dynVersion && $0.pass == planPass }),
+      let template = drawCache[i].template
+    {
+      if indirect == nil && vertices < template.state.minimumVertices { return }
+      usesHeap = usesHeap || drawCache[i].heapDraw
+      var draw = PassDraw(sharingState: template, vertexCount: vertices, instanceCount: instances,
+                          push: [UInt32(truncatingIfNeeded: root), UInt32(truncatingIfNeeded: root >> 32)])
+      draw.indices = indices
+      draw.firstIndex = firstIndex
+      draw.vertexOffset = vertexOffset
+      draw.firstInstance = firstInstance
+      draw.indirect = indirect
+      draw.occlusionQuery = query
+      draws.append(draw)
+      return
+    }
     guard case .graphics(let vs, let fs, let format, var blend, let state)? = pipelines[p.handle] else {
       throw .invalid("a pipeline that isn't this device's graphics pipeline")
     }
@@ -683,6 +704,12 @@ extension MaliDevice {
     draw.state = pipelineState
     draw.flags0Or = probeFlags0.or
     draw.flags0Clear = probeFlags0.clear
+    if !probing, let i = drawCache.firstIndex(where: { $0.pipeline == p.handle && $0.version == dynVersion && $0.width == planSize.width
+      && $0.height == planSize.height && $0.constants == constants }) {
+      drawCache[i].template = draw
+      drawCache[i].pass = planPass
+      drawCache[i].heapDraw = heapDraw
+    }
     draws.append(draw)
   }
 
@@ -703,8 +730,12 @@ extension MaliDevice {
 
   /// Runs `jobs` in `group`, in pieces of as many as the driver takes at once; with a signal, the timeline's when the last is
   /// done, and without one, the CPU waits for them (a step run alone, outside a submission).
-  func launch(group: UInt32, jobs: [MaliJob], signal: UInt64?) throws(GPUError) {
+  func launch(group: UInt32, jobs given: [MaliJob], signal: UInt64?) throws(GPUError) {
     let t0 = clock()
+    var jobs = given
+    if probeFlushToken != 0 {
+      for i in (probeFlushTokenFirstJob ? 0 : 1)..<max(jobs.count, 1) where i < jobs.count { jobs[i].flush = probeFlushToken }
+    }
     if let signal {
       var at = 0
       while at < jobs.count {
@@ -996,6 +1027,7 @@ extension MaliDevice {
     request.layers = pass.layers
     request.viewMask = pass.viewMask
     request.finishLastContextOnly = probeFinishLastContextOnly
+    if probePassStamps { request.stamps = try chainSync().address + UInt64(Self.stampsOffset) }
     // Multisampled (valhall 08 section 8.3): the tile holds every sample; a stored target writes each to its surface (Layered),
     // a resolved one the mean to the resolve image (Average), and one both stored and resolved gets a second descriptor over the
     // same tile for the mean.
@@ -1114,10 +1146,19 @@ extension MaliDevice {
     }
     let registers = CSRegisterMap(workRegisters: info.workRegisters, unpreserved: info.unpreservedRegisters)
     let scoreboards = CSScoreboards(count: info.scoreboards)
+    // Each distinct program is laid out once (RenderPass.build), so the block's room is for those: a pass of hundreds of draws of a
+    // few pipelines needs room for a few.
     var codeWords = 0
+    var programs: [[UInt64]] = []
+    func count(_ code: [UInt64], extra: Int = 0) {
+      if programs.contains(where: { $0 == code }) { return }
+      programs.append(code)
+      codeWords += code.count + extra
+    }
     for d in pass.draws {
-      codeWords += d.vertexShader.code.count + d.fragmentShader.code.count
-      for (_, code) in d.blendShaders { codeWords += code.count + 16 }
+      count(d.vertexShader.code)
+      count(d.fragmentShader.code)
+      for (_, code) in d.blendShaders { count(code, extra: 16) }
     }
     request.chain = chain
     request.sampleTable = try sampleTable().address

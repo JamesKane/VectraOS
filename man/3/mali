@@ -113,6 +113,7 @@ A heap is never shrunk.
 A group that has left its slot when the reply is due is not answered, and the chunk goes back; the firmware raises the event again when the group is resumed.
 
 A group ends when a command stream faults fatally, the GPU's MMU faults on its VM, a job runs past 5 seconds, or a reset ends it: its jobs are cancelled and their signals raised, `groupState` says why, and the context's `submit` and `createGroup` fail with `lost`.
+A client posts its submissions (`post`, one-way: the call returns once the request is sent, and the driver's rings and doorbells run while the client goes on); a posted submission the driver refuses (a lost group, a bad job, an unknown sync) has its signals raised and sets bit 3 of its group's `groupState`, from then on.
 The context's other groups, and every other context, go on.
 
 The memory the GPU reads is pinned memory the CPU does not cache, so it does no cache maintenance: a buffer is a VMO set write-combining and pinned a page at a time (the client maps the same VMO); one made `cpuCached` keeps the CPU's cache (cleaned and invalidated before it is pinned) and its client maintains it, as above.

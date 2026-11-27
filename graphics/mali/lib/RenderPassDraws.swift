@@ -37,22 +37,78 @@ public struct IndirectArguments: Sendable, Equatable {
   public init(address: UInt64) { self.address = address }
 }
 
-/// One draw of a pass.
+/// One draw of a pass. What its pipeline and the pass's dynamic state make (the shaders, the blends, the fixed-function
+/// state, the bindings) lives in one object, shared by the draws that have the same (`sharingState`) and copied when a shared
+/// one is written; the counts, offsets and push constants are the draw's own. A pass copies its draws several times as it
+/// is planned and laid out, and the shared part is many references: counting them for each copy was most of a draw's cost.
 public struct PassDraw: Sendable {
-  public var vertexShader: VertexShader
-  public var fragmentShader: FragmentShader
+  // The fields are written only through `own()`, which copies a shared object first: no access to one overlaps another, so
+  // they are not checked at run time (`@exclusivity(unchecked)`).
+  final class Shared: @unchecked Sendable {
+    @exclusivity(unchecked) var vertexShader: VertexShader
+    @exclusivity(unchecked) var fragmentShader: FragmentShader
+    @exclusivity(unchecked) var blend: BlendDescriptor
+    @exclusivity(unchecked) var images: [BindingHandle]
+    @exclusivity(unchecked) var dummySampler: UInt32
+    @exclusivity(unchecked) var state: DrawPipelineState = DrawPipelineState()
+    @exclusivity(unchecked) var extraBlends: [BlendDescriptor] = []
+    @exclusivity(unchecked) var blendShaders: [Int: [UInt64]] = [:]
+    @exclusivity(unchecked) var blendConstants: [Float] = []
+    init(vertexShader: VertexShader, fragmentShader: FragmentShader, blend: BlendDescriptor, images: [BindingHandle], dummySampler: UInt32) {
+      unsafe self.vertexShader = vertexShader
+      unsafe self.fragmentShader = fragmentShader
+      unsafe self.blend = blend
+      unsafe self.images = images
+      unsafe self.dummySampler = dummySampler
+    }
+    init(copying o: Shared) {
+      unsafe vertexShader = unsafe o.vertexShader
+      unsafe fragmentShader = unsafe o.fragmentShader
+      unsafe blend = unsafe o.blend
+      unsafe images = unsafe o.images
+      unsafe dummySampler = unsafe o.dummySampler
+      unsafe state = unsafe o.state
+      unsafe extraBlends = unsafe o.extraBlends
+      unsafe blendShaders = unsafe o.blendShaders
+      unsafe blendConstants = unsafe o.blendConstants
+    }
+  }
+  var shared: Shared
+  /// The shared part, made this draw's own before a write.
+  mutating func own() -> Shared {
+    if !isKnownUniquelyReferenced(&shared) { shared = Shared(copying: shared) }
+    return shared
+  }
+
+  public var vertexShader: VertexShader {
+    _read { yield unsafe shared.vertexShader }
+    _modify { yield unsafe &own().vertexShader }
+  }
+  public var fragmentShader: FragmentShader {
+    _read { yield unsafe shared.fragmentShader }
+    _modify { yield unsafe &own().fragmentShader }
+  }
   /// The vertices (non-indexed) and the instances.
   public var vertexCount: Int
   public var instanceCount: Int
   /// The push constants, the same words for both stages.
   public var push: [UInt32]
   /// The blend descriptor of the pass's one colour target (09: the position must equal the target).
-  public var blend: BlendDescriptor
+  public var blend: BlendDescriptor {
+    _read { yield unsafe shared.blend }
+    _modify { yield unsafe &own().blend }
+  }
   /// The heap handle of element 0 of each image and sampler binding the fragment shader names, and the dummy sampler's.
-  public var images: [BindingHandle]
-  public var dummySampler: UInt32
+  public var images: [BindingHandle] {
+    _read { yield unsafe shared.images }
+    _modify { yield unsafe &own().images }
+  }
+  public var dummySampler: UInt32 {
+    _read { yield unsafe shared.dummySampler }
+    _modify { yield unsafe &own().dummySampler }
+  }
   /// `RUN_IDVS2`'s vertex shading mode (01 section 1.9.3): early (false, the reference driver's) or deferred.
-  public var deferredShading = false
+  public var deferredShading: Bool = false
   /// `VARY_SIZE` when it is not the vertex shader's own `varyingBytes` (06 section 6.6.2), for probes.
   public var varyingBytes: UInt32?
   /// The index data (an indexed draw), the first index and the base vertex added to each index; for a draw with no
@@ -71,27 +127,43 @@ public struct PassDraw: Sendable {
   public var flags0Clear: UInt32 = 0
   /// The fixed-function state beyond the colour-only opaque triangle list (PipelineState.swift): the primitive mode, culling, the
   /// depth/stencil test, a viewport and scissor.
-  public var state = DrawPipelineState()
+  public var state: DrawPipelineState {
+    _read { yield unsafe shared.state }
+    _modify { yield unsafe &own().state }
+  }
   /// The blend descriptors of the pass's colour targets after the first, in order (each one's `renderTarget` is its index, 09 section 9.2.3).
-  public var extraBlends: [BlendDescriptor] = []
+  public var extraBlends: [BlendDescriptor] {
+    _read { yield unsafe shared.extraBlends }
+    _modify { yield unsafe &own().extraBlends }
+  }
   /// The code of the blend shader of each colour target whose descriptor is in mode Shader (by target; 09 section 9.9). The recipe
   /// places each in the pass's block, so it lies in the fragment shader's 4 GiB region, and puts its address in the descriptor.
-  public var blendShaders: [Int: [UInt64]] = [:]
+  public var blendShaders: [Int: [UInt64]] {
+    _read { yield unsafe shared.blendShaders }
+    _modify { yield unsafe &own().blendShaders }
+  }
   /// The blend constants (red, green, blue, alpha) the blend shaders read from the fragment FAU (`GraphicsFauLayout.blendConstantWord`).
-  public var blendConstants: [Float] = []
+  public var blendConstants: [Float] {
+    _read { yield unsafe shared.blendConstants }
+    _modify { yield unsafe &own().blendConstants }
+  }
 
   public init(
     vertexShader: VertexShader, fragmentShader: FragmentShader, vertexCount: Int, instanceCount: Int = 1, push: [UInt32] = [],
     blend: BlendDescriptor = BlendDescriptor(renderTarget: 0), images: [BindingHandle] = [], dummySampler: UInt32 = 0
   ) {
-    self.vertexShader = vertexShader
-    self.fragmentShader = fragmentShader
+    shared = Shared(vertexShader: vertexShader, fragmentShader: fragmentShader, blend: blend, images: images, dummySampler: dummySampler)
     self.vertexCount = vertexCount
     self.instanceCount = instanceCount
     self.push = push
-    self.blend = blend
-    self.images = images
-    self.dummySampler = dummySampler
+  }
+
+  /// A draw with `template`'s shaders, blends, state and bindings (shared, not copied) and counts and push constants of its own.
+  public init(sharingState template: PassDraw, vertexCount: Int, instanceCount: Int = 1, push: [UInt32] = []) {
+    shared = template.shared
+    self.vertexCount = vertexCount
+    self.instanceCount = instanceCount
+    self.push = push
   }
 }
 
@@ -221,6 +293,8 @@ public struct DrawPassRequest: Sendable {
   public var viewMask: UInt32 = 0
   /// A probe of the hardware: hand back only the last context's chunk list (the leak of 07 section 7.10), to see what shows it.
   public var finishLastContextOnly = false
+  /// A probe of the pass's own time: eight 64-bit timestamps stored here as the streams run (`PassStamp`), or nil.
+  public var stamps: UInt64?
   /// The first colour target's writeback (08 section 8.3.2) and the distance between its sample surfaces.
   public var colourMSAA: UInt32 = 0
   /// The first colour target's block format (08 section 8.4.3): 2 linear, 8 the 64 KiB interleaved layout.
@@ -299,9 +373,12 @@ extension RenderPass {
     for d in r.draws { guard d.extraBlends.count == targetCount - 1 else { throw .badRequest } }
     // A target in mode Shader has its shader (and a draw with a shader has the constants' words in its FAU).
     for d in r.draws {
-      for (i, b) in ([d.blend] + d.extraBlends).enumerated() where b.mode == .shader {
+      func check(_ i: Int, _ b: BlendDescriptor) throws(RenderError) {
+        guard b.mode == .shader else { return }
         guard let code = d.blendShaders[i], !code.isEmpty, d.fragmentShader.layout.blendConstantWord >= 0 else { throw .badRequest }
       }
+      try check(0, d.blend)
+      for (i, b) in d.extraBlends.enumerated() { try check(i + 1, b) }
     }
     for t in r.extraTargets { guard t.clear.count == 4, t.address & 63 == 0 else { throw .badRequest } }
     guard let pattern = SamplePatterns.pattern(samples: r.samples) else { throw .badRequest }
@@ -710,6 +787,14 @@ extension RenderPass {
     let fragmentSlot = r.layout == .singleQueue ? singleFragmentSlot : tilingSlot
     let fragmentMask = UInt16(1) << UInt16(fragmentSlot)
 
+    // The probe's timestamps (`stamps`): the slot's work waited for first, where a mask is given, then the store waited for.
+    func stamp(_ b: inout CSBuilder, _ k: PassStamp, after mask: UInt16 = 0) {
+      guard let at = r.stamps else { return }
+      if mask != 0 { b.wait(mask: mask) }
+      b.move64(CSRegisterMap.firstScratch, at + UInt64(8 * k.rawValue))
+      b.emit(CSInstruction.storeState(address: CSRegisterMap.firstScratch, state: .timestamp))
+      b.wait(mask: b.scoreboards.slotMask(dataSlot))
+    }
     func prologue(_ b: inout CSBuilder, resources: CSResources, fragment: Bool = false) {
       if r.initialiseQueues {
         b.initialiseSlotState()
@@ -722,11 +807,15 @@ extension RenderPass {
     func tiling(_ b: inout CSBuilder) {
       b.emit(CSInstruction.setState(.endpointSlot, immediate: UInt32(tilingSlot)))
       b.emit(CSInstruction.heapOperation(.vertexTilerStarted))
+      // Each run's registers are those the last run read but for what differs (a draw of the same pipeline: its counts and FAU).
+      var last: IDVSState? = nil
       for k in 0..<contexts {
       for (n, var s) in states.enumerated() {
         if k > 0 && !r.draws[n].vertexShader.writesLayer { continue }
         s.tilerContext = va(tilerAt) + UInt64(k * TilerContext.size)
-        s.load(into: &b)
+        s.load(into: &b, after: last)
+        // An indirect draw's counts come from memory into the registers: the next draw sets them all again.
+        last = r.draws[n].indirect == nil ? s : nil
         if let a = r.draws[n].indirect {
           // The counts come from memory when the stream runs: the words land in the count registers (33 to 37) and the
           // run waits for the load (01 section 1.4.2, a load signals the load/store slot).
@@ -810,20 +899,29 @@ extension RenderPass {
     var b0 = CSBuilder(address: va(stream0At), capacityBytes: max(capacity - stream0At, 0), registers: registers,
                        scoreboards: scoreboards)
     if r.layout == .singleQueue {
+      stamp(&b0, .tilingStream)
       prologue(&b0, resources: resourcesTiling | .fragment)
+      stamp(&b0, .tilingStart)
       tiling(&b0)
       b0.wait(mask: tilingMask | b0.scoreboards.slotMask(CSScoreboards.deferredSyncSlot))
+      stamp(&b0, .tiled)
+      stamp(&b0, .fragmentStart)
       zeroReports(&b0)
       fragment(&b0)
+      stamp(&b0, .finished, after: b0.scoreboards.slotMask(finishSlot))
       tail(&b0)
+      stamp(&b0, .cleaned)
       readbackReport(&b0)
       b0.endStep(r.chain)
       let s0: CSStream
       do throws(CSBuildError) { s0 = try b0.finish() } catch { throw .stream(error) }
       streams = [s0]
     } else {
+      stamp(&b0, .tilingStream)
       prologue(&b0, resources: resourcesTiling)
+      stamp(&b0, .tilingStart)
       tiling(&b0)
+      stamp(&b0, .tiled, after: tilingMask | b0.scoreboards.slotMask(CSScoreboards.deferredSyncSlot))
       b0.move64(syncAddressRegister, syncVA)
       b0.move64(syncValueRegister, 1)
       b0.emit(CSInstruction.syncAdd64(address: syncAddressRegister, value: syncValueRegister, waitMask: tilingMask,
@@ -836,13 +934,17 @@ extension RenderPass {
       let stream1At = alignUp(stream0At + s0.size, 64)
       var b1 = CSBuilder(address: va(stream1At), capacityBytes: max(capacity - stream1At, 0), registers: registers,
                          scoreboards: scoreboards)
+      stamp(&b1, .fragmentStream)
       prologue(&b1, resources: .fragment, fragment: true)
       b1.move64(syncAddressRegister, syncVA)
       b1.move64(syncValueRegister, 1)
       zeroReports(&b1)
       b1.emit(CSInstruction.syncWait64(address: syncAddressRegister, reference: syncValueRegister, condition: .greater))
+      stamp(&b1, .fragmentStart)
       fragment(&b1)
+      stamp(&b1, .finished, after: b1.scoreboards.slotMask(finishSlot))
       tail(&b1)
+      stamp(&b1, .cleaned)
       readbackReport(&b1)
       b1.endStep(r.chain)
       let s1: CSStream
@@ -1011,4 +1113,11 @@ extension RenderPass {
       fragmentPointer: fbdPointer)
     return (image, records, resourcePointer)
   }
+}
+
+/// The probe's timestamps of a pass (`DrawPassRequest.stamps`), by index: when each stream began, when its chain wait (and
+/// the tiling stream's resources) let it start, the tiling's end, the fragment stream's start after its wait for the tiling,
+/// the fragment work's end with its chunks handed back, and the tail's clean.
+public enum PassStamp: Int, CaseIterable, Sendable {
+  case tilingStream, tilingStart, tiled, fragmentStream, fragmentStart, finished, cleaned
 }

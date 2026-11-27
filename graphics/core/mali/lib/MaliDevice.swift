@@ -171,6 +171,11 @@ struct DrawCache {
   var blend: BlendDescriptor
   var extra: [BlendDescriptor]
   var shaders: [Int: [UInt64]]
+  /// A draw of this pipeline and state (its shared part is the next draw's, `PassDraw(sharingState:)`), the pass of the plan it
+  /// was checked against (`planPass`), and whether it samples the heap.
+  var template: PassDraw? = nil
+  var pass = -1
+  var heapDraw = false
 }
 
 enum PipelineRecord {
@@ -256,6 +261,8 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   /// values (each `set` command, each pass) that says whether it still holds.
   var drawCache: [DrawCache] = []
   var dynVersion = 0
+  /// Counts the passes planned, so a draw's template is used only in the pass whose targets it was checked against.
+  var planPass = 0
   /// The heap's handles a draw's FAU block names: with the textures and samplers, and without.
   let bindingHandles: (heap: [BindingHandle], none: [BindingHandle]) = {
     var storage: [BindingHandle] = []
@@ -329,6 +336,26 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   public var probeSkipQueryZero = false
   /// A probe of the hardware: passes hand back only their last tiler context's chunks (07 section 7.10's leak).
   public var probeFinishLastContextOnly = false
+  /// A probe of a pass's own time: each pass stores the timestamps of `PassStamp` as its streams run, in the chain's buffer; the
+  /// last pass's are `passStamps` once it is done.
+  public var probePassStamps = false
+  /// A probe of the kernel's flush before each job: this token (nonzero: one that has long passed, so the flush is skipped) on every
+  /// job of a submission after the first, or on the first too.
+  public var probeFlushToken: UInt32 = 0
+  public var probeFlushTokenFirstJob = false
+  /// The last probed pass's timestamps, by `PassStamp` (the GPU's counter), or empty.
+  public var passStamps: [UInt64] {
+    guard probePassStamps, let c = chainRegion else { return [] }
+    var out: [UInt64] = []
+    for k in 0..<PassStamp.allCases.count { out.append(unsafe c.buffer.pointer.load(fromByteOffset: Self.stampsOffset + 8 * k, as: UInt64.self)) }
+    return out
+  }
+  static let stampsOffset = 64
+  /// Zero stamp `k` of the probe (a single-queue pass leaves its fragment stream's at zero).
+  public func clearPassStamp(_ k: Int) {
+    guard let c = chainRegion else { return }
+    unsafe c.buffer.pointer.storeBytes(of: UInt64(0), toByteOffset: Self.stampsOffset + 8 * k, as: UInt64.self)
+  }
   /// The tiler heap's memory as the GPU left it, for a check that a pass hands back what it used: the heap context's eight words
   /// and the first chunk's 64-byte header (nil before the first pass).
   public var probeHeapWords: [UInt32]? {
