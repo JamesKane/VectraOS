@@ -95,6 +95,7 @@ func chainUse(_ words: [UInt64], address: UInt64) -> (waits: [UInt64], adds: Int
 
   @Test func aPassTakesAHundredDrawsAndMore() throws {
     let (gpu, t) = try device()
+    gpu.singleQueuePasses = true  // the default: one stream a pass
     let pipeline = try trianglePipeline(gpu)
     let target = try gpu.makeImage(ImageDescriptor(format: .rgba8, width: 64, height: 64, usage: .renderTarget))
     var list = GPUCommandList()
