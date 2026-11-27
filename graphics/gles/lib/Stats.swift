@@ -62,13 +62,13 @@ extension Frame {
     let n = Double(stats.frames)
     func m(_ v: Int) -> String { String(Double(Int((Double(v) / n) * 10)) / 10) }
     func us(_ v: UInt64) -> String { String(Int(Double(v) / n / 1000)) }
-    var line = "stats: per frame \(m(stats.submits)) submits, \(m(stats.passes)) passes, \(m(stats.draws)) draws, "
-    line += "\(m(stats.commands)) commands, \(m(stats.copies)) copies, \(m(stats.barriers)) barriers, "
-    line += "\(m(stats.samplerWrites)) sampler and \(m(stats.textureWrites)) texture slots written, \(m(stats.images)) images and "
-    line += "\(m(stats.pipelines)) pipelines made; recording \(us(stats.recordNs)) us, submitting \(us(stats.submitNs)) us, "
-    line += "waiting \(us(stats.waitNs)) us"
-    if let p = unsafe glesDeviceProfile, let s = p(device) { line += "; the last submission: " + s }
-    say(line)
+    // Short lines: the board's console drops what is past about 200 characters.
+    say("stats: per frame \(m(stats.submits)) submits, \(m(stats.passes)) passes, \(m(stats.draws)) draws, \(m(stats.commands)) "
+      + "commands, \(m(stats.copies)) copies, \(m(stats.barriers)) barriers")
+    say("stats: per frame \(m(stats.samplerWrites)) sampler, \(m(stats.textureWrites)) texture slots written, \(m(stats.images)) "
+      + "images, \(m(stats.pipelines)) pipelines made")
+    say("stats: per frame recording \(us(stats.recordNs)) us, submitting \(us(stats.submitNs)) us, waiting \(us(stats.waitNs)) us")
+    if let p = unsafe glesDeviceProfile, let s = p(device) { say("stats: the last submission: " + s) }
     let start = stats.frameStart
     stats = FrameStats()
     stats.samplerBase = heap.writes

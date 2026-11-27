@@ -146,6 +146,9 @@ extension GLContext {
     case .color:
       mips = fullMipCount(width, height)
       usage = .sampled | .renderTarget | .copySource | .copyDestination
+      // Storage too where the format has it: the Mali backend maps a storage image's memory cacheable for the GPU, and only
+      // a storage image's, so a texture is read through the GPU's caches.
+      if frame.limits.formats(format).storage { usage = usage | .storage }
     default:
       mips = 1
       usage = .sampled | .depthStencilTarget | .copyDestination
