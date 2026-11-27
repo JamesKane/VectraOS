@@ -331,12 +331,15 @@ public enum IRBuiltin {
   /// ViewportIndex transforms its position by (valhall 14 section 14.3.7): 32 bytes each, the scale's x, y, z, a word, the offset's x,
   /// y, z and a word.
   public static let viewportTable = 27
+  /// Vertex stage: the output groups the running IDVS pass writes (valhall 14 section 14.3.5: bit 0 the position, bit 1 the
+  /// attributes, bit 2 the generic varyings), a backend's own (Prep.divideVertexPasses).
+  public static let shaderOutput = 28
   public static let names = [
     "num_workgroups", "workgroup_id", "local_invocation_id", "global_invocation_id", "local_invocation_index",
     "subgroup_size", "num_subgroups", "subgroup_id", "subgroup_local_id", "vertex_index", "instance_index",
     "frag_coord", "front_facing", "viewport_scale", "viewport_offset", "non_perspective_mask",
     "sample_id", "sample_position", "sample_mask_in", "helper_invocation", "point_coord", "primitive_id", "layer",
-    "draw_index", "base_vertex", "base_instance", "view_index", "viewport_table",
+    "draw_index", "base_vertex", "base_instance", "view_index", "viewport_table", "shader_output",
   ]
   /// The number of components of the builtin (1: a scalar).
   public static func lanes(_ b: Int) -> Int {

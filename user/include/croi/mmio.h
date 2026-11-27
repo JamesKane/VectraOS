@@ -31,6 +31,18 @@ static inline uint64_t croi_counter_frequency(void) {
 #endif
 }
 
+// The CPU's architected counter, CNTVCT_EL0, which the kernel lets user code read: what a GPU's timestamps count in, so
+// a benchmark can place them on the CPU's clock. Inline assembly, which Swift can't express; zero where there is none.
+static inline uint64_t croi_counter_value(void) {
+#if defined(__aarch64__)
+  uint64_t value;
+  __asm__ volatile("isb; mrs %0, cntvct_el0" : "=r"(value));
+  return value;
+#else
+  return 0;
+#endif
+}
+
 // A barrier between memory a device reads or writes by DMA and the
 // accesses around it: every load and store before it, to memory or to
 // registers, is seen by the device before any after it (Linux's mb() for

@@ -1,0 +1,148 @@
+page glsl 2
+summary the GLSL ES 1.00 front end: a GL ES 2.0 shader compiled and checked, a vertex and a fragment shader linked into the Vulkan-style SPIR-V the layer's lowering takes
+names glsl GLSL GLSL.compile GLSL.link GLSLStage GLSLError GLSLShader GLSLProgram GLSLLimits GLSLLinkOptions GLSLClipControl
+names ActiveAttribute ActiveUniform LinkedVarying
+src graphics/glsl/GLSL.swift graphics/glsl/Lexer.swift graphics/glsl/Preprocessor.swift graphics/glsl/AST.swift
+src graphics/glsl/Parser.swift graphics/glsl/Check.swift graphics/glsl/Builtins.swift graphics/glsl/Fold.swift
+src graphics/glsl/Link.swift graphics/glsl/Layout.swift graphics/glsl/Builder.swift graphics/glsl/CodeGen.swift
+src graphics/glsl/CodeGenExpr.swift graphics/glsl/CodeGenStmt.swift graphics/glsl/Entry.swift
+keys glsl gles opengl shader compiler preprocessor link uniform varying attribute spir-v gpu
+lang swift
+
+# SYNOPSIS
+
+```swift
+public func compile(source: [UInt8], stage: GLSLStage,
+                    limits: GLSLLimits = GLSLLimits())
+  -> Result<GLSLShader, GLSLError>
+public func link(vertex: GLSLShader, fragment: GLSLShader,
+                 attributeBindings: [(name: String, location: UInt32)],
+                 options: GLSLLinkOptions = GLSLLinkOptions())
+  throws(GLSLError) -> GLSLProgram
+
+public enum GLSLStage { case vertex, fragment }
+public struct GLSLError: Error { public var log: String }
+public struct GLSLShader { public var stage: GLSLStage; public var log: String }
+public struct GLSLProgram {
+  public var vertexSPIRV: [UInt32], fragmentSPIRV: [UInt32]
+  public var attributes: [ActiveAttribute]  // name, type, arraySize, location
+  public var uniforms: [ActiveUniform]      // name, type, arraySize, binding,
+                                            // offset, arrayStride, matrixStride
+  public var varyings: [LinkedVarying]      // name, type, arraySize, location
+  public var uniformBlockBytes: Int
+  public var driverBlockOffset: Int         // 0
+  public var samplerBindings: Int           // the last binding plus one
+  public var log: String
+}
+public struct GLSLLinkOptions {
+  public var clipControl: GLSLClipControl   // .gl (the default) or .vulkan
+  public var limits: GLSLLimits
+  public var entryPoint: String             // "main"
+}
+public struct GLSLLimits { /* gl_MaxVertexAttribs ... gl_MaxDrawBuffers */ }
+```
+
+# DESCRIPTION
+
+`compile` takes one shader's source in the OpenGL ES Shading Language 1.00 (the Khronos specification, revision 17) and gives a result whatever happens, as glCompileShader always has an info log: a `GLSLShader` holding the checked program and the log's warnings, or a `GLSLError` whose log says what is wrong.
+`link` takes a compiled vertex shader and fragment shader, as glLinkProgram does, and gives each stage's SPIR-V and the program's interfaces, or throws GL's link log.
+Each is pure: the same input always gives the same output.
+
+The log is GL's, one message a line: `ERROR: 0:12:5: 'x': undeclared identifier` or `WARNING: ...`, the source string number (0, or what `#line` set), the line and the column; a link's messages have no place.
+A syntax error ends the compile; every other error is reported and the compile goes on, an expression that failed counting as right so it gives no second message.
+
+The preprocessor is section 3.4's: `#define` (object-like and function-like, whose arguments may span lines), `#undef`, `#if`, `#ifdef`, `#ifndef`, `#elif`, `#else` and `#endif` with C's integer expressions and `defined`, `#error`, `#pragma` (`STDGL invariant(all)` makes every varying invariant; the rest are ignored), `#extension`, `#version` and `#line`.
+It defines `__LINE__`, `__FILE__`, `__VERSION__` (100), `GL_ES` (1), `GL_FRAGMENT_PRECISION_HIGH` (1) and `GL_OES_standard_derivatives` (1), in both stages.
+An undefined name in an `#if` is an error, as GLSL ES says (C would take 0); a macro whose name begins with `GL_` is an error, one with `__` a warning.
+`#version 100` or no `#version` at all is accepted; any other version is an error.
+`#extension GL_OES_standard_derivatives : enable` (or `warn`, or `require`) declares `dFdx`, `dFdy` and `fwidth` in a fragment shader; an unknown extension is an error to require and a warning to enable.
+A backslash before a newline continues the line, as most compilers allow.
+
+The language is chapters 4 to 8: the types (`float`, `int`, `bool`, the vectors, `mat2` to `mat4`, `sampler2D`, `samplerCube`, structures and arrays of one dimension), the qualifiers (`const`, `attribute`, `uniform`, `varying`, `in`, `out`, `inout`, the precisions and `invariant`, and the default precision statements), functions with prototypes and overloading, every statement (`if`, `for`, `while`, `do`, `break`, `continue`, `return`, `discard`), every operator of section 5 with its shapes (a scalar spread over a vector or a matrix, a matrix product the linear algebra one), the swizzles (in any one of the sets `xyzw`, `rgba` and `stpq`) and those that are l-values, the constructors of section 5.4 (a scalar spread or on a matrix's diagonal, a vector or a matrix from any mixture of scalars, vectors and matrices, a matrix from a matrix, a structure from its members), every built-in function of chapter 8 with the texture lookups and their `Bias`, `Proj` and `Lod` forms, the built-in variables and constants of chapter 7, and `gl_DepthRange`.
+There are no implicit conversions: `float x = 1;` is an error.
+A fragment shader has no default float precision, so a float declared in one without `precision mediump float;` (or a qualifier of its own) is an error.
+Recursion is an error; a function declared and not defined is a link error only if main reaches it.
+Constant expressions are folded in binary32: the initializers of const variables, array sizes and every constant the program computes; the trigonometric, exponential and logarithmic built-ins are constant expressions but are computed by the program, not folded.
+
+`GLSLLimits` gives the built-in constants and what the link enforces: `maxVertexAttribs` 8, `maxVertexUniformVectors` and `maxFragmentUniformVectors` 256, `maxVaryingVectors` 15, `maxVertexTextureImageUnits` and `maxTextureImageUnits` 16, `maxCombinedTextureImageUnits` 32, `maxDrawBuffers` 1.
+
+The link.
+Each stage needs main, and every function main reaches must be defined.
+Each varying the fragment shader reads must be declared by the vertex shader, of the same type and the same invariance; a varying the fragment shader does not read is the vertex shader's own variable.
+The varyings read take locations in the order the fragment shader declares them, one a vector (a matrix one a column, an array one an element), and must fit `maxVaryingVectors` rows by appendix A.7's packing (gl_FragCoord, gl_FrontFacing and gl_PointCoord one each when read).
+A uniform both stages declare must have the same type there (structures by name and members) and, where both use it, the same precision qualifier written; one that takes its stage's default precision has none (a highp default and a mediump default link, as in Mesa's link), and a mismatch neither stage reads is a warning.
+An attribute keeps the location `attributeBindings` gives it (the last binding of a name wins); the others take the lowest free locations from 0, in the order the vertex shader declares them; a matrix takes a location a column.
+Only what main reaches is active: an attribute, a uniform or a varying used by no reachable function has no location, no binding and no place in the block.
+
+What the SPIR-V is.
+Each stage is a Vulkan SPIR-V 1.0 module (capability Shader, the Logical addressing and GLSL450 memory models, GLSL.std.450 for the extended instructions) with one entry point, `main` (`GLSLLinkOptions.entryPoint`); a fragment shader's is `OriginUpperLeft`.
+Every user function is inlined into it: GLSL ES has no recursion, so each variable of the program is a Function variable the compiler's mem2reg promotes, a sampler argument names its binding, and the outputs are written in the entry, where the compiler takes them.
+A function that returns before its end is wrapped in a loop that runs once, each return a break of it (and of the loops between, through a flag).
+A `for` loop of appendix A's form with a constant count (an index declared and initialized by a constant, compared with a constant, stepped by a constant, written nowhere else, the body leaving by no `break`, `continue` or `return`) of at most 32 iterations of a small body is unrolled, the index a constant in each copy, so an array it indexes is promoted to registers.
+A matrix is an array of its columns (the compiler has no matrix types), a matrix times a vector a multiply and fused multiply-adds, a vector times a matrix a dot product a column.
+A pure `&&`, `||` or `?:` of cheap operands is a logical operation or a select, not a branch; one with effects branches, as the language says.
+A division by a constant (and `mod` by one) is a multiply by its reciprocal, as GLSL ES's precision allows: the device has no divide instruction.
+mediump and lowp values (and the variables and varyings so declared) are decorated `RelaxedPrecision`, for a later 16-bit path; they are computed in binary32.
+
+The interfaces the GLES library binds:
+
+```
+set 0, binding 0       the uniform block: std140, read by both stages
+set 0, binding 1 ...   one combined image sampler a sampler element
+vertex input L         an attribute (a matrix column L + c), float vectors
+output/input L         a varying's vector (a matrix column, an array element)
+fragment output 0      gl_FragColor or gl_FragData[0]
+```
+
+The uniform block holds every active uniform that is not a sampler, both stages' (the vertex shader's first, then the fragment shader's), from offset 32, laid out by std140: a float or an int 4 bytes, a bool a 32-bit word of 0 or 1, a vec2 8 bytes aligned 8, a vec3 12 aligned 16, a vec4 16; a matrix its columns 16 bytes apart (`matrixStride` 16); an array's elements 16-byte aligned at least (`arrayStride`); a structure 16-byte aligned, its size a multiple of 16; a structure's samplers take no room.
+`uniforms` lists the active ones as glGetActiveUniform does, one a leaf: `s.m` for a structure's member, `a[0]` (with `arraySize`) for an array, `s[1].m` for an array of structures; GL's type enum; and where it lives: `offset`, `arrayStride` and `matrixStride` in the block, or, for a sampler, `binding` (element i of an array at `binding + i`), `offset` -1.
+Samplers take bindings from 1 in the order they are listed; `samplerBindings` is the last plus one; a sampler array indexed by a value that is not a constant (a loop's index, which appendix A allows) samples each element and keeps the one the index names.
+
+The driver's words, at `driverBlockOffset` (0), 32 bytes the GLES library writes for every draw:
+
+```
++0   float positionYScale    1: GL's y kept; -1: flipped
++4   float fragCoordYScale   gl_FragCoord.y = scale * y + offset
++8   float fragCoordYOffset  (y the core's, from the framebuffer's top)
++12  float pointCoordYScale  gl_PointCoord.y = 0.5 + scale * (y - 0.5)
++16  float depthRangeNear    gl_DepthRange.near
++20  float depthRangeFar     gl_DepthRange.far
++24  float depthRangeDiff    gl_DepthRange.diff
+```
+
+Clip control.
+With `.gl` (the default) the vertex stage's epilogue maps GL's clip space onto Vulkan's: z' = (z + w) / 2, and y' = positionYScale * y.
+GL's window origin is the bottom left and the core's framebuffer's the top left, so with positionYScale 1 an image's first row in memory is GL's bottom one, as glReadPixels and a texture sampled later want (an FBO, a pbuffer): write (1, 1, 0, -1); for an image presented top row first (a window), flip it: (-1, -1, the framebuffer's height, 1).
+gl_FragCoord.y and gl_PointCoord.y follow the words, so they are GL's either way.
+gl_FrontFacing is the core's, which follows the pipeline's front face: GL's counter-clockwise front is the core's clockwise when positionYScale is 1 and its counter-clockwise when it is -1, so the GLES library sets the front face (and the cull face) by the word it writes.
+With `.vulkan` the program's gl_Position, gl_FragCoord and gl_PointCoord are the core's, unchanged, and the words are read only for gl_DepthRange.
+
+# EXAMPLES
+
+```swift
+guard case .success(let vs) = compile(source: vsText, stage: .vertex),
+      case .success(let fs) = compile(source: fsText, stage: .fragment)
+else { return }
+let p = try link(vertex: vs, fragment: fs,
+                 attributeBindings: [(name: "position", location: 0)])
+let words = try lower(spirv: p.vertexSPIRV, stage: .vertex,
+                      entryPoint: "main", layout: layout)
+```
+
+# SEE ALSO
+
+vulkanlowering(2), shadercompiler(2), valhallbackend(2), gpucore(2)
+
+# DIAGNOSTICS
+
+Every message is in the log; `compile` fails when the log has an error, `link` throws when its has one.
+
+# BUGS
+
+A cube sampler's SPIR-V is made, but the layer's lowering refuses a cube image, so a program that samples one (`textureCube`) does not reach the device.
+The core and the Valhall backend have no texture access in a vertex stage, so a vertex shader that samples (glmark2's terrain) is linked and lowered and then refused.
+The Valhall backend accepts gl_PointSize and does not store it.
+Appendix A's restrictions on loops and indices are not enforced: more programs compile than GL ES 2.0 promises.
+`invariant` decorates the outputs, which the compiler keeps as written; nothing more is done for it.
+The varyings' packing is estimated (a vec3's spare column taking a float, two vec2s sharing a row), not packed as appendix A.7's algorithm does, and each vector takes a location of its own.
+A sampler array indexed by a value is sampled one element at a time, so it costs as many lookups as the array is long.

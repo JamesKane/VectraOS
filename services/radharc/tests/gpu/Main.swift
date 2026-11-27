@@ -211,6 +211,13 @@ func compose1080(_ ns: Namespace) {
       check(lines(ns, "/svc/launcher/status").contains { $0.starts(with: Array("vulkan-present exited 0 ".utf8)) },
             "vulkan-present presented 120 frames of a swapchain to a window of Radharc's and read what it composed")
     }
+    // And gl-test (OpenGL ES and EGL, D183, where tier 1 is built): a pbuffer's checks and a window of Radharc's; it must
+    // have exited 0, having printed `gl-test: all checks passed`.
+    if has(ns, "/svc/launcher/status", prefix: "gl-test ") && !has(ns, "/svc/launcher/status", prefix: "gl-test not started") {
+      _ = within(240) { has(ns, "/svc/launcher/status", prefix: "gl-test exited") }
+      check(lines(ns, "/svc/launcher/status").contains { $0.starts(with: Array("gl-test exited 0 ".utf8)) },
+            "gl-test drew through OpenGL ES into a pbuffer and a window and read back what it drew")
+    }
     // Radharc runs beside this test in boot-venus, and not in the board's test image.
     let radharcUp = (try? ns.open("/svc/windows/status")) != nil
     // `renderer gpu frames N last T us`: frames the GPU drew, not the CPU.

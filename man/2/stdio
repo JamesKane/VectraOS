@@ -1,8 +1,8 @@
 page stdio 2
-summary standard streams, formatted output and character input and output
-names stdio printf fprintf snprintf sprintf vprintf vfprintf vsnprintf vsprintf fputc putc putchar fputs puts fwrite fflush fgetc getc getchar fgets fread feof ferror clearerr fopen fileno remove rename fclose flockfile funlockfile ftrylockfile
-src system/libc/include/stdio.h system/libc/native/stdio.c system/libc/stdio/Format.swift system/libc/stdio/Decimal.swift system/libc/native/Exports.swift system/fdio/native/Exports.swift
-keys printf format stream stdout stderr stdin file character line
+summary standard streams, file streams, formatted output and input from strings
+names stdio printf fprintf snprintf sprintf vprintf vfprintf vsnprintf vsprintf asprintf vasprintf sscanf vsscanf fputc putc putchar fputs puts fwrite fflush fgetc getc getchar ungetc fgets fread feof ferror clearerr fopen fdopen fclose fileno setvbuf setbuf fseek fseeko ftell ftello rewind fgetpos fsetpos remove rename flockfile funlockfile ftrylockfile
+src system/libc/include/stdio.h system/libc/native/stdio.c system/libc/native/Streams.swift system/libc/stdio/Format.swift system/libc/stdio/Decimal.swift system/libc/stdio/Scan.swift system/libc/native/Exports.swift system/fdio/native/Exports.swift
+keys printf scanf format stream stdout stderr stdin file fopen buffer seek character line
 lang c
 
 # SYNOPSIS
@@ -11,6 +11,7 @@ lang c
 #include <stdio.h>
 
 typedef struct td_file FILE;
+typedef struct { off_t __offset; } fpos_t;
 extern FILE *stdin;
 extern FILE *stdout;
 extern FILE *stderr;
@@ -25,6 +26,11 @@ int vfprintf(FILE *__restrict f, const char *__restrict format, va_list ap);
 int vsnprintf(char *__restrict s, size_t n, const char *__restrict format,
               va_list ap);
 int vsprintf(char *__restrict s, const char *__restrict format, va_list ap);
+int asprintf(char **__restrict s, const char *__restrict format, ...);
+int vasprintf(char **__restrict s, const char *__restrict format, va_list ap);
+int sscanf(const char *__restrict s, const char *__restrict format, ...);
+int vsscanf(const char *__restrict s, const char *__restrict format,
+            va_list ap);
 
 int fputc(int c, FILE *f);
 int putc(int c, FILE *f);
@@ -38,6 +44,7 @@ int fflush(FILE *f);
 int fgetc(FILE *f);
 int getc(FILE *f);
 int getchar(void);
+int ungetc(int c, FILE *f);
 char *fgets(char *__restrict s, int n, FILE *__restrict f);
 size_t fread(void *__restrict p, size_t size, size_t n, FILE *__restrict f);
 
@@ -45,34 +52,72 @@ int feof(FILE *f);
 int ferror(FILE *f);
 void clearerr(FILE *f);
 FILE *fopen(const char *__restrict path, const char *__restrict mode);
+FILE *fdopen(int fd, const char *mode);
+int fclose(FILE *f);
 int fileno(FILE *f);
+int setvbuf(FILE *__restrict f, char *__restrict buffer, int mode, size_t size);
+void setbuf(FILE *__restrict f, char *__restrict buffer);
+int fseek(FILE *f, long offset, int whence);
+int fseeko(FILE *f, off_t offset, int whence);
+long ftell(FILE *f);
+off_t ftello(FILE *f);
+void rewind(FILE *f);
+int fgetpos(FILE *__restrict f, fpos_t *__restrict position);
+int fsetpos(FILE *f, const fpos_t *position);
 int remove(const char *path);
 int rename(const char *from, const char *to);
-int fclose(FILE *f);
 void flockfile(FILE *f);
 void funlockfile(FILE *f);
 int ftrylockfile(FILE *f);
 ```
 
-The header also defines `EOF` (-1), `BUFSIZ` (1024) and `SEEK_SET`, `SEEK_CUR` and `SEEK_END`.
+The header also defines `EOF` (-1), `BUFSIZ` (1024), `FILENAME_MAX` (4096), `FOPEN_MAX` (16), `SEEK_SET`, `SEEK_CUR` and `SEEK_END`, and `_IOFBF`, `_IOLBF` and `_IONBF` (0, 1 and 2).
 
 # DESCRIPTION
 
-There are three streams, `stdin`, `stdout` and `stderr`, with file descriptors 0, 1 and 2, and no others: a `FILE` is one of these three.
-Nothing in the library makes a stream over a file.
+There are the three standard streams, `stdin`, `stdout` and `stderr`, with file descriptors 0, 1 and 2, and the file streams `fopen` and `fdopen` make over a descriptor.
 
-## Output
+## The standard streams
 
-The library keeps no buffer for output: writes to `stdout` and `stderr` go straight to the runtime, which gathers `stdout` by line.
+The library keeps no buffer for output to the standard streams: writes to `stdout` and `stderr` go straight to the runtime, which gathers `stdout` by line.
 A process started with standard output and error rings writes to them.
 Any other writes `stdout` as the process's debuglog, one record for each line; a line of more than 216 bytes is split into records of that size, and a partial line stays in the library until its newline or until `fflush`, a write to `stderr`, a read of `stdin`, or `exit`.
 `stderr` is its own ring when the process has one for descriptor 2, and `stdout`'s output flushed at once otherwise.
 Writing to `stdin` fails with `EBADF`.
 
+`stdin` is read through a buffer of 4096 bytes from the process's standard input ring, or is empty if the process has none; standard output is flushed before each read.
+`stdout` and `stderr` can't be read: reading them fails and sets the error indicator and `errno` to `EBADF`.
+The standard streams don't seek (`ESPIPE`), and `setvbuf` on one is accepted and changes nothing.
+
+## File streams
+
+`fopen` opens <path> with open(2) (fcntl(2)) and makes a stream over it.
+<mode> is C's: `r` reads, `w` writes a file it creates or truncates, `a` writes at the end of a file it creates if needed; `+` after it both reads and writes; `b` changes nothing, `x` adds `O_EXCL` and `e` `O_CLOEXEC`.
+Another mode fails with `EINVAL`; otherwise `fopen` fails as `open` does, and a program built without the file library (fdio) finds it failing with `ENOENT`.
+`fdopen` makes a stream over the descriptor <fd>, which it doesn't check.
+`fclose` writes out what is pending, closes the descriptor and frees the stream.
+
+A file stream is fully buffered, through 16 KiB of its own, unless `setvbuf` gives it another <mode> or a <buffer> of <size> bytes of the caller's; `setbuf` is `setvbuf` with `_IOFBF` and `BUFSIZ`, or `_IONBF` for a null <buffer>.
+A line-buffered stream is written out after each write with a newline in it, an unbuffered one at each write.
+Reading reads ahead a buffer at a time, unbuffered or not, and reads of more than the buffer go straight to the caller's memory.
+A stream may switch between reading and writing without an `fflush` or `fseek` between, which C requires: the switch writes out what is pending, or gives back what was read ahead.
+`fflush` of a file stream writes out what is pending and, for one read ahead, moves the descriptor back to the stream's position; `fflush(NULL)` does that for every open file stream, as `exit` does.
+
+`fseek` and `fseeko` move the stream to <offset> from the start, the current position or the end (`SEEK_SET`, `SEEK_CUR`, `SEEK_END`), after writing out what is pending, and clear the end-of-file indicator; `ftell` and `ftello` return the position, counting what is buffered.
+`rewind` seeks to the start and clears the error indicator, and `fgetpos` and `fsetpos` keep a position in an `fpos_t`.
+`ungetc` pushes <c> back to be read next and clears the end-of-file indicator: a byte always, and more while the bytes before it are still in the buffer; on `stdin` likewise, into its buffer.
+
+## Output
+
 `printf`, `fprintf`, `vprintf` and `vfprintf` write the formatted text to a stream (`printf` to `stdout`) and return the number of bytes written.
 `snprintf` and `vsnprintf` write at most <n> bytes including the terminating NUL, and return the length the whole output has, as C99 does; with <n> of 0 they write nothing and <s> may be null.
 `sprintf` and `vsprintf` are `snprintf` and `vsnprintf` without a limit.
+`asprintf` and `vasprintf` put the text in a buffer of malloc's (stdlib(2)), which the caller frees, store it in <s> and return its length, or -1 if there is no memory.
 The `v` forms take a `va_list` that they copy, so the caller's is left as it was.
+
+`fputc`, `putc` and `putchar` write one byte and return it as an `unsigned char`, or `EOF` on error.
+`fputs` and `puts` write a string (`puts` adds a newline, and neither writes the terminating NUL) and return 0, or `EOF` on error.
+`fwrite` writes <size> times <n> bytes and returns the number of whole items written.
 
 ## Formats
 
@@ -101,39 +146,38 @@ The conversions are:
 An unknown conversion ends the formatting and the function returns -1; the text before it has been written.
 `%n`, `%b`, the wide-character conversions `%lc` and `%ls` (read as `%c` and `%s`), `%m` and positional arguments (`%1$d`) are not supported.
 
-## Input
+## Input from a string
 
-Only `stdin` can be read.
-Reading another stream fails and sets its error indicator and `errno` to `EBADF`.
-`stdin` is read through a buffer of 4096 bytes from the process's standard input ring, or is empty if the process has none; standard output is flushed before each read.
+`sscanf` and `vsscanf` read <s> as C23's `scanf` reads its input, and return the number of items assigned, or `EOF` if the input ended before the first conversion.
+White space in <format> skips any white space, another character must match itself, and `%%` matches `%`.
+A conversion is `%`, an optional `*` (read, but assign nothing), a width, a length (`hh`, `h`, `l`, `ll`, `j`, `z`, `t`, `L`), and one of `d i o u x X p` (an integer as stdlib(2)'s strtol family reads it, `i` by its prefix; `p` a pointer, in hexadecimal), `a e f g` and their capitals (a `float`, with `l` a `double`, with `L` a `long double`, as strtod reads it: decimal, hexadecimal, `inf`, `infinity`, `nan`), `s` (bytes up to white space, then a NUL), `c` (the width's bytes, 1 without one, no NUL), `[` (a scanset: bytes in it, or with `^` not in it; `]` first is in it, and `a-z` is a range) and `n` (the bytes read so far, not an item).
+All but `c`, `[` and `n` skip white space first.
+A number is the longest start of the input, within the width, that is or begins the conversion's form; one that isn't a whole number is a matching failure.
 
-`fgetc`, `getc` and `getchar` return the next byte as an `unsigned char`, or `EOF` at the end of input.
+## Reading
+
+`fgetc`, `getc` and `getchar` return the next byte as an `unsigned char`, or `EOF` at the end of input or on an error.
 `fgets` reads up to <n> - 1 bytes, stopping after a newline, terminates them with a NUL and returns <s>; it returns a null pointer if it read nothing.
 `fread` reads up to <n> items of <size> bytes and returns the number of whole items read.
 
 `feof` and `ferror` return the end-of-file and error indicators of a stream; `clearerr` clears both.
-The end-of-file indicator is not sticky: the next read asks the ring again.
+On `stdin` the end-of-file indicator is not sticky: the next read asks the ring again.
 
 ## Other calls
 
-`fputc`, `putc` and `putchar` write one byte and return it as an `unsigned char`, or `EOF` on error.
-`fputs` and `puts` write a string (`puts` adds a newline, and neither writes the terminating NUL) and return 0, or `EOF` on error.
-`fwrite` writes <size> times <n> bytes and returns <n>.
-`fflush` flushes `stdout`'s partial line whatever its argument, which may be null, and returns 0.
-`fileno` returns the descriptor, 0, 1 or 2.
-`flockfile` and `funlockfile` do nothing, and `ftrylockfile` returns 0 (the lock is taken): the streams are written whole.
-
+`fileno` returns the stream's descriptor.
+`flockfile` and `funlockfile` do nothing, and `ftrylockfile` returns 0 (the lock is taken).
 `remove` removes a file or an empty directory, and `rename` renames a file; they are the calls of unistd(2) and stat(2) under C's names, and fail the same way.
 A program built without the file library finds both failing with `ENOENT`.
 
 # SEE ALSO
 
-unistd(2), stdlib(2), string(2), fcntl(2), stat(2)
+unistd(2), stdlib(2), string(2), fcntl(2), stat(2), locale(2)
 
 # DIAGNOSTICS
 
-`fopen` always returns a null pointer with `errno` set to `ENOENT`, whatever the file and mode.
-`fclose` closes nothing and returns 0.
+`fclose` of a standard stream flushes it and returns 0; the stream stays open.
+`fclose`, `fflush` and the writes return `EOF` (or a short count) and set the error indicator when the descriptor's write fails.
 
 # BUGS
 
@@ -141,6 +185,8 @@ unistd(2), stdlib(2), string(2), fcntl(2), stat(2)
 `fputs`, `fwrite` and `fputc` on `stderr` do go to it.
 A program that needs its diagnostics on standard error uses `fwrite` or `write` of unistd(2).
 
-There are no file streams, so no `setvbuf`, `fseek`, `ftell`, `ungetc`, `scanf`, `tmpfile`, `perror` or `getline`.
+A file stream has no lock: two threads may not use one at once.
+There is no `scanf` or `fscanf` from a stream, no `freopen`, `tmpfile`, `popen`, `perror` or `getline`, and no wide-character streams.
 Mixing `getchar` with `read(0, ...)` loses data: the stream keeps what it read ahead.
-`fread` and `fgets` cannot tell an error from the end of input.
+`fread` and `fgets` on `stdin` cannot tell an error from the end of input.
+Switching a stream over a pipe from reading to writing loses what it had read ahead.

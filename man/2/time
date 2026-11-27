@@ -1,7 +1,7 @@
 page time 2
 summary read the clocks and sleep
-names time clock_gettime clock_getres nanosleep clock_nanosleep
-src system/libc/include/time.h system/sys/floor/Posix.swift
+names time clock_gettime clock_getres nanosleep clock_nanosleep strftime strftime_l gettimeofday utimes
+src system/libc/include/time.h system/sys/floor/Posix.swift system/libc/include/sys/time.h system/libc/time/Strftime.swift system/libc/native/stdlib.c system/libc/native/files.c
 keys clock timespec realtime monotonic sleep
 lang c
 
@@ -26,6 +26,30 @@ int nanosleep(const struct timespec *duration, struct timespec *remaining);
 #define TIMER_ABSTIME 1
 int clock_nanosleep(clockid_t clock, int flags, const struct timespec *request,
                     struct timespec *remaining);
+```
+
+```c
+struct tm {
+  int tm_sec, tm_min, tm_hour, tm_mday, tm_mon, tm_year;
+  int tm_wday, tm_yday, tm_isdst;
+  long tm_gmtoff;
+  const char *tm_zone;
+};
+
+size_t strftime(char *__restrict s, size_t max, const char *__restrict format,
+                const struct tm *__restrict tm);
+size_t strftime_l(char *__restrict s, size_t max, const char *__restrict format,
+                  const struct tm *__restrict tm, locale_t locale);
+
+#include <sys/time.h>
+
+struct timeval {
+  time_t tv_sec;
+  suseconds_t tv_usec;
+};
+
+int gettimeofday(struct timeval *__restrict tv, void *__restrict zone);
+int utimes(const char *path, const struct timeval times[2]);
 ```
 
 # DESCRIPTION
@@ -60,11 +84,24 @@ As POSIX has it, it returns the error number rather than setting `errno`: `EINVA
 
 The others return 0 on success (`time` the time) and -1 with `errno` set on error.
 
+## Formatting a time
+
+`strftime` writes <format> with the fields of <tm> to <s>, at most <max> bytes with the terminating NUL, and returns the bytes written before the NUL, or 0 if they didn't fit (the contents of <s> are then undefined).
+Every conversion of C23 is there, in the C locale: names in English, `%c` as `%a %b %e %H:%M:%S %Y`, `%x` as `%m/%d/%y`, `%X` as `%H:%M:%S`, `%p` as `AM` or `PM`; `%g`, `%G` and `%V` are ISO 8601's week-based year and week; `%z` is `tm_gmtoff` as `+hhmm` and `%Z` is `tm_zone`, or `UTC` when it is null.
+The `E` and `O` modifiers are accepted and change nothing.
+A name whose field is out of range prints `?`; an unknown conversion is copied as written.
+`strftime_l` takes a locale object (locale(2)) and does the same.
+
+## sys/time.h
+
+`gettimeofday` stores the realtime clock, as `clock_gettime(CLOCK_REALTIME)` reads it, in <tv>; <zone> is ignored.
+`utimes` fails with `ENOSYS`: no file's times can be set.
+
 # SEE ALSO
 
 pthread(2), sched(2)
 
 # BUGS
 
-There are no calendar functions: no `localtime`, `gmtime`, `mktime`, `strftime`, `clock`, `difftime`, `sleep`, `usleep` or `timespec_get`.
+There are no other calendar functions: no `localtime`, `gmtime`, `mktime`, `clock`, `difftime`, `sleep`, `usleep` or `timespec_get`; nothing fills a `struct tm` but the program.
 The four monotonic clocks are not distinguished.

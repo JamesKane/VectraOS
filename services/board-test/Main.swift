@@ -382,6 +382,27 @@ func vulkanOnTheCore(_ ns: Namespace, _ hosts: [String]) {
         "vulkan-test ran a compute shader and a triangle through the Vulkan layer on the core")
 }
 
+/// gl-test (gl-test(8), D183) run once on a GPU that serves the `csf` capset, after vulkan-test, where tier 1 is built:
+/// OpenGL ES 2.0 and EGL in C on a pbuffer through the core's Mali backend, each check read back and compared, and its
+/// frame budgets printed. Its verdict is its exit code.
+func glOnTheCore(_ ns: Namespace, _ hosts: [String]) {
+  guard hosts.contains(where: { $0.utf8.starts(with: "mali-".utf8) }) else { return }
+  guard lines(ns.readText("/svc/launcher/status") ?? "").contains(where: { $0.utf8.starts(with: "gl-test ".utf8) }) else {
+    print("board-test: gl-test: skipped: this image has no tier 1")
+    return
+  }
+  guard ns.writeText("/svc/launcher/ctl", "start gl-test\n") else {
+    check(false, "the launcher starts gl-test")
+    return
+  }
+  sleep(until: Clock.monotonic() + 500_000_000)
+  let status = waitFor(ns, "/svc/launcher/status", until: Clock.monotonic() + 60_000_000_000) { t in
+    lines(t).contains { $0.utf8.starts(with: "gl-test ".utf8) && holds($0, " exited ") }
+  }
+  check(lines(status).contains { $0.utf8.starts(with: "gl-test ".utf8) && holds($0, " exited 0 ") },
+        "gl-test drew through OpenGL ES and EGL on the core")
+}
+
 /// compose-test (D174 section 6 step 4) run once on a GPU that serves the `csf` capset, after loinnir-test: Radharc's GPU
 /// renderer composes a 1080p scene in each theme through Loinnir on the Mali backend, compares it with the CPU
 /// renderer's frame, and times a 4K scene. Its verdict is its exit code. (Under 120 s: the frames wait for the GPU.)
@@ -420,6 +441,7 @@ func composeOnTheCore(_ ns: Namespace, _ hosts: [String]) {
     gpuStreams(ns, hosts)
     loinnirOnTheCore(ns, hosts)
     vulkanOnTheCore(ns, hosts)
+    glOnTheCore(ns, hosts)
     composeOnTheCore(ns, hosts)
     network(ns, until: start + 90_000_000_000)
     for h in hosts {

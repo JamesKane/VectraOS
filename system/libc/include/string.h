@@ -4,6 +4,7 @@
 // (system/libc/string), from C23 §7.26, and POSIX's strerror_r.
 
 #pragma once
+#include <bits/locale_t.h>
 #include <stddef.h>
 
 #ifdef __cplusplus
@@ -23,10 +24,23 @@ char *strchr(const char *s, int c);
 char *strrchr(const char *s, int c);
 char *strcat(char *__restrict d, const char *__restrict s);
 char *strncpy(char *__restrict d, const char *__restrict s, size_t n);
+char *strcpy(char *__restrict d, const char *__restrict s);
+char *strncat(char *__restrict d, const char *__restrict s, size_t n);
+size_t strspn(const char *s, const char *set);
+size_t strcspn(const char *s, const char *set);
+char *strpbrk(const char *s, const char *set);
+char *strstr(const char *haystack, const char *needle);
+char *strtok_r(char *__restrict s, const char *__restrict sep, char **__restrict state);
 char *strdup(const char *s);
 char *strndup(const char *s, size_t n);
 char *strerror(int errnum);
 int strerror_r(int errnum, char *buffer, size_t size);
+// Collation in the C locale is by byte value: strcoll is strcmp, and
+// strxfrm copies.
+int strcoll(const char *a, const char *b);
+size_t strxfrm(char *__restrict d, const char *__restrict s, size_t n);
+int strcoll_l(const char *a, const char *b, locale_t locale);
+size_t strxfrm_l(char *__restrict d, const char *__restrict s, size_t n, locale_t locale);
 
 #ifdef __cplusplus
 }

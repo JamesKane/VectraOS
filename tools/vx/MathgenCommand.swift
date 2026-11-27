@@ -167,6 +167,13 @@ private func remainder(_ v: Big, minus high: Double) -> Big {
   return v - h
 }
 
+/// value - d, signed (d may round up past it), for a constant's low part.
+private func low(_ v: Big, minus d: Double) -> Double {
+  let e = d.exponent, m = UInt64(d.significandBitPattern | 1 << 52)
+  let h = Big(m).shifted(fraction + Int(e) - 52)
+  return v.compare(h) >= 0 ? double(v - h) : -double(h - v)
+}
+
 private func hex(_ d: Double) -> String { "0x" + String(d.bitPattern, radix: 16, uppercase: true) }
 
 /// Writes the constants to args[0] (default Constants.swift).
@@ -205,6 +212,18 @@ func mathgenCommand(_ args: [String]) -> Bool {
   emit("halfPi2", p2, "the next 33")
   emit("halfPi3", double(remainder(r1, minus: p2)), "the rest, rounded")
   emit("twoOverPiDouble", double(twoOverPi), "2/π")
+  // Double-doubles (the nearest double and the signed rest) for atan's
+  // reduction: π/2, atan 1/2 (by the series, like π's) and atan 2 = π/2 - atan 1/2.
+  let halfPiD = double(halfPi)
+  emit("halfPiLo", low(halfPi, minus: halfPiD), "π/2 - halfPi")
+  let atanHalf = series(2, alternating: true)
+  let atanHalfD = double(atanHalf)
+  emit("atanHalf", atanHalfD, "atan 1/2")
+  emit("atanHalfLo", low(atanHalf, minus: atanHalfD), "atan 1/2 - atanHalf")
+  let atanTwo = halfPi - atanHalf
+  let atanTwoD = double(atanTwo)
+  emit("atanTwo", atanTwoD, "atan 2 = π/2 - atan 1/2")
+  emit("atanTwoLo", low(atanTwo, minus: atanTwoD), "atan 2 - atanTwo")
   // 2/π's fraction bits (it is below 1: all of them fraction), 1216 of them,
   // most significant first, as hex digits.
   var bits = ""

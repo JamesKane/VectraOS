@@ -76,10 +76,13 @@ final class Region {
   var touched = false
   /// A sparse resource's flags: the region is an address range whose pages `bindSparse` maps (its buffer a `SparseRange`).
   var sparse = SparseFlags()
-  init(buffer: any MaliBuffer, address: UInt64, size: Int) {
+  /// Part of a chunk of the arena (Arena.swift): nothing of its own to unbind or let go of.
+  let transient: Bool
+  init(buffer: any MaliBuffer, address: UInt64, size: Int, transient: Bool = false) {
     self.buffer = buffer
     self.address = address
     self.size = size
+    self.transient = transient
     cached = buffer.cpuCached
   }
 }
@@ -96,6 +99,11 @@ final class ImageRecord {
   var planes: [AspectPlane] = []
   /// Where `planeAt` is: the image's own region, or (a sparse image, whose region has no pages of its own) a region of its own.
   var planeRegion: Region?
+  /// A colour target's CRC table (valhall 08 section 8.6: transaction elimination), its row stride, and the counter that a write of
+  /// the image by anything but a pass that checks the table changes, so no checksum stored before matches.
+  var crc: (region: Region, rowStride: Int)?
+  var crcCounter: UInt16 = 1
+  func invalidateCRC() { if crc != nil { crcCounter &+= 1 } }
   init(region: Region, descriptor: ImageDescriptor, rowStride: Int, layout: ImageLayout, planeAt: Int?) {
     self.region = region
     self.descriptor = descriptor
@@ -151,9 +159,54 @@ final class QueryRecord {
   }
 }
 
+/// A draw's pipeline state and blends as a pipeline, the pass's dynamic values (their version), its size and the blend constants
+/// made them.
+struct DrawCache {
+  var pipeline: UInt64
+  var version: Int
+  var width: Int
+  var height: Int
+  var constants: BlendConstants
+  var state: DrawPipelineState
+  var blend: BlendDescriptor
+  var extra: [BlendDescriptor]
+  var shaders: [Int: [UInt64]]
+  /// A draw of this pipeline and state (its shared part is the next draw's, `PassDraw(sharingState:)`), the pass of the plan it
+  /// was checked against (`planPass`), and whether it samples the heap.
+  var template: PassDraw? = nil
+  var pass = -1
+  var heapDraw = false
+  /// The template's `state.minimumVertices` (read here, not through the draw's accessor, which allocates its frame outside MaliCore).
+  var minimumVertices = 0
+}
+
 enum PipelineRecord {
   case compute(ComputeShader, FauLayout)
   case graphics(vertex: VertexShader, fragment: FragmentShader, format: PixelFormat, blend: BlendDescriptor, state: GraphicsState)
+}
+
+/// Where a submission spent the CPU's time, in nanoseconds of the system's clock (`MaliDevice.lastProfile`).
+public struct SubmitProfile: Sendable, Equatable {
+  /// Turning the list into steps (validation included).
+  public var planNanoseconds: UInt64 = 0
+  /// The whole of `submit`, from its call to its return.
+  public var totalNanoseconds: UInt64 = 0
+  /// The transport's submits (the call to the driver).
+  public var submitNanoseconds: UInt64 = 0
+  /// The CPU's waits inside the submission, for a step before it submits the next.
+  public var waitNanoseconds: UInt64 = 0
+  /// Of the plan, the draws' (each draw's state); of the layout, the render pass recipe's (`RenderPass.build`) and the copy of
+  /// its bytes into the GPU's memory.
+  public var drawNanoseconds: UInt64 = 0
+  public var recipeNanoseconds: UInt64 = 0
+  public var copyNanoseconds: UInt64 = 0
+  /// The steps, the transport's submits, and the buffers made for the submission (each a call to the driver to make and one to bind).
+  public var steps = 0
+  public var submits = 0
+  public var buffers = 0
+  public init() {}
+  /// What is left of the total: laying out the steps' memory and streams.
+  public var buildNanoseconds: UInt64 { totalNanoseconds &- planNanoseconds &- submitNanoseconds &- waitNanoseconds }
 }
 
 public final class MaliDevice: GPUDevice, GPUQueue {
@@ -196,10 +249,49 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   var rule = TimelineRule()
   /// The heap's descriptors as the client has written them: the samplers' words, and the textures' up to the highest
   /// one written. A draw gets a copy.
-  var samplerWords = [UInt32](repeating: 0, count: Heap.samplerSlots * Heap.entryWords)
-  var textureWords: [UInt32] = []
+  var samplerWords = [UInt32](repeating: 0, count: Heap.samplerSlots * Heap.entryWords) { didSet { heapGeneration &+= 1 } }
+  var textureWords: [UInt32] = [] { didSet { heapGeneration &+= 1 } }
   /// The storage images' descriptors (table 2), up to the highest slot written.
-  var storageWords: [UInt32] = []
+  var storageWords: [UInt32] = [] { didSet { storageGeneration &+= 1 } }
+  /// Counts of the writes to the heap and to the storage table, and the copies the GPU last read of each: a pass or a
+  /// dispatch is given the copy that stands while nothing has been written since.
+  var heapGeneration = 0
+  var storageGeneration = 0
+  var heapCopy: (region: Region, generation: Int)?
+  var storageCopy: (region: Region, generation: Int)?
+  /// What the last draws of a few pipelines made (Execute.swift's appendDraw), and the count of changes to a pass's dynamic
+  /// values (each `set` command, each pass) that says whether it still holds.
+  var drawCache: [DrawCache] = []
+  var dynVersion = 0
+  /// Counts the passes planned, so a draw's template is used only in the pass whose targets it was checked against.
+  var planPass = 0
+  /// The heap's handles a draw's FAU block names: with the textures and samplers, and without.
+  let bindingHandles: (heap: [BindingHandle], none: [BindingHandle]) = {
+    var storage: [BindingHandle] = []
+    for (binding, base) in [(2, Heap.storageBase), (3, Heap.texelBufferBase), (4, Heap.storageTexelBufferBase)] {
+      storage.append(BindingHandle(set: 0, binding: binding, handle: ResourceTable.handle(table: DescriptorHeap.storageTableNumber, index: base)))
+    }
+    let heap = [
+      BindingHandle(set: 0, binding: 0, handle: DescriptorHeap.handle(index: Heap.textureBase)),
+      BindingHandle(set: 0, binding: 1, handle: DescriptorHeap.handle(index: Heap.samplerBase)),
+    ]
+    return (heap + storage, storage)
+  }()
+  /// The submissions' memory (Arena.swift), and the steps' thread storage and workgroup memory.
+  var arena = TransientArena()
+  var threadStorage: Region?
+  var workgroupStorage: Region?
+  /// The sample patterns' table every pass points at (Execute.swift's `sampleTable`).
+  var samplePatterns: Region?
+  /// The steps chained on the GPU (StepChain): a 64-bit sync object every step adds one to when it is done, and the count
+  /// the CPU has submitted, which it reaches once they all are.
+  var chainRegion: Region?
+  var chainValue: UInt64 = 0
+  /// The queue the last step submitted ended on (its signalling stream's): the next step's stream on that queue needs no wait.
+  var chainQueue: UInt32?
+  /// The timeline value of the submission before the last: a submission is laid out while the one before it runs, and
+  /// waits for the one before that.
+  var previousSignal: UInt64 = 0
   /// The plane arrays of the slots whose views are not the whole image of a colour format.
   var textureArrays: [Region?] = []
   var storageArrays: [Region?] = []
@@ -207,6 +299,8 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   let timeline: UInt32
   let stepSync: UInt32
   var stepValue: UInt64 = 0
+  /// The one group: queue 0 the vertex and tiler work, queue 1 the fragment work, queue 2 compute (dispatches, transfers and
+  /// timestamps); a list's steps are ordered on them through the chain, with no wait of the CPU's.
   var renderGroup: UInt32?
   /// The colour targets of the pass `plan` is on (the draws are checked against them).
   var planTargets: [ImageRecord] = []
@@ -216,7 +310,8 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   /// geometry buffer (the context and chunk are the firmware's to keep between passes).
   var tilerHeap: (context: Region, chunk: Region, geometry: Region)?
   static let tilerChunkBytes: UInt64 = 8 << 20
-  var computeGroup: UInt32?
+  /// The ring of each of the group's queues: a job is a 128-byte sequence of the kernel's (panthor 07 section 7.4.4).
+  static let ringBytes: UInt32 = 16384
   /// Whether a group's queues have had their slot state set (the first stream of each does).
   var renderStarted = false
   /// The compute queue's slot state is set (any first stream does it), and its compute resource requested (a dispatch's).
@@ -243,6 +338,27 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   public var probeSkipQueryZero = false
   /// A probe of the hardware: passes hand back only their last tiler context's chunks (07 section 7.10's leak).
   public var probeFinishLastContextOnly = false
+  /// A probe of a pass's own time: each pass stores the timestamps of `PassStamp` as its streams run, in the chain's buffer; the
+  /// last pass's are `passStamps` once it is done.
+  public var probePassStamps = false
+  var recipeCount = 0
+  /// A probe of the kernel's flush before each job: this token (nonzero: one that has long passed, so the flush is skipped) on every
+  /// job of a submission after the first, or on the first too.
+  public var probeFlushToken: UInt32 = 0
+  public var probeFlushTokenFirstJob = false
+  /// The last probed pass's timestamps, by `PassStamp` (the GPU's counter), or empty.
+  public var passStamps: [UInt64] {
+    guard probePassStamps, let c = chainRegion else { return [] }
+    var out: [UInt64] = []
+    for k in 0..<PassStamp.allCases.count { out.append(unsafe c.buffer.pointer.load(fromByteOffset: Self.stampsOffset + 8 * k, as: UInt64.self)) }
+    return out
+  }
+  static let stampsOffset = 64
+  /// Zero stamp `k` of the probe (a single-queue pass leaves its fragment stream's at zero).
+  public func clearPassStamp(_ k: Int) {
+    guard let c = chainRegion else { return }
+    unsafe c.buffer.pointer.storeBytes(of: UInt64(0), toByteOffset: Self.stampsOffset + 8 * k, as: UInt64.self)
+  }
   /// The tiler heap's memory as the GPU left it, for a check that a pass hands back what it used: the heap context's eight words
   /// and the first chunk's 64-byte header (nil before the first pass).
   public var probeHeapWords: [UInt32]? {
@@ -281,6 +397,31 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     let high = unsafe r.buffer.pointer.load(fromByteOffset: 4, as: UInt32.self)
     return UInt64(low) | UInt64(high) << 32
   }
+  /// Where the last submission spent the CPU's time (`submit`, to its return): what a benchmark reads to say where a frame goes.
+  public internal(set) var lastProfile = SubmitProfile()
+  /// Whether images that qualify are AFBC (`afbcEligible`): on by default; off, every image is linear (a probe, a fallback).
+  public var afbc = true
+  /// Whether sampled colour images made from now on are in 64 KiB tiles (`tiledEligible`): on.
+  public var tiledTextures = true
+  /// Whether a submission's streams of one queue are one job (Execute.swift's `oneJobAQueue`): on; off, a job a stream (the host
+  /// tests read each).
+  public var mergesQueueJobs = true
+  /// Whether a pass is one stream on one queue, the tiling and then the fragment work, waiting on the tiling's slot (MaliCore's
+  /// `.singleQueue` layout; on) rather than a stream on each of two queues and a sync object between them (off). On the board one
+  /// stream starts its work sooner, tiles sooner and hands to its fragment work with no wait between queues: glmark2's ideas
+  /// went from 870 to 984 frames a second and desktop's shadow from 2261 to 2725. Set before the first submission (the queues are
+  /// started for it).
+  public var singleQueuePasses = true
+  /// Whether `wait` for the last value submitted watches the chain's word in memory before it waits on the timeline (on), and for
+  /// how long.
+  public var spinsForCompletion = true
+  static let spinNanoseconds: UInt64 = 1_000_000
+  /// Whether colour targets made from now on have CRC tables (transaction elimination): on by default.
+  public var crcTables = true
+  /// Whether `lastProfile`'s times are taken (a benchmark's): off, the clock is not read and the times stay 0.
+  public var profiling = false
+  /// The clock for `lastProfile`, read only while `profiling`.
+  func clock() -> UInt64 { profiling ? transport.nanoseconds() : 0 }
   /// What a submission made and freed, released once the timeline reaches its value.
   var retired: [(value: UInt64, regions: [Region])] = []
   let computeLimits: ComputeLimits?
@@ -348,7 +489,7 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     l.features.depthClamp = true
     l.features.wideLines = true
     l.maxLineWidth = PipelineMapping.maxLineWidth
-    for f in [PixelFormat.depth16, .depth32f, .stencil8] {
+    for f in [PixelFormat.depth16, .depth32f, .stencil8, .depth24stencil8, .depth32fstencil8] {
       var c = FormatCapabilities()
       c.depthTarget = true
       l.setFormat(f, c)
@@ -383,7 +524,7 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   /// (the hardware's mapping) and alpha to one (a blend shader, 09 section 9.2.2).
   func enableMultisampling() {
     let all = SampleCounts(rawValue: 31)
-    for f in [PixelFormat.rgba8, .bgra8, .bgra8srgb, .depth16, .depth32f, .stencil8] {
+    for f in [PixelFormat.rgba8, .bgra8, .bgra8srgb, .depth16, .depth32f, .stencil8, .depth24stencil8, .depth32fstencil8] {
       var c = baseLimits.formats(f)
       if c.renderTarget { c.renderSamples = all }
       if c.depthTarget { c.depthSamples = all }
@@ -419,7 +560,11 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     try? wait(rule.lastSignalled)
     if let g = renderGroup { transport.destroyGroup(g) }
     if let t = tilerHeap { release([t.context, t.chunk, t.geometry]) }
-    if let g = computeGroup { transport.destroyGroup(g) }
+    release(arena.chunks.map { $0.region })
+    if let c = chainRegion { release([c]) }
+    if let h = heapCopy { release([h.region]) }
+    if let h = storageCopy { release([h.region]) }
+    for r in [threadStorage, workgroupStorage, samplePatterns] { if let r { release([r]) } }
     for r in retired { release(r.regions) }
     for r in memories.all { release([r]) }
     for i in images.all { release([i.region] + (i.planeRegion.map { [$0] } ?? [])) }
@@ -477,6 +622,7 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   func makeRegion(_ bytes: Int, window: Bool = false, cpuCached: Bool = false, gpuCacheable: Bool = false) throws(GPUError) -> Region {
     let size = max((bytes + 4095) & ~4095, 4096)
     let address = try takeAddress(size, window: window)
+    lastProfile.buffers += 1
     let buffer = try transport.createBuffer(size: size, cpuCached: cpuCached)
     do { try transport.bind(vm: vm, buffer: buffer, address: address, gpuCacheable: gpuCacheable) } catch {
       transport.destroyBuffer(buffer)
@@ -503,7 +649,7 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   }
 
   func release(_ regions: [Region]) {
-    for r in regions {
+    for r in regions where !r.transient {
       // Dirty lines the CPU holds must not be written back over what another buffer puts in these pages.
       if r.cached { r.buffer.cleanInvalidate() }
       transport.unbind(vm: vm, address: r.address, size: r.size)
@@ -584,7 +730,7 @@ public final class MaliDevice: GPUDevice, GPUQueue {
 
   public func destroy(_ image: GPUImage) {
     guard let record = images.remove(image.handle) else { return }
-    retire([record.region] + (record.planeRegion.map { [$0] } ?? []))
+    retire([record.region] + (record.planeRegion.map { [$0] } ?? []) + (record.crc.map { [$0.region] } ?? []))
   }
 
   // MARK: The heap (MaliCore's textures land here)
@@ -600,10 +746,13 @@ public final class MaliDevice: GPUDevice, GPUQueue {
 
   /// A copy of the heap as it stands, in memory of the VM: the samplers, then the textures up to the highest written.
   func snapshotHeap(held: inout [Region]) throws(GPUError) -> Region {
+    if let c = heapCopy, c.generation == heapGeneration { return c.region }
     let words = samplerWords + textureWords
     let region = try makeRegion(words.count * 4)
-    held.append(region)
     store(words, in: region, at: 0)
+    // The copy it replaces is read by work submitted before; it goes once that is done.
+    if let old = heapCopy { held.append(old.region) }
+    heapCopy = (region, heapGeneration)
     return region
   }
 
@@ -612,9 +761,11 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   /// A copy of the storage images' descriptors as they stand, up to the highest written (at least one entry).
   func snapshotStorage(held: inout [Region]) throws(GPUError) -> (region: Region, bytes: Int) {
     let words = storageWords.isEmpty ? [UInt32](repeating: 0, count: Heap.entryWords) : storageWords
+    if let c = storageCopy, c.generation == storageGeneration { return (c.region, words.count * 4) }
     let region = try makeRegion(words.count * 4)
-    held.append(region)
     store(words, in: region, at: 0)
+    if let old = storageCopy { held.append(old.region) }
+    storageCopy = (region, storageGeneration)
     return (region, words.count * 4)
   }
 
@@ -750,6 +901,8 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   /// agree.
   public func measuredTimestampPeriodPicoseconds() -> UInt64? { calibrateTimestamps() }
   public var counterFrequencyHertz: UInt64 { transport.counterFrequency() }
+  /// The CPU's counter now, which the GPU's timestamps count in (0 where it can't be read): to place them on the CPU's clock.
+  public var counterTicks: UInt64 { transport.counterTicks() }
 
   /// The period of the GPU's timestamp counter, in picoseconds, measured against the system clock: two timestamps 40 ms
   /// apart. The counter runs at the system timer's frequency (panthor 03 section 3.10), which the driver doesn't report
@@ -763,7 +916,7 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     func sample() -> (ns: UInt64, ticks: UInt64)? {
       scratch.buffer.store(UInt64(0), at: 0)
       let before = transport.nanoseconds()
-      do { try runTimestamps([scratch.address], signal: nil, held: &held) } catch { return nil }
+      do { try runTimestamps([scratch.address], held: &held) } catch { return nil }
       let after = transport.nanoseconds()
       return ((before + after) / 2, unsafe scratch.buffer.pointer.load(fromByteOffset: 0, as: UInt64.self))
     }
@@ -788,17 +941,35 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   public func wait(_ value: UInt64) throws(GPUError) {
     guard value > 0 else { return }
     defer { syncCached() }
+    // Everything submitted is done once every step has added its one to the chain, after its last tail's clean: the CPU sees it in
+    // memory before the driver's interrupt raises the timeline. A frame loop's wait (GL's glFinish) watches the word for a while
+    // first; the timeline's own wait is for a longer one, a fault, or another value.
+    if spinsForCompletion, value == rule.lastSignalled, let c = chainRegion, chainValue > 0 {
+      let start = transport.nanoseconds()
+      while chainWord(c) < chainValue {
+        if transport.nanoseconds() &- start > Self.spinNanoseconds { break }
+      }
+      if chainWord(c) >= chainValue { return }
+    }
     guard transport.wait(sync: timeline, value: value, timeoutNanoseconds: 60_000_000_000) else {
       if let g = renderGroup, transport.groupState(g) != 0 {
         dropGroup(g)
         throw .lost
       }
-      if let g = computeGroup, transport.groupState(g) != 0 {
-        dropGroup(g)
-        throw .lost
-      }
       throw .failed("a wait of the timeline for \(value)", code: 0)
+    }
+    // The driver raises the timeline when a submission's jobs are over, well or not: once everything submitted is, every
+    // step has added its one to the chain, unless a fault ended the group.
+    if value >= rule.lastSignalled, let c = chainRegion, chainWord(c) < chainValue, let g = renderGroup {
+      let state = transport.groupState(g)
+      if state != 0 {
+        dropGroup(g)
+        throw faulted(state)
+      }
     }
     reclaim()
   }
+
+  /// The chain's sync object as the GPU last left it in memory.
+  func chainWord(_ c: Region) -> UInt64 { unsafe c.buffer.pointer.load(as: UInt64.self) }
 }

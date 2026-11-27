@@ -306,9 +306,11 @@ final class CoreCases {
   /// one has a depth that crosses another's, so the test is per pixel.
   /// With `kept`, the first two rectangles are drawn in one pass that stores the depth, and the others in a second that keeps the
   /// colour and the depth (the depth loaded into the tile again), with the same reference.
-  func depth(kept: Bool = false) throws(GPUError) {
+  /// `combined`: on a format of depth and stencil, its depth plane tested (a GL program's depth buffer, D24S8).
+  func depth(kept: Bool = false, combined: PixelFormat? = nil) throws(GPUError) {
     guard f.depth, rgbaTarget else { return skip("depth", "no depth attachments") }
-    guard let format = depthFormat() else { return skip("depth", "no depth-only format that is a depth target") }
+    if let c = combined, !d.limits.formats(c).depthTarget { return skip("depth on \(name(c))", "not a depth target") }
+    guard let format = combined ?? depthFormat() else { return skip("depth", "no depth-only format that is a depth target") }
     guard !kept || f.loadAttachments else { return skip("depth kept", "no kept attachments") }
     let w = 32, h = 32
     let clear: [Float] = [0.2, 0.2, 0.2, 1]
@@ -1415,6 +1417,9 @@ final class CoreCases {
     lap("stencil", t)
     t = Clock.monotonic()
     do throws(GPUError) { try depth(kept: true) } catch { caught("depth kept", error) }
+    for c in [PixelFormat.depth24stencil8, .depth32fstencil8] {
+      do throws(GPUError) { try depth(combined: c) } catch { caught("depth on \(name(c))", error) }
+    }
     do throws(GPUError) { try stencil(kept: true) } catch { caught("stencil kept", error) }
     lap("depth and stencil kept", t)
     t = Clock.monotonic()

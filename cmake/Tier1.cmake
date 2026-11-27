@@ -233,6 +233,8 @@ function(croi_tier1 bootfs_var depends_var)
                                   system/fdio/native/Fts.swift system/fdio/native/Spawn.swift
                      CSOURCES system/fdio/native/open.c system/fdio/native/nftw.c
                      USES Fs Node INCLUDES system/trace/c/include)
+  # dlopen (dlfcn(2), system/ld/native): tier 0's, for tier 1's programs that load libraries while they run.
+  croi_tier1_library(Ld SOURCES system/ld/native/Linker.swift system/ld/native/Exports.swift USES Loader Sys)
   # The desktop's libraries (D107): the text stack, the theme, UICore,
   # Radharc's protocol, the plumber's messages and the SDK, from the same
   # sources as tier 0's; then Kit, its platform and its sample.
@@ -319,6 +321,9 @@ function(croi_tier1 bootfs_var depends_var)
   croi_tier1_library(GPUCoreMali SOURCES ${_gpu_core_mali_t1} USES GPUCore MaliCore ValhallBackend ShaderCompiler ValhallISA GPUClient
                      GPUDevice IPC Node Sys INCLUDES system/trace/c/include)
   croi_tier1_library(VulkanLowering SOURCES ${_vulkan_lowering_t1} USES ShaderCompiler)
+  # The GLSL ES 1.00 front end (graphics/glsl, D183): the GLES library's shaders into the SPIR-V the lowering takes.
+  file(GLOB _glsl_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/graphics/glsl/*.swift)
+  croi_tier1_library(GLSL SOURCES ${_glsl_t1})
   # VulkanCoreDriver (graphics/vulkan/drivers/core, D174 step 5: the Vulkan layer over the core) goes here, after the
   # lowering, as a library, with the layer's registry (core/registry/Registry.swift, which
   # hands VulkanCoreDriver its device) as another, and vulkan-test-core linked against these two in place of the
@@ -335,6 +340,39 @@ function(croi_tier1 bootfs_var depends_var)
                        USES VulkanCoreDriver VenusClient GPUCore GPUCoreVulkan GPUCoreMali Vulkan GPUClient GPUDevice Node Sys VX
                        INCLUDES ${_gpu_c_includes} system/trace/c/include)
   endif()
+  # OpenGL ES 2.0 and EGL (D183; gles(3), egl(3)): GLES (graphics/gles: the state machine, its native platform, and
+  # eglGetProcAddress's table in C) as libGLES.so, and the C names programs link or dlopen as libGLESv2.so and libEGL.so
+  # (c/libGLESv2.c, c/libEGL.c: each name calls libGLES.so's), so every name a program opens reaches the one library.
+  # Its shaders compile with the GLSL front end (above).
+  file(GLOB _gles_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/graphics/gles/lib/*.swift
+       ${PROJECT_SOURCE_DIR}/graphics/gles/lib/generated/*.swift ${PROJECT_SOURCE_DIR}/graphics/gles/native/*.swift)
+  # (VulkanDriversNative: the registry the core's Vulkan backend's loader names, td_vulkan_driver; GL reaches Venus directly.)
+  set(_gles_uses GLSL GPUCore VulkanLowering ShaderCompiler GPUCoreMali MaliCore ValhallBackend ValhallISA GPUCoreVulkan Vulkan VulkanDriversNative
+                 VulkanLoader VenusClient VenusDriver Venus GPUClient GPUDevice VX Plumber Radharc Kbdfs UICore AccessTree Themes
+                 NdbFile TextLayout PixelKernels Light GlyphAtlas MSDF Raster Shape OpenType TDUnicode IPC Node Ring Sys Trace)
+  croi_tier1_library(GLES SOURCES ${_gles_t1} CSOURCES graphics/gles/c/procs.c USES ${_gles_uses}
+                     INCLUDES ${_gpu_c_includes} system/trace/c/include)
+  set(_gles_include ${PROJECT_SOURCE_DIR}/graphics/gles/include)
+  foreach(_shim GLESv2 EGL)
+    add_custom_command(OUTPUT ${_lib}/lib${_shim}.so
+      COMMAND ${_clang} -fPIC -ffunction-sections -I${_gles_include} -c ${PROJECT_SOURCE_DIR}/graphics/gles/c/lib${_shim}.c
+              -o ${_lib}/${_shim}-shim.o
+      COMMAND ${VX} library-note ${_lib}/${_shim}-shim-libraries.c ${_lib}/libGLES.so
+      COMMAND ${_clang} -c ${_lib}/${_shim}-shim-libraries.c -o ${_lib}/${_shim}-shim-libraries.o
+      COMMAND ${_toolchain_bin}/ld.lld -shared -soname lib${_shim}.so --build-id=sha1 -z max-page-size=0x1000
+              -z separate-loadable-segments -z noexecstack -z now -z text ${_lib}/${_shim}-shim.o
+              ${_lib}/${_shim}-shim-libraries.o ${_lib}/libGLES.so -o ${_lib}/lib${_shim}.so
+      DEPENDS ${_lib}/libGLES.so vx ${PROJECT_SOURCE_DIR}/graphics/gles/c/lib${_shim}.c
+      COMMENT "lib${_shim}.so for tier 1: GL's C names over libGLES.so")
+  endforeach()
+  set(_gles_so GLES GLESv2 EGL ${_gles_uses})
+  list(TRANSFORM _gles_so PREPEND ${_lib}/lib)
+  list(TRANSFORM _gles_so APPEND .so)
+  # What a GL program links (the glmark2 port names each NEEDED): a library dlopen loads can't have TLS, so a program's
+  # dlopen of libEGL.so or libGLESv2.so must find it loaded already.
+  set_property(GLOBAL PROPERTY CROI_TIER1_GLES ${_gles_so})
+  # Each shim under the versioned names programs also open it by.
+  set_property(GLOBAL APPEND PROPERTY CROI_TIER1_SHARED lib/libGLESv2.so.2=${_lib}/libGLESv2.so lib/libEGL.so.1=${_lib}/libEGL.so)
   set(_gpu_libs VulkanLowering GPUCoreMali ValhallBackend MaliCore ValhallISA ShaderCompiler GPUCoreVulkan GPUCore
                 VulkanDriversNative VenusClient VenusDriver Venus Vulkan VulkanLoader GPUClient GPUDevice)
   set(_t1_libs SysABI Loader Ring Sys TraceFormat Trace IPCWire IPC Node Directives Codecs Launch Fs Settings FDIO)
@@ -444,6 +482,11 @@ function(croi_tier1 bootfs_var depends_var)
     list(APPEND _gpu_so ${_core_so})
     list(REMOVE_DUPLICATES _gpu_so)
   endif()
+  # gl-test (gl-test(8), D183): GL ES 2.0 and EGL in C through libEGL.so and libGLESv2.so; boot-venus runs it, and the
+  # board's images start it (board-test).
+  croi_tier1_c(gl-test SOURCES ${_src}/gl-test.c LIBS ${_gles_so} NEEDED ${_lib}/libVulkanDriversNative.so
+               INCLUDES graphics/gles/include user/tier1/gl-shaders
+               DEPENDS ${_src}/gl-shaders/shaders.h)
   # spawn-test: posix_spawn and waitpid (boot-cpu runs it through rc).
   croi_tier1_c(spawn-test SOURCES ${_src}/spawn-test.c)
   # D127's rows (tools/peer-bench) for the board's images: the program, and
@@ -550,14 +593,22 @@ function(croi_tier1 bootfs_var depends_var)
                        LIBS ${_app_so} ${_kit_so} ${_t1_so} ${_fdio})
     list(APPEND _shell_outputs ${_out}/${_p})
   endforeach()
+  # glmark2 (D183, cmake/Glmark2.cmake), where its port's source is fetched and patched (ports/glmark2).
+  set(_glmark2)
+  if(EXISTS ${PROJECT_SOURCE_DIR}/.cache/ports/glmark2/src/native-state-vectraos.cpp)
+    include(${PROJECT_SOURCE_DIR}/cmake/Glmark2.cmake)
+    croi_tier1_glmark2()
+    get_property(_glmark2 GLOBAL PROPERTY CROI_TIER1_GLMARK2)
+  endif()
   # Every library tier 1 built, shared, in bootfs's lib/.
-  foreach(_so ${_t1_so} ${_kit_so} ${_app_so} ${_gpu_so} ${_lib}/libRc.so ${_lib}/libCommands.so)
+  foreach(_so ${_t1_so} ${_kit_so} ${_app_so} ${_gpu_so} ${_gles_so} ${_lib}/libRc.so ${_lib}/libCommands.so ${_lib}/libLd.so)
     get_filename_component(_n ${_so} NAME)
     set_property(GLOBAL APPEND PROPERTY CROI_TIER1_SHARED lib/${_n}=${_so})
     set_property(GLOBAL APPEND PROPERTY CROI_TIER1_SHARED_FILES ${_so})
   endforeach()
   set_property(GLOBAL PROPERTY CROI_TIER1_VULKAN_TEST ${_vulkan_test})
   set_property(GLOBAL PROPERTY CROI_TIER1_VULKAN_PRESENT ${_vulkan_present})
+  set_property(GLOBAL PROPERTY CROI_TIER1_GL_TEST ${_out}/gl-test)
   set_property(GLOBAL PROPERTY CROI_TIER1_RIO ${_out}/rio)
   set_property(GLOBAL PROPERTY CROI_TIER1_RIO_TEST ${_out}/rio-test)
   set_property(GLOBAL PROPERTY CROI_TIER1_VT ${_out}/vt)
@@ -578,7 +629,7 @@ function(croi_tier1 bootfs_var depends_var)
   list(REMOVE_DUPLICATES _t1_shared_files)
   list(APPEND _entries ${_t1_shared})
   list(APPEND _files ${_t1_shared_files})
-  add_custom_target(tier1 ALL DEPENDS ${_files} ${_out}/kit-test ${_out}/vulkan-test ${_vulkan_test} ${_vulkan_present} ${_shell_outputs})
+  add_custom_target(tier1 ALL DEPENDS ${_files} ${_out}/kit-test ${_out}/vulkan-test ${_vulkan_test} ${_vulkan_present} ${_out}/gl-test ${_shell_outputs})
   set(${bootfs_var} ${_entries} PARENT_SCOPE)
   set(${depends_var} ${_files} PARENT_SCOPE)
   # The top level boots each (CMakeLists.txt).

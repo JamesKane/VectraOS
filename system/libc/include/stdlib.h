@@ -5,6 +5,7 @@
 // exit), from C23 §7.24. Hosted programs use the host's.
 
 #pragma once
+#include <bits/locale_t.h>
 #include <stddef.h>
 
 #ifdef __cplusplus
@@ -13,6 +14,9 @@ extern "C" {
 
 #define EXIT_SUCCESS 0
 #define EXIT_FAILURE 1
+// The C locale's characters are its bytes.
+#define MB_CUR_MAX ((size_t)1)
+#define RAND_MAX 2147483647
 
 typedef struct { int quot, rem; } div_t;
 typedef struct { long quot, rem; } ldiv_t;
@@ -26,6 +30,14 @@ unsigned long long strtoull(const char *__restrict nptr, char **__restrict endpt
 double strtod(const char *__restrict nptr, char **__restrict endptr);
 float strtof(const char *__restrict nptr, char **__restrict endptr);
 long double strtold(const char *__restrict nptr, char **__restrict endptr);
+// glibc's and the BSDs' conversions in a locale, which can only be "C".
+long strtol_l(const char *__restrict nptr, char **__restrict endptr, int base, locale_t locale);
+long long strtoll_l(const char *__restrict nptr, char **__restrict endptr, int base, locale_t locale);
+unsigned long strtoul_l(const char *__restrict nptr, char **__restrict endptr, int base, locale_t locale);
+unsigned long long strtoull_l(const char *__restrict nptr, char **__restrict endptr, int base, locale_t locale);
+double strtod_l(const char *__restrict nptr, char **__restrict endptr, locale_t locale);
+float strtof_l(const char *__restrict nptr, char **__restrict endptr, locale_t locale);
+long double strtold_l(const char *__restrict nptr, char **__restrict endptr, locale_t locale);
 double atof(const char *nptr);
 int atoi(const char *nptr);
 long atol(const char *nptr);
@@ -46,6 +58,8 @@ __attribute__((__noreturn__)) void abort(void);
 __attribute__((__noreturn__)) void exit(int status);
 __attribute__((__noreturn__)) void _Exit(int status);
 int atexit(void (*f)(void));
+int rand(void);
+void srand(unsigned seed);
 char *getenv(const char *name);
 
 // Paths (POSIX XSH): fdio's, in tier 1 (M6g).

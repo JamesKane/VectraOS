@@ -48,6 +48,10 @@ struct stat {
 #define S_ISDIR(m) (((m) & S_IFMT) == S_IFDIR)
 #define S_ISREG(m) (((m) & S_IFMT) == S_IFREG)
 #define S_ISLNK(m) (((m) & S_IFMT) == S_IFLNK)
+#define S_ISCHR(m) (((m) & S_IFMT) == S_IFCHR)
+#define S_ISBLK(m) (((m) & S_IFMT) == S_IFBLK)
+#define S_ISFIFO(m) (((m) & S_IFMT) == S_IFIFO)
+#define S_ISSOCK(m) (((m) & S_IFMT) == S_IFSOCK)
 
 #define S_IRWXU 0700
 #define S_IRUSR 0400
@@ -70,6 +74,10 @@ int mkdir(const char *path, mode_t mode);
 // (fdio's, M6g).
 int chmod(const char *path, mode_t mode);
 int fchmod(int fd, mode_t mode);
+// Relative to a directory descriptor (<fcntl.h>'s AT_*): only AT_FDCWD, or an
+// absolute path, so far (native/files.c); a symbolic link's own mode
+// (AT_SYMLINK_NOFOLLOW) is ENOTSUP.
+int fchmodat(int dirfd, const char *path, mode_t mode, int flags);
 
 #ifdef __cplusplus
 }

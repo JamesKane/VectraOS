@@ -294,3 +294,46 @@ private let fauWord: UInt64 = 0x20_0000
   #expect(eight.allSlots == 0xFF && eight.rotatingSlots == 0xF8)
   #expect(sbs.allSlots == 0xFFFF && sbs.rotatingSlots == 0xFFF8)
 }
+
+@Test func aStepOfAChainWaitsForTheOneBeforeInvalidatesTheShaderCachesAndAddsOneWhenDone() throws {
+  var b = CSBuilder(address: base, capacityBytes: 4096, registers: regs, scoreboards: sbs)
+  b.startStep(StepChain(address: 0x10_0000, waitAbove: 6))
+  b.endStep(StepChain(address: 0x10_0000, waitAbove: 6))
+  // A first step waits for nothing; a step that doesn't signal adds nothing.
+  b.startStep(StepChain(address: 0x10_0000, waitAbove: nil))
+  b.endStep(StepChain(address: 0x10_0000, waitAbove: 1, signal: false))
+  let loadStore = sbs.slotMask(CSScoreboards.loadStoreSlot)
+  #expect(b.words == [
+    CSInstruction.mov48(68, 0x10_0000), CSInstruction.mov48(70, 6),
+    CSInstruction.syncWait64(address: 68, reference: 70, condition: .greater),
+    CSInstruction.mov32(CSRegisterMap.firstScratch, 0),
+    CSInstruction.flushCache2(l2: .none, lsc: .cleanInvalidate, other: .invalidate, flushIDRegister: CSRegisterMap.firstScratch,
+                              signalSlot: CSScoreboards.loadStoreSlot),
+    CSInstruction.wait(mask: loadStore),
+    CSInstruction.mov48(68, 0x10_0000), CSInstruction.mov48(70, 1),
+    CSInstruction.syncAdd64(address: 68, value: 70, signalSlot: CSScoreboards.loadStoreSlot, scope: .system),
+    CSInstruction.wait(mask: loadStore),
+  ])
+  // SYNC_WAIT64 is opcode 53 with the address pair at [47:40], the reference at [39:32] and "greater" at [31:28].
+  #expect(b.words[2] == 53 << 56 | 68 << 40 | 70 << 32 | 1 << 28)
+  #expect(b.words[8] >> 56 == 51)
+}
+
+@Test func aGraphicsBlockStoredInPlaceIsTheBlocksWords() {
+  var l = GraphicsFauLayout()
+  l.viewportWord = 0
+  l.viewportTableWord = 6
+  l.imageBindings = [ImageBinding(set: 0, binding: 0, word: 8), ImageBinding(set: 0, binding: 1, word: 9)]
+  l.dummySamplerWord = 10
+  l.pushWord = 11
+  l.pushWords = 3
+  l.words = 14
+  let viewport = ViewportTransform(x: 0, y: 0, width: 64, height: 32, minDepth: 0, maxDepth: 1)
+  let images = [BindingHandle(set: 0, binding: 0, handle: 0x0100_0010), BindingHandle(set: 0, binding: 1, handle: 0x0100_0000)]
+  let words = l.block(viewport: viewport, push: [7, 8], images: images.map { ($0.set, $0.binding, $0.handle) }, dummySampler: 5,
+                      viewportTable: 0x1_2345_6780)
+  var m = MemoryImage()
+  m.extend(to: 64 + 8 * l.slots)
+  l.store(into: &m, at: 64, viewport: viewport, push: [7, 8], images: images, dummySampler: 5, viewportTable: 0x1_2345_6780)
+  for (i, w) in words.enumerated() { #expect(m.load64(at: 64 + 8 * i) == w, "slot \(i)") }
+}

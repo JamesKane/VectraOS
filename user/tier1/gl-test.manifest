@@ -1,0 +1,7 @@
+# OpenGL ES and EGL's boot test (boot-venus, D183): gl-test, in C over libEGL.so and libGLESv2.so, draws into a
+# pbuffer and a window of Radharc's through the core and reads back what it drew (gl-test(8)). compose-test waits for it
+# and judges its exit code. It starts after Radharc, whose window it opens.
+service gl-test
+program gl-test
+use windows
+mount /dev devmgr/dev
