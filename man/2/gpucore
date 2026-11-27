@@ -85,6 +85,8 @@ protocol GPUQueue: AnyObject {
 struct GPUCommandList {
   mutating func beginRendering(_ info: RenderingInfo)
   mutating func endRendering()
+  mutating func insert(_ c: Command, at index: Int)
+  var count: Int { get }
   mutating func draw(_ p: GPUPipeline, root: UInt64, vertices: UInt32,
                      instances: UInt32 = 1, firstVertex: UInt32 = 0,
                      firstInstance: UInt32 = 0)
@@ -264,6 +266,7 @@ A pipeline's `targets` are the attachments it draws into; a backend that says so
 
 A `GPUCommandList` is data: commands recorded with no device, and replayed by the backend at `submit`.
 It has compute dispatches (direct and indirect), passes with dynamic rendering, draws (direct, indexed, indirect, and indirect with a count), copies, clears, blits and resolves, barriers, and queries.
+`insert` puts a command before the one at an index (`count`: after the last), moving those after it, for a recorder that learns a pass's begin only as the pass ends.
 
 A pass is `beginRendering` with the attachments, each saying what happens to its contents at the pass's start (`load`, `clear` or `dontCare`) and end (`store` or `discard`), as a tiler needs before the pass begins; `endRendering`; and the draws between.
 `RenderingInfo` has the colour attachments, each a view, with an optional single-sample view to resolve into; an optional depth and stencil attachment with a load and a store for each aspect and its own clear value; a layer count; a view mask for multiview; and a render area.

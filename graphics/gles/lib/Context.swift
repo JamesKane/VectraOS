@@ -102,8 +102,7 @@ public final class GLContext {
   var drawSlots: [(UInt32, UInt32)] = []
   var drawReads: [UInt64] = []
   /// The last draw's pipeline and what it was found by.
-  var lastPipeline: (program: GLProgram, link: UInt64, serial: UInt64, layout: VertexLayout, topology: PrimitiveTopology,
-                     target: RenderTarget, pipeline: GPUPipeline)?
+  var lastPipeline: LastPipeline?
   var readback: GPUMemory?
   /// Bumps whenever a pipeline's fixed state may have changed.
   var pipelineSerial: UInt64 = 1
@@ -719,7 +718,7 @@ public final class GLContext {
       guard let s = surface else { return (GL_FRAMEBUFFER_UNSUPPORTED, nil) }
       return (GL_FRAMEBUFFER_COMPLETE, s.target)
     }
-    var t = RenderTarget()
+    let t = RenderTarget()
     var size: (Int32, Int32)? = nil
     var any = false
     func check(_ s: (Int32, Int32)) -> Bool {
@@ -799,7 +798,7 @@ public final class GLContext {
     let surfaceSerial = surface?.serial ?? 0
     if let c = targetCache, c.framebuffer == name, c.serial == attachmentSerial, c.surface == surfaceSerial { return c.0 }
     let (status, target) = framebufferStatus()
-    guard status == GL_FRAMEBUFFER_COMPLETE, var target else {
+    guard status == GL_FRAMEBUFFER_COMPLETE, let target else {
       fail(.invalidFramebufferOperation)
       return nil
     }
