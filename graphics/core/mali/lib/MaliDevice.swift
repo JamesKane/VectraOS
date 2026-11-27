@@ -176,6 +176,8 @@ struct DrawCache {
   var template: PassDraw? = nil
   var pass = -1
   var heapDraw = false
+  /// The template's `state.minimumVertices` (read here, not through the draw's accessor, which allocates its frame outside MaliCore).
+  var minimumVertices = 0
 }
 
 enum PipelineRecord {
@@ -339,6 +341,7 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   /// A probe of a pass's own time: each pass stores the timestamps of `PassStamp` as its streams run, in the chain's buffer; the
   /// last pass's are `passStamps` once it is done.
   public var probePassStamps = false
+  var recipeCount = 0
   /// A probe of the kernel's flush before each job: this token (nonzero: one that has long passed, so the flush is skipped) on every
   /// job of a submission after the first, or on the first too.
   public var probeFlushToken: UInt32 = 0
@@ -404,9 +407,11 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   /// tests read each).
   public var mergesQueueJobs = true
   /// Whether a pass is one stream on one queue, the tiling and then the fragment work, waiting on the tiling's slot (MaliCore's
-  /// `.singleQueue` layout) rather than a stream on each of two queues and a sync object between them: off, a probe. Set before
-  /// the first submission (the queues are started for it).
-  public var singleQueuePasses = false
+  /// `.singleQueue` layout; on) rather than a stream on each of two queues and a sync object between them (off). On the board one
+  /// stream starts its work sooner, tiles sooner and hands to its fragment work with no wait between queues: glmark2's ideas
+  /// went from 870 to 984 frames a second and desktop's shadow from 2261 to 2725. Set before the first submission (the queues are
+  /// started for it).
+  public var singleQueuePasses = true
   /// Whether `wait` for the last value submitted watches the chain's word in memory before it waits on the timeline (on), and for
   /// how long.
   public var spinsForCompletion = true

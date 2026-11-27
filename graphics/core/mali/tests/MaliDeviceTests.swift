@@ -28,6 +28,9 @@ func device() throws -> (MaliDevice, FakeTransport) {
   gpu.spinsForCompletion = false
   // Linear images, which the tests read in place (CompressionTests has the tiled ones).
   gpu.tiledTextures = false
+  // A pass's tiling and fragment work as a stream on each of two queues, which the tests read apart (ChainTests has the one
+  // stream of the default).
+  gpu.singleQueuePasses = false
   _ = KernelRunner(gpu, t)
   return (gpu, t)
 }

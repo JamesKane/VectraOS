@@ -102,6 +102,7 @@ func kernelDevice() throws -> (MaliDevice, FakeTransport, KernelRunner) {
   gpu.mergesQueueJobs = false
   gpu.spinsForCompletion = false
   gpu.tiledTextures = false
+  gpu.singleQueuePasses = false
   return (gpu, t, KernelRunner(gpu, t))
 }
 

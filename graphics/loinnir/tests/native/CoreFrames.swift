@@ -328,22 +328,22 @@ final class FrameBudgets {
       print("loinnir-test: ok: frame: a new device's first pass, after a transfer on the compute queue, drew")
     }
     attempt("GL's frame") { () throws(GPUError) in try glFrame() }
-    // The same frames on a device whose passes are one stream on one queue (a probe: `MaliDevice.singleQueuePasses`).
-    attempt("one queue a pass") { () throws(GPUError) in
+    // The same frames on a device whose passes are a stream on each of two queues (`MaliDevice.singleQueuePasses` off).
+    attempt("two queues a pass") { () throws(GPUError) in
       let fresh = try MaliDevice()
-      fresh.singleQueuePasses = true
+      fresh.singleQueuePasses = false
       fresh.profiling = true
       let probe = try FrameBudgets(fresh, signalled: 0)
       var list = GPUCommandList()
       list.render(probe.pass(probe.target)) { l in l.draw(probe.pipeline, root: probe.quads.address, vertices: 6) }
-      _ = try probe.measure("clear and one draw, one queue a pass", "gpu.mali.frame_clear_draw_one_queue_us", list)
-      try probe.place("clear and one draw, one queue a pass") { l in
+      _ = try probe.measure("clear and one draw, two queues a pass", "gpu.mali.frame_clear_draw_two_queues_us", list)
+      try probe.place("clear and one draw, two queues a pass") { l in
         l.render(probe.pass(probe.target)) { r in r.draw(probe.pipeline, root: probe.quads.address, vertices: 6) }
       }
-      try probe.stamped("clear and one draw, one queue a pass", list)
+      try probe.stamped("clear and one draw, two queues a pass", list)
       let p = try probe.pixel(probe.target, 400, 300)
-      if p != [255, 0, 0, 255] { throw GPUError.invalid("one queue a pass left \(p) at the centre") }
-      try probe.glFrame("_one_queue")
+      if p != [255, 0, 0, 255] { throw GPUError.invalid("two queues a pass left \(p) at the centre") }
+      try probe.glFrame("_two_queues")
     }
     print("loinnir-test: frame budgets: \(failed == 0 ? "done" : "\(failed) FAILED")")
     return failed

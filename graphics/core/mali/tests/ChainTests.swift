@@ -95,6 +95,7 @@ func chainUse(_ words: [UInt64], address: UInt64) -> (waits: [UInt64], adds: Int
 
   @Test func aPassTakesAHundredDrawsAndMore() throws {
     let (gpu, t) = try device()
+    gpu.singleQueuePasses = true  // the default: one stream a pass
     let pipeline = try trianglePipeline(gpu)
     let target = try gpu.makeImage(ImageDescriptor(format: .rgba8, width: 64, height: 64, usage: .renderTarget))
     var list = GPUCommandList()
@@ -103,8 +104,9 @@ func chainUse(_ words: [UInt64], address: UInt64) -> (waits: [UInt64], adds: Int
       r.clearAttachments([.color(index: 0, .float(1, 0, 0, 1))], rects: [ClearRect(width: 8, height: 8)])
     }
     try gpu.run(list, signal: 1)
-    #expect(t.submits.count == 1 && t.submits[0].jobs.count == 5)
-    // The tiler's stream issues a RUN_IDVS2 (opcode 12) for each draw and the clear.
+    // The three queues' starts and the pass's one stream (its tiling and then its fragment work).
+    #expect(t.submits.count == 1 && t.submits[0].jobs.count == 4)
+    // The pass's stream issues a RUN_IDVS2 (opcode 12) for each draw and the clear.
     let runs = t.streams[3].filter { $0 >> 56 == 12 }.count
     #expect(runs == 301)
   }

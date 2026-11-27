@@ -178,6 +178,29 @@ and combined, private variables in registers) and the Mali submit's
 ideas (227 draws a frame) is still bound by the submit's CPU cost, and
 desktop shadow (many small passes) by the fixed cost of a pass.
 
+## The submit and the pass, 2026-11-27 (pass-cost after gl 2a1bca96)
+
+ideas (227 to 353 draws in one pass) was bound by the CPU's submit: about 550 us a frame for 227 draws (plan 205, recipe
+242). A draw's state is now shared by the draws of a pipeline and read once a run of them, a run's registers are written only
+where they differ, and the reads of a draw's shared fields from outside MaliCore (each allocated its accessor's frame) are
+gone: the same frame's submit is about 360 us. A pass is then one stream on one queue, its tiling and then its fragment
+work, where it was a stream on each of two queues with a sync object between: on the board that starts the work sooner,
+tiles sooner and needs no wait between queues (loinnir-test's stamps: 53 us of stream for a clear and one draw on two
+queues, 37 on one). The full run (FPS):
+
+| Scene | Reference | Before | After | Ratio |
+|---|---:|---:|---:|---:|
+| ideas | 973 | 720 | 878 | 0.90 |
+| desktop shadow | 2256 | 2161 | 2438 | 1.08 |
+| desktop blur | 753 | 1020 | 1116 | 1.48 |
+| jellyfish | 2615 | 3021 | 3119 | 1.19 |
+| shadow | 1749 | 1968 | 2083 | 1.19 |
+| glmark2 score | 3064 | 4397 | 4712 | 1.54 |
+
+Every other scene rose 1 to 10 percent. ideas alone, twice in one run, gave 902 and 908 (and 984 in a run with GLES_STATS):
+the scene is the CPU's, and the core the scheduler gives it moves it by several percent. Its frame is then about 300 us of
+GL's recording, 360 of the submit and 130 of waiting.
+
 ## The shaders glmark2 compiles
 
 `MESA_SHADER_DUMP_PATH` on the same run, every scene at 0.3 s: 69 distinct
