@@ -134,6 +134,50 @@ class 32, twice the resident threads. A subset run on the board (FPS):
 weights). desktop and ideas are bound by the per-pass and per-draw costs,
 not by their shaders.
 
+## Every scene, 2026-11-27 (gl at 2a1bca96)
+
+The full off-screen run at 800x600 (`esp-board-glmark2`), with GL's
+per-frame work (AFBC for images GL only draws and samples, mipmaps drawn,
+loads and stores only what a pass's draws use, about 450 ns a draw), the
+shaders' work (vertex shaders divided between the IDVS passes, loads sunk
+and combined, private variables in registers) and the Mali submit's
+(draw state shared within a pass, register deltas, one-way posts).
+**glmark2 Score: 4397**, against the reference's 3064 (1.44).
+
+| Scene | Reference | Ours | Ratio |
+|---|---:|---:|---:|
+| build use-vbo=false | 1610 | 2605 | 1.62 |
+| build use-vbo=true | 3523 | 5934 | 1.68 |
+| texture nearest | 4887 | 5803 | 1.19 |
+| texture linear | 4925 | 5734 | 1.16 |
+| texture mipmap | 4892 | 5958 | 1.22 |
+| shading gouraud | 2223 | 4565 | 2.05 |
+| shading blinn-phong-inf | 2212 | 4491 | 2.03 |
+| shading phong | 1560 | 3498 | 2.24 |
+| shading cel | 1541 | 3576 | 2.32 |
+| bump high-poly | 892 | 2314 | 2.59 |
+| bump normals | 5506 | 7424 | 1.35 |
+| bump height | 4782 | 6700 | 1.40 |
+| effect2d 3x3 | 5678 | 6254 | 1.10 |
+| effect2d 5x3 | 4091 | 4595 | 1.12 |
+| pulsar | 4742 | 6092 | 1.28 |
+| desktop blur | 753 | 1020 | 1.35 |
+| desktop shadow | 2256 | 2161 | **0.96** |
+| buffer map | 400 | 1279 | 3.20 |
+| buffer subdata | 391 | 1264 | 3.23 |
+| buffer interleaved map | 431 | 1712 | 3.97 |
+| ideas | 973 | 720 | **0.74** |
+| jellyfish | 2615 | 3021 | 1.16 |
+| terrain | 95 | 117 | 1.23 |
+| shadow | 1749 | 1968 | 1.13 |
+| refract | 149 | 156 | 1.05 |
+| conditionals (three) | 4718-4925 | 6430-7216 | 1.36-1.48 |
+| function (two) | 4584-4752 | 7151-7165 | 1.51-1.56 |
+| loop (three) | 4713-4901 | 6921-7122 | 1.45-1.47 |
+
+ideas (227 draws a frame) is still bound by the submit's CPU cost, and
+desktop shadow (many small passes) by the fixed cost of a pass.
+
 ## The shaders glmark2 compiles
 
 `MESA_SHADER_DUMP_PATH` on the same run, every scene at 0.3 s: 69 distinct
