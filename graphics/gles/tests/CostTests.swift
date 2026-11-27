@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 // What the library's CPU costs a draw and a frame, over a device that does nothing (no list judged or run): printed, not
-// judged, since a host's times aren't the board's. GLES_COST in the environment runs it with 20,000 frames (the default
+// judged, since a host's times aren't the board's. (Not over the Mali backend on the fake transport, which copies all its
+// memory at each submission.) GLES_COST in the environment runs it with 20,000 frames (the default
 // is 200, a check that the path runs).
 
 import Foundation
@@ -44,9 +45,11 @@ final class NullDevice: GPUDevice {
 }
 
 extension GLTests {
-  @Test func whatADrawCosts() {
+  @Test func whatADrawCosts() { measure(NullDevice(), "null") }
+
+  func measure(_ device: any GPUDevice, _ name: String, profile: (() -> String)? = nil) {
     let frames = ProcessInfo.processInfo.environment["GLES_COST"] != nil ? 20_000 : 200
-    let h = Harness(NullDevice(), depth: .depth32f)
+    let h = Harness(device, depth: .depth32f)
     let p = h.program("textured.vert", "textured.frag")
     h.uniforms(p, color: [1, 1, 1, 1])
     h.fullTriangle()
@@ -72,8 +75,44 @@ extension GLTests {
         gles_glFinish()
       }
       let ns = Double(DispatchTime.now().uptimeNanoseconds - start) / Double(frames)
-      print("gles cost: \(draws) draws a frame: \(Int(ns / 1000)) us a frame, \(Int(ns / Double(draws))) ns a draw")
+      print("gles cost (\(name)): \(draws) draws a frame: \(Int(ns / 1000)) us a frame, \(Int(ns / Double(draws))) ns a draw"
+        + (profile.map { "; " + $0() } ?? ""))
     }
+    // Passes over framebuffer objects: four textures drawn into and each sampled in a pass of the surface, as a desktop
+    // of windows is.
+    var textures = [GLuint](repeating: 0, count: 4), fbos = [GLuint](repeating: 0, count: 4)
+    gles_glGenTextures(4, &textures)
+    gles_glGenFramebuffers(4, &fbos)
+    for i in 0..<4 {
+      gles_glBindTexture(GL_TEXTURE_2D, textures[i])
+      gles_glTexImage2D(GL_TEXTURE_2D, 0, GLint(GL_RGBA), 256, 256, 0, GL_RGBA, GL_UNSIGNED_BYTE, nil)
+      gles_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GLint(GL_LINEAR))
+      gles_glBindFramebuffer(GL_FRAMEBUFFER, fbos[i])
+      gles_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, textures[i], 0)
+    }
+    gles_glDisable(GL_DEPTH_TEST)
+    let start = DispatchTime.now().uptimeNanoseconds
+    for f in 0..<frames {
+      for i in 0..<4 {
+        gles_glBindFramebuffer(GL_FRAMEBUFFER, fbos[i])
+        gles_glViewport(0, 0, 256, 256)
+        gles_glClear(GL_COLOR_BUFFER_BIT)
+        gles_glBindTexture(GL_TEXTURE_2D, t)
+        gles_glUniform4f(color, 1, Float(i) / 4, Float(f % 2), 1)
+        gles_glDrawArrays(GL_TRIANGLES, 0, 3)
+      }
+      gles_glBindFramebuffer(GL_FRAMEBUFFER, 0)
+      gles_glViewport(0, 0, 64, 64)
+      gles_glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+      for i in 0..<4 {
+        gles_glBindTexture(GL_TEXTURE_2D, textures[i])
+        gles_glDrawArrays(GL_TRIANGLES, 0, 3)
+      }
+      gles_glFinish()
+    }
+    let ns = Double(DispatchTime.now().uptimeNanoseconds - start) / Double(frames)
+    print("gles cost (\(name)): four framebuffer objects and a composite: \(Int(ns / 1000)) us a frame, "
+      + "\(h.frame.passesSubmitted / max(frames, 1)) passes" + (profile.map { "; " + $0() } ?? ""))
     #expect(h.error() == GL_NO_ERROR)
   }
 }

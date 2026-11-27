@@ -49,6 +49,7 @@ A pipeline is made the first time a program is drawn with a state, and kept by t
 The stencil reference and masks, the polygon offset's values, the blend colour, the line width, the viewport (with `glDepthRangef`) and the scissor are the pass's, set by commands only where they change.
 A program's fragment stage is lowered once and its vertex stage once for each vertex layout.
 A pass's begin is recorded as it ends, so what it stores is known: an attachment `glDiscardFramebufferEXT` names isn't stored, nor are a window's (or headless window's) depth and stencil at a swap, which leaves them undefined (`EGL_BUFFER_DESTROYED`).
+An attachment none of the pass's draws or clears used (a depth buffer no draw tested, a colour buffer every draw masked) is neither loaded nor stored, so it keeps what it held; a depth or stencil clear of a renderbuffer's or a surface's image that no draw of its pass used becomes the clear the next pass that uses it begins with.
 A framebuffer with no colour attachment is drawn with a scratch colour attachment of its size that nothing writes or stores, since the Mali backend's passes have one.
 
 ## Objects
