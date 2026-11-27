@@ -183,8 +183,8 @@ extension GraphicsFauLayout {
   /// The block for a draw, stored at `offset` of a block whose bytes are zero there: `block`'s words, with no array made (a pass
   /// stores one for each stage of each of its draws).
   public func store(
-    into m: inout MemoryImage, at offset: Int, viewport: ViewportTransform? = nil, push: [UInt32] = [], images: [BindingHandle] = [],
-    dummySampler: UInt32 = 0, blendConstants: [Float] = [], viewportTable: UInt64 = 0
+    into m: inout MemoryImage, at offset: Int, viewport: ViewportTransform? = nil, push: [UInt32] = [], root: UInt64? = nil,
+    images: [BindingHandle] = [], dummySampler: UInt32 = 0, blendConstants: [Float] = [], viewportTable: UInt64 = 0
   ) {
     func put(_ word: Int, _ v: UInt32) { m.store(v, at: offset + 4 * word) }
     if viewportWord >= 0, let v = viewport {
@@ -206,9 +206,14 @@ extension GraphicsFauLayout {
       for g in images where g.set == b.set && g.binding == b.binding { put(b.word, g.handle) }
     }
     if dummySamplerWord >= 0 { put(dummySamplerWord, dummySampler) }
+    // The push words: `root`'s two (words 0 and 1) where it is given, else `push`.
     var i = 0
     while i < pushWords {
-      put(pushWord + i, i < push.count ? push[i] : 0)
+      if let r = root {
+        put(pushWord + i, i == 0 ? UInt32(truncatingIfNeeded: r) : i == 1 ? UInt32(truncatingIfNeeded: r >> 32) : 0)
+      } else {
+        put(pushWord + i, i < push.count ? push[i] : 0)
+      }
       i += 1
     }
   }

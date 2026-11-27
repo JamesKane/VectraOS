@@ -597,8 +597,7 @@ extension MaliDevice {
     {
       if indirect == nil && vertices < template.state.minimumVertices { return }
       usesHeap = usesHeap || drawCache[i].heapDraw
-      var draw = PassDraw(sharingState: template, vertexCount: vertices, instanceCount: instances,
-                          push: [UInt32(truncatingIfNeeded: root), UInt32(truncatingIfNeeded: root >> 32)])
+      var draw = PassDraw(sharingState: template, vertexCount: vertices, instanceCount: instances, root: root)
       draw.indices = indices
       draw.firstIndex = firstIndex
       draw.vertexOffset = vertexOffset

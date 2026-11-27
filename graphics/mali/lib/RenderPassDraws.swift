@@ -93,6 +93,8 @@ public struct PassDraw: Sendable {
   public var instanceCount: Int
   /// The push constants, the same words for both stages.
   public var push: [UInt32]
+  /// The push constants as one 64-bit root pointer, words 0 and 1 (`push` is then empty): a draw's usual two words, with no array.
+  public var root: UInt64? = nil
   /// The blend descriptor of the pass's one colour target (09: the position must equal the target).
   public var blend: BlendDescriptor {
     _read { yield unsafe shared.blend }
@@ -158,12 +160,14 @@ public struct PassDraw: Sendable {
     self.push = push
   }
 
-  /// A draw with `template`'s shaders, blends, state and bindings (shared, not copied) and counts and push constants of its own.
-  public init(sharingState template: PassDraw, vertexCount: Int, instanceCount: Int = 1, push: [UInt32] = []) {
+  /// A draw with `template`'s shaders, blends, state and bindings (shared, not copied) and counts and push constants of its own:
+  /// `push`, or `root` as words 0 and 1 with no array made.
+  public init(sharingState template: PassDraw, vertexCount: Int, instanceCount: Int = 1, push: [UInt32] = [], root: UInt64? = nil) {
     shared = template.shared
     self.vertexCount = vertexCount
     self.instanceCount = instanceCount
     self.push = push
+    self.root = root
   }
 }
 
@@ -1102,7 +1106,7 @@ extension RenderPass {
       let viewport = ViewportTransform(x: vp.x, y: vp.y, width: vp.width, height: vp.height, minDepth: vp.minDepth, maxDepth: vp.maxDepth)
       // The blocks are stored in place (the vertex shader's nonPerspective, base vertex and base instance words are zero, as
       // `block` leaves them for a draw that gives none).
-      d.vertexShader.layout.store(into: &m, at: vfauAt[n], viewport: viewport, push: d.push, images: d.images, dummySampler: d.dummySampler,
+      d.vertexShader.layout.store(into: &m, at: vfauAt[n], viewport: viewport, push: d.push, root: d.root, images: d.images, dummySampler: d.dummySampler,
                       viewportTable: viewportsAt[n] >= 0 ? va(viewportsAt[n]) : 0)
       if viewportsAt[n] >= 0 {
         var transforms: [ViewportTransform] = []
@@ -1113,7 +1117,7 @@ extension RenderPass {
         m.store(words: ViewportTable.words(transforms), at: viewportsAt[n])
       }
       if scissorsAt[n] >= 0 { m.store(words: ScissorArray(state: d.state, width: r.width, height: r.height).words(stride: d.state.scissorProbe == 3 ? 16 : 8), at: scissorsAt[n]) }
-      d.fragmentShader.layout.store(into: &m, at: ffauAt[n], push: d.push, images: d.images, dummySampler: d.dummySampler,
+      d.fragmentShader.layout.store(into: &m, at: ffauAt[n], push: d.push, root: d.root, images: d.images, dummySampler: d.dummySampler,
                                     blendConstants: d.blendConstants)
       // Its blend descriptors are the draw before's (`same`).
       if same[n] { continue }
