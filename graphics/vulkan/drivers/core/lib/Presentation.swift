@@ -100,6 +100,8 @@ final class SurfaceObject: CoreObject {
   var acquired = false
   /// The timeline value of the work its last present waited for (a headless surface's): it is free once the timeline is there.
   var drawn: UInt64 = 0
+  /// When it was last presented, in the swapchain's count of presents (a headless surface's): the oldest is acquired first.
+  var presented: UInt64 = 0
 }
 
 final class SwapchainObject: CoreObject {
@@ -111,6 +113,8 @@ final class SwapchainObject: CoreObject {
   var images: [SwapImage] = []
   /// Replaced by another swapchain on the surface, or out of date: it presents nothing more.
   var retired = false
+  /// How many presents it has had.
+  var presents: UInt64 = 0
 
   init(device: DeviceObject, surface: SurfaceObject, width: Int32, height: Int32, format: PixelFormat) {
     self.device = device
@@ -489,7 +493,7 @@ func acquireNext(_ s: SwapchainObject, timeout: UInt64, semaphore: VkSemaphore?,
 /// but the GPU, so it is acquired at once, and the semaphore and fence are signalled when the timeline reaches the work its
 /// last present waited for: the next frame's work waits for it on the GPU, and the application's fence, on the CPU.
 func acquireHeadless(_ s: SwapchainObject, semaphore: VkSemaphore?, fence: VkFence?, index: UnsafeMutablePointer<UInt32>?) -> VkResult {
-  guard let i = s.images.indices.filter({ !s.images[$0].acquired }).min(by: { s.images[$0].drawn < s.images[$1].drawn }) else {
+  guard let i = s.images.indices.filter({ !s.images[$0].acquired }).min(by: { s.images[$0].presented < s.images[$1].presented }) else {
     return VK_NOT_READY
   }
   s.images[i].acquired = true
@@ -529,6 +533,8 @@ func presentImage(_ q: QueueObject, _ s: SwapchainObject, index: Int, wait: UInt
   // submitted so far, if the present waited for no semaphore).
   guard let window = s.surface.window, let frame = s.images[index].frame else {
     s.images[index].drawn = wait > 0 ? wait : d.lastSubmitted
+    s.presents += 1
+    s.images[index].presented = s.presents
     s.images[index].acquired = false
     d.retire()
     return VK_SUCCESS
