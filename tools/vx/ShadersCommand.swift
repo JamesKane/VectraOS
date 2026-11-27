@@ -26,11 +26,13 @@ let shaderArrays = [
   ("services/radharc/shaders", "services/radharc/gpu/generated/Shaders.swift", "RadharcShaders"),
   ("drivers/gpu/tests/native/shaders", "drivers/gpu/tests/native/generated/CeilingShaders.swift", "CeilingShaders"),
   ("graphics/core/mali/shaders", "graphics/core/mali/lib/MaliShaders.swift", "MaliShaders"),
+  ("graphics/gles/shaders", "graphics/gles/lib/generated/GLESShaders.swift", "GLESShaders"),
 ]
 
 /// Directories whose SPIR-V also goes into a C header, as `static const uint32_t` arrays of its words.
 let shaderHeaders = [
   ("user/tier1/vulkan-shaders", "user/tier1/vulkan-shaders/shaders.h"),
+  ("user/tier1/gl-shaders", "user/tier1/gl-shaders/shaders.h"),
 ]
 
 func shadersCommand(_ args: [String]) -> Bool {

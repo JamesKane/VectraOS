@@ -62,6 +62,8 @@ extension ValhallBackend {
     let vertex = module.executionModel == 0
     var m = module
     try Prep.inlineCalls(&m)
+    // One function now: its private variables are its own, so promotion makes them values, not stack memory.
+    m.localizePrivateGlobals()
     // A vertex shader is replicated for each view of a multiview draw (valhall 07 section 7.8.2), and ViewIndex is each copy's view.
     if vertex {
       var views: [Int] = []
@@ -88,11 +90,18 @@ extension ValhallBackend {
       Prep.uniformImageAtomics(&f)
       Prep.uniformTextureHandles(&f)
     }
+    // The position's work in the position pass only, the varyings' in the varying pass only.
+    let groups = vertex ? Prep.divideVertexPasses(&f, m, options) : nil
+    // Uniforms and vertex inputs loaded early would be live together across the shader: each load goes to its use, and
+    // neighbouring words are one message.
+    f.sinkLoadsToUses()
+    Prep.combineLoads(&f)
     Prep.splitCriticalEdges(&f)
-    var o = options
-    // Class 64 for both stages: the class the board ran the hand-written shaders in (valhall 14.1.2).
-    o.preferClass32 = false
+    // Class 32 when the values fit r0 to r15 and r48 to r63 (twice the resident threads, valhall 04 section 4.3), else 64;
+    // `preferClass32` false asks for 64.
+    let o = options
     var sel = Selector(m, f, o)
+    sel.groupStores = groups ?? []
     var mf = try sel.run()
     mf.legalize()
     var alloc = try mf.allocate(o)
@@ -106,7 +115,7 @@ extension ValhallBackend {
     let instructions = try link(blocks)
 
     if options.validate {
-      let vo = ValidatorOptions(arch: options.arch, stage: vertex ? .vertex : .fragment, registerClass: .class64)
+      let vo = ValidatorOptions(arch: options.arch, stage: vertex ? .vertex : .fragment, registerClass: alloc.class32 ? .class32 : .class64)
       let v = ISATable.shared.validate(instructions, options: vo)
       if let first = v.first {
         throw BackendError.invalidOutput(first.rule + " at " + String(first.instruction) + ": " + first.message)
@@ -143,7 +152,7 @@ extension ValhallBackend {
       attrs.sort()
       let vary = outs.isEmpty ? 0 : VaryingLayout.offset(location: outs[outs.count - 1]) + VaryingLayout.slotBytes
       result.vertex = VertexShader(
-        code: code, registerClass: .r64, preloadMask: mf.preload, layout: layout, varyingBytes: UInt32(vary),
+        code: code, registerClass: alloc.class32 ? .r32 : .r64, preloadMask: mf.preload, layout: layout, varyingBytes: UInt32(vary),
         outputLocations: outs, attributeLocations: attrs, storesPointSize: false, stackBytes: stack)
       result.vertex?.readsDrawIndex = sel.usedBuiltins[IRBuiltin.drawIndex]
       result.vertex?.extendedRecord = sel.storesAttributes
@@ -161,7 +170,7 @@ extension ValhallBackend {
       }
       ins.sort()
       result.fragment = FragmentShader(
-        code: code, registerClass: .r64, preloadMask: mf.preload, layout: layout, colourTargets: targets, inputLocations: ins,
+        code: code, registerClass: alloc.class32 ? .r32 : .r64, preloadMask: mf.preload, layout: layout, colourTargets: targets, inputLocations: ins,
         nonPerspectiveMask: np, discards: sel.usesKill, earlyFragmentTests: m.earlyFragmentTests, stackBytes: stack)
       result.fragment?.writesSecondOutput = m.outputs.contains { $0.location >= 0 && $0.index == 1 }
       result.fragment?.writesDepth = m.outputs.contains { $0.builtin == Int(BuiltInId.fragDepth) }

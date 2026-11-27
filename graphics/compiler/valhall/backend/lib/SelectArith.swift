@@ -329,8 +329,22 @@ extension Selector {
       let y = opd(b)
       alu(i.op == .fmin ? "FMIN" : "FMAX", "f32", dst: def32(i), x, y)
     case .fdiv:
-      let x = opd(a)
+      if f.constantBits(a) == UInt64(Float(1).bitPattern) {
+        let y = opd(b)
+        // A reciprocal (reduceStrength makes every other division a product with one).
+        alu("FRCP", "f32", dst: def32(i), y)
+        break
+      }
+      if let c = f.constantBits(b), case let d = Float(bitPattern: UInt32(truncatingIfNeeded: c)), d.isFinite, d != 0, (1 / d).isNormal {
+        // By a constant: its reciprocal is the compiler's, the product the GPU's (what FRCP and the product would be).
+        let x = opd(a)
+        let rb = (1 / d).bitPattern
+        let r: Opd = smallConstant(rb).map { Opd.const($0) } ?? materialize(rb)
+        alu("FMA", "f32", dst: def32(i), x, r, .const(0), set: [("neg2", 1)])
+        break
+      }
       let y = opd(b)
+      let x = opd(a)
       let r = newReg()
       alu("FRCP", "f32", dst: .reg(r, 0), y)
       alu("FMA", "f32", dst: def32(i), x, .reg(r, 0), .const(0), set: [("neg2", 1)])

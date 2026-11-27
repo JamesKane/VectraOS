@@ -260,6 +260,18 @@ public final class CSFContextSession<Backend: CSFBackend>: GPUCSFIPC.ContextHand
     server.lock.unlock()
   }
 
+  public func post(group: UInt32, jobs: [GPUCSFIPC.Job], waits: [GPUCSFIPC.SyncValue], signals: [GPUCSFIPC.SyncValue]) {
+    var js: [CSFJob] = []
+    for j in jobs { js.append(CSFJob(queue: j.queue, stream: j.stream, size: j.size, flush: j.flush)) }
+    var ws: [CSFSync] = []
+    for w in waits { ws.append(CSFSync(id: w.id, value: w.value)) }
+    var ss: [CSFSync] = []
+    for s in signals { ss.append(CSFSync(id: s.id, value: s.value)) }
+    server.lock.lock()
+    defer { server.lock.unlock() }
+    server.service.post(context, group: group, jobs: js, waits: ws, signals: ss)
+  }
+
   public func submit(group: UInt32, jobs: [GPUCSFIPC.Job], waits: [GPUCSFIPC.SyncValue],
                      signals: [GPUCSFIPC.SyncValue]) throws(GPUCSFIPC.GPUError) {
     var js: [CSFJob] = []

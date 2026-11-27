@@ -5,12 +5,19 @@
 # (docs/boards/orangepi-6-plus/README.md, "Booting VectraOS on it"):
 #  1. takes the board's lock, /root/vx-board.lock;
 #  2. captures COM2 into LOG from before the boot;
-#  3. copies IMAGE_DIR's croi/ and loader onto the ESP (nda0p1), keeping
+#  3. copies IMAGE_DIR's croi/ and loader onto the ESP (BOARD_ESP, by GPT id:
+#     the NVMe disks have swapped names, nda0 and nda1), keeping
 #     the previous croi/ as BACKUP_NAME if given and not already there;
 #  4. sets the VectraOS entry (BOOT_ENTRY, default 000A) as BootNext and
 #     reboots;
-#  5. waits for board-test's last line (6 minutes at most), then for
-#     FreeBSD to answer again (4 minutes more), and releases the lock.
+#  5. waits for board-test's last line (BOARD_DEADLINE, 6 minutes), then
+#     for FreeBSD to answer again (BOARD_RETURN, 10 minutes from the
+#     run's end: it can take minutes), and releases the lock.
+#
+# A board that doesn't answer at the start may be in another run's
+# VectraOS boot or rebooting to FreeBSD: the run waits for it
+# (BOARD_WAIT, 15 minutes), and for another live run of this host (a
+# lock directory in TMPDIR), before it says locked or no-board.
 # The last line is always `BOARDRUN DONE <status>`: passed, failed,
 # timeout, locked, no-board, copy-failed or deploy-failed.
 #
@@ -39,7 +46,15 @@ board=${BOARD:-root@192.168.0.32}
 alias_=${BOARD_ALIAS:-192.168.0.19}
 tty=${BOARD_TTY:-/dev/cu.usbserial-ABSCDIMD}
 entry=${BOOT_ENTRY:-000A}
+# The partition Boot000A names (efibootmgr -v), by its GPT id.
+esp=${BOARD_ESP:-/dev/gptid/bbec220e-a11b-4b8d-82b0-6aadb2cfbe9f}
+# The run's last line: board-test's, or another program's (glmark2's score).
+pass_re=${BOARD_PASS:-board-test: passed}
+fail_re=${BOARD_FAIL:-board-test: FAILED}
 stale_min=${BOARD_STALE_MIN:-20}
+wait_s=${BOARD_WAIT:-900}
+return_s=${BOARD_RETURN:-600}
+local_lock=${TMPDIR:-/tmp}/vx-board-run.lock
 ssh_=(ssh -o HostKeyAlias="$alias_" -o BatchMode=yes -o ConnectTimeout=8)
 scp_=(scp -q -o HostKeyAlias="$alias_" -o BatchMode=yes -o ConnectTimeout=8)
 owner="$(hostname -s) $$ $(date +%s) ${BOARD_TAG:-$USER}"
@@ -47,11 +62,40 @@ status=unknown
 locked=no
 
 finish() {
+  [[ ${have_local:-no} == yes ]] && rm -rf "$local_lock"
   [[ -n ${cat_pid:-} ]] && kill "$cat_pid" 2>/dev/null
   [[ $locked == yes ]] && "${ssh_[@]}" "$board" 'rm -f /root/vx-board.lock' 2>/dev/null
   echo "BOARDRUN DONE $status"
 }
 trap finish EXIT
+
+# This host's runs one at a time: a run in its VectraOS boot holds the
+# board though FreeBSD can't show its lock then. mkdir is atomic.
+start=$SECONDS
+until mkdir "$local_lock" 2>/dev/null; do
+  other=$(cat "$local_lock/pid" 2>/dev/null)
+  if [[ $other =~ ^[0-9]+$ ]] && ! kill -0 "$other" 2>/dev/null; then
+    rm -rf "$local_lock"
+    continue
+  fi
+  if ((SECONDS - start > wait_s)); then
+    echo "board-run: another run here holds the board: ${other:-?}"
+    status=locked
+    exit 1
+  fi
+  sleep 15
+done
+echo $$ > "$local_lock/pid"
+have_local=yes
+# The board, which may still be rebooting from the last run.
+until "${ssh_[@]}" "$board" true 2>/dev/null; do
+  if ((SECONDS - start > wait_s)); then
+    echo "board-run: the board does not answer at $board"
+    status=no-board
+    exit 1
+  fi
+  sleep 15
+done
 
 # The lock. noclobber makes taking it atomic.
 take() { "${ssh_[@]}" "$board" "sh -c 'set -C; echo \"$owner\" > /root/vx-board.lock'" 2>/dev/null; }
@@ -93,7 +137,7 @@ cat_pid=$!
   "$image/EFI/BOOT/BOOTAA64.EFI" "$board:/tmp/" || { status=copy-failed; exit 1; }
 "${ssh_[@]}" "$board" "set -e
   mkdir -p /tmp/esp
-  mount -t msdosfs /dev/nda0p1 /tmp/esp
+  mount -t msdosfs $esp /tmp/esp
   if [ -n '$backup' ] && [ ! -e /tmp/esp/$backup ]; then cp -R /tmp/esp/croi /tmp/esp/$backup; fi
   cp /tmp/kernel.elf /tmp/bootfs.img /tmp/cmdline /tmp/esp/croi/
   cp /tmp/BOOTAA64.EFI /tmp/esp/EFI/vectra/BOOTAA64.EFI
@@ -106,16 +150,18 @@ cat_pid=$!
 "${ssh_[@]}" "$board" 'shutdown -r now' >/dev/null 2>&1
 
 # board-test's last line, or the deadline.
-deadline=$((SECONDS + 360))
+deadline=$((SECONDS + ${BOARD_DEADLINE:-360}))
 sleep 20
 while ((SECONDS < deadline)); do
-  if grep -aq "board-test: passed" "$log"; then status=passed; break; fi
-  if grep -aq "board-test: FAILED" "$log"; then status=failed; break; fi
+  if grep -aEq "$pass_re" "$log"; then status=passed; break; fi
+  if grep -aEq "$fail_re" "$log"; then status=failed; break; fi
   sleep 5
 done
 [[ $status == unknown ]] && status=timeout
 # FreeBSD back, so the lock can be released.
-while ((SECONDS < deadline + 240)); do
+back=$((SECONDS + return_s))
+while ((SECONDS < back)); do
   "${ssh_[@]}" "$board" true 2>/dev/null && break
   sleep 10
 done
+((SECONDS < back)) || echo "board-run: FreeBSD hasn't answered in $return_s s; the next run waits for it"

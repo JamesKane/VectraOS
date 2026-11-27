@@ -116,6 +116,52 @@ func ftsWalk(_ root: String, skip: Bool) -> (entries: [String], sameEntry: Bool,
     check(close(fd) == -1 && errno == EBADF, "close twice: EBADF")
     check(open("/svc/t/nope", O_RDONLY) == -1 && errno == ENOENT, "a missing file: ENOENT")
 
+    // The libc's file streams over fdio's files (stdio(2)): written through
+    // the buffer and read back, sought and told, pushed back, appended,
+    // big reads past the buffer, and fdopen over a descriptor.
+    if let f = fopen("/svc/t/box/stream", "w+") {
+      let text = Array("alpha beta\ngamma\n".utf8)
+      check(text.withUnsafeBytes { fwrite($0.baseAddress, 1, text.count, f) } == text.count, "fwrite to a file stream")
+      check(ftell(f) == 17, "ftell counts what is buffered")
+      check(fseek(f, 6, SEEK_SET) == 0 && fgetc(f) == 0x62 && ftell(f) == 7, "fseek, fgetc and ftell")
+      check(ungetc(0x42, f) == 0x42 && fgetc(f) == 0x42 && fgetc(f) == 0x65, "ungetc gives its byte back")
+      var line = [CChar](repeating: 0, count: 32)
+      check(fgets(&line, 32, f) != nil && String(cString: line) == "ta\n", "fgets reads to the newline")
+      check(fseek(f, -6, SEEK_END) == 0 && fgets(&line, 32, f) != nil && String(cString: line) == "gamma\n",
+            "fseek from the end")
+      check(fgetc(f) == EOF && feof(f) != 0, "the end of the file")
+      rewind(f)
+      check(feof(f) == 0 && fgetc(f) == 0x61, "rewind")
+      check(fclose(f) == 0, "fclose")
+    } else {
+      check(false, "fopen makes a file stream")
+    }
+    if let f = fopen("/svc/t/box/stream", "a") {
+      check(fputs("delta\n", f) == 0 && fclose(f) == 0, "fopen \"a\" appends")
+    }
+    let big = 40_000  // past the stream's 16 KiB buffer
+    if let f = fopen("/svc/t/box/big", "wb") {
+      var bytes = [UInt8](repeating: 0, count: big)
+      for i in 0..<big { bytes[i] = UInt8(truncatingIfNeeded: i &* 7) }
+      check(bytes.withUnsafeBytes { fwrite($0.baseAddress, 1, big, f) } == big && fclose(f) == 0, "a big fwrite")
+      if let g = fopen("/svc/t/box/big", "rb") {
+        var back = [UInt8](repeating: 0, count: big)
+        let head = back.withUnsafeMutableBytes { fread($0.baseAddress, 1, 100, g) }
+        let rest = back.withUnsafeMutableBytes { fread($0.baseAddress! + 100, 1, big, g) }
+        check(head == 100 && rest == big - 100 && back == bytes && feof(g) != 0, "fread back, past the buffer")
+        _ = fclose(g)
+      }
+    }
+    let sfd = open("/svc/t/box/stream", O_RDONLY)
+    if let f = fdopen(sfd, "r") {
+      var all = [CChar](repeating: 0, count: 64)
+      let n = all.withUnsafeMutableBytes { fread($0.baseAddress, 1, 63, f) }
+      check(n == 23 && String(cString: all).hasSuffix("gamma\ndelta\n") && fileno(f) == sfd, "fdopen reads a descriptor")
+      _ = fclose(f)
+    }
+    check(fopen("/svc/t/box/none", "r") == nil && errno == ENOENT, "fopen of a missing file: ENOENT")
+    check(unlink("/svc/t/box/stream") == 0 && unlink("/svc/t/box/big") == 0, "the streams' files removed")
+
     // A service's leaf, read as a file.
     let leaf = open("/svc/t/status", O_RDONLY)
     check(leaf > 2 && readBytes(leaf, 64) == Array("running\n".utf8), "a service's leaf reads as a file")

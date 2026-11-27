@@ -24,6 +24,7 @@ A C program's shaders go into a C header of `static const uint32_t` arrays of SP
 
 | Shaders | C header |
 | `user/tier1/vulkan-shaders` | `user/tier1/vulkan-shaders/shaders.h` |
+| `user/tier1/gl-shaders` | `user/tier1/gl-shaders/shaders.h` |
 
 With `--check`, it compiles each shader to a scratch file and fails, naming the file, if a committed `.spv`, Swift file or header is missing or differs.
 

@@ -1,0 +1,42 @@
+page setjmp 2
+summary non-local jumps
+names setjmp _setjmp longjmp _longjmp sigsetjmp siglongjmp
+src system/libc/include/setjmp.h system/libc/native/setjmp-arm64.S system/libc/native/setjmp-amd64.S system/libc/native/setjmp-rv64.S
+keys setjmp longjmp jmp_buf jump error recovery
+lang c
+
+# SYNOPSIS
+
+```c
+#include <setjmp.h>
+
+typedef long jmp_buf[32];
+typedef long sigjmp_buf[32];
+
+int setjmp(jmp_buf env);
+int _setjmp(jmp_buf env);
+void longjmp(jmp_buf env, int value);
+void _longjmp(jmp_buf env, int value);
+#define sigsetjmp(env, save) setjmp(env)
+#define siglongjmp(env, value) longjmp(env, value)
+```
+
+# DESCRIPTION
+
+`setjmp` saves the calling function's callee-saved registers, its stack pointer and its return address in <env> and returns 0.
+`longjmp` restores them, so that the `setjmp` returns again, with <value>, or 1 if <value> is 0.
+The function that called `setjmp` must not have returned.
+As C has it, a local variable changed between the two and not declared `volatile` has an indeterminate value after the jump.
+
+The registers saved are each psABI's callee-saved ones: on arm64 x19 to x30, the stack pointer, and d8 to d15; on amd64 rbx, rbp, r12 to r15, the stack pointer and the return address; on rv64 ra, sp, s0 to s11, and fs0 to fs11 under a hard-float ABI (user code is soft-float, so none there).
+
+`_setjmp` and `_longjmp` are the same calls, and so are `sigsetjmp` and `siglongjmp`: there are no signals, so no signal mask to keep.
+
+# SEE ALSO
+
+stdlib(2)
+
+# BUGS
+
+Nothing checks that <env> belongs to a frame still live; jumping to one that has returned is undefined, and fails in any way.
+Floating-point control state (rounding mode, x87's control word, MXCSR) is not restored.

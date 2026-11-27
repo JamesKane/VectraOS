@@ -1,0 +1,54 @@
+page glmark2 8
+summary the OpenGL ES 2.0 benchmark glmark2, ported: its scenes' frames a second over our GLES library
+names glmark2 glmark2-es2-vectraos glmark2-offscreen
+src ports/glmark2/README.md ports/glmark2/fetch.sh ports/glmark2/apply-patches.sh ports/glmark2/patches ports/glmark2/glmark2.manifest ports/glmark2/glmark2-offscreen.manifest cmake/Glmark2.cmake
+keys gles opengl egl benchmark score frames fps glmark2 port gpu mali panfrost tier 1
+
+# SYNOPSIS
+
+```text
+echo start glmark2 >/svc/launcher/ctl
+glmark2-es2-vectraos [--off-screen] [--size WxH] [-b BENCHMARK]...
+                     [--run-forever] [-l] [-d]
+```
+
+# DESCRIPTION
+
+glmark2-es2-vectraos is glmark2 2023.01, the GLES 2.0 benchmark, as a program of tier 1 in C++: glmark2's own source, fetched at its release and patched (ports/glmark2), built with its GLESv2 and EGL flavour.
+Its options are glmark2's (`--help` lists them).
+With none it runs its default benchmarks, each scene for ten seconds, printing each one's frames a second and frame time, and at the end the score, their mean.
+
+It loads EGL and GLES as glmark2 does elsewhere, opening `libEGL.so` and `libGLESv2.so` with dlopen (dlfcn(2)) and asking for each function by name.
+Those are our GLES library's, in bootfs's `lib/`; the program names them as libraries it needs, so the process that starts it loads them, with the Swift runtime they use, and dlopen finds them loaded.
+Its display is EGL's default one, and its window a window of Radharc's of the size `--size` gives (800 by 600 unless it says otherwise), titled `glmark2`: the manifest says `use windows`.
+`--off-screen` draws to a framebuffer of its own instead, waiting for each frame (`glFinish`); its window is then a headless one (egl(2)), which needs no compositor.
+
+Its models, shaders and textures are `/lib/glmark2` (glmark2's `GLMARK_DATA_PATH`), bootfs's `lib/glmark2` mounted there by its manifest.
+It carries libpng, libjpeg-turbo and zlib, compiled into it alone (ports/glmark2/README.md says which releases).
+
+On the Orange Pi 6 Plus it is an app of the desktop image, started by the launcher (`echo start glmark2 >/svc/launcher/ctl`) once Radharc is up.
+On the board, `esp-board-glmark2` (built on request) runs it off-screen at 800 by 600 with the board image's drivers and no desktop, until it ends, then reboots: the run the reference on AbyssBSD is compared with (docs/boards/orangepi-6-plus/gl.md).
+In QEMU, `esp-glmark2` (built on request: `ninja -C build/arm64 esp-glmark2`) has userboot start it with no arguments; with no manifest there is no `/lib/glmark2`, so it says it can't open the models and textures directories, and with no GPU's EGL it stops at loading the EGL library.
+
+# FILES
+
+: `/lib/glmark2`
+  Its data: `models`, `shaders` and `textures`.
+: `/lib/libEGL.so`, `/lib/libGLESv2.so`
+  The EGL and GLES libraries it loads.
+
+# SEE ALSO
+
+launcher(8), radharc(4), dlfcn(2), vulkan-present(8)
+
+# DIAGNOSTICS
+
+Without the EGL library it prints `Error loading EGL library` and exits with 1.
+A failure of EGL or GL is glmark2's message, `Error:` and what failed.
+
+# BUGS
+
+There is no full screen: `--fullscreen` prints `Error: VectraOS has no full screen window: give --size` and exits.
+Closing the window doesn't end a run: EGL gives the program no window events.
+`--results-file` and `--validate`'s screenshots are written through the file library, so only to a namespace with somewhere to write.
+Each scene's idle and system time, which glmark2 reads from `/proc/uptime` and getrusage(2), are not shown: there is no `/proc/uptime`, and all of the CPU time is user time.

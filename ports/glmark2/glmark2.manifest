@@ -1,0 +1,9 @@
+# glmark2 on the board's desktop (glmark2(8), D183): glmark2-es2-vectraos, an app of the desktop image where
+# tier 1 and the port are built, started by `echo start glmark2 >/svc/launcher/ctl` once Radharc is up: its
+# default run in a window of 800x600, its data from bootfs's lib/glmark2.
+service glmark2
+program glmark2-es2-vectraos
+app glmark2
+use windows
+mount /dev devmgr/dev
+mount /lib/glmark2 bootfs/lib/glmark2

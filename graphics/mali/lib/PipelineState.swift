@@ -77,13 +77,26 @@ public struct ZSDescriptorState: Equatable, Sendable {
 
 // MARK: The depth and stencil target (08 sections 8.2.1 and 8.5)
 
-/// The depth format of a target: its memory format (8.5.1: D16 1, D32 14) and the tile's internal format (8.2.2: D16 0,
-/// D32 2).
+/// The depth format of a target: its memory format (8.5.1: D16 1, D24X8 4, D32 14) and the tile's internal format (8.2.2: D16 0,
+/// D24 1, D32 2). `d24` is 24-bit depth in the low bits of a 32-bit element, the stencil in a plane of its own.
 public enum DepthFormat: Equatable, Sendable {
   case d16
+  case d24
   case d32f
-  public var writeFormat: UInt32 { self == .d16 ? 1 : 14 }
-  public var internalFormat: UInt32 { self == .d16 ? 0 : 2 }
+  public var writeFormat: UInt32 {
+    switch self {
+    case .d16: 1
+    case .d24: 4
+    case .d32f: 14
+    }
+  }
+  public var internalFormat: UInt32 {
+    switch self {
+    case .d16: 0
+    case .d24: 1
+    case .d32f: 2
+    }
+  }
   public var bytesPerPixel: Int { self == .d16 ? 2 : 4 }
 }
 
@@ -111,6 +124,10 @@ public struct ZSTarget: Equatable, Sendable {
   /// Bytes from one layer of each plane to the next (05 section 5.5.3's array stride), for a pass of layers.
   public var depthLayerStride = 0
   public var stencilLayerStride = 0
+  /// The depth plane is AFBC (block format 12, 8.5.1): its address the header area's, `depthRowStride` the header row stride and
+  /// `depthSurfaceStride` the body's offset; `reverseIssueOrder` (word 0 `[30]`) where a superblock is larger than the tile.
+  public var depthAFBC = false
+  public var reverseIssueOrder = false
 
   public init(depthFormat: DepthFormat?, hasStencil: Bool) {
     self.depthFormat = depthFormat
@@ -138,7 +155,8 @@ public struct ZSTarget: Equatable, Sendable {
       guard depthRowStride > 0, depthRowStride < 1 << 27, depthSurfaceStride >= 0, UInt64(depthSurfaceStride) < 1 << 37 else {
         throw .outOfRange
       }
-      w[0] |= f.writeFormat | 2 << 4 | (depthMSAA & 3) << 8
+      w[0] |= f.writeFormat | (depthAFBC ? 12 : 2) << 4 | (depthMSAA & 3) << 8
+      if depthAFBC && reverseIssueOrder { w[0] |= 1 << 30 }
       w[8] = UInt32(truncatingIfNeeded: a)
       w[9] = UInt32(truncatingIfNeeded: a >> 32)
       w[10] = UInt32(depthRowStride) | UInt32(truncatingIfNeeded: UInt64(depthSurfaceStride) >> 32) << 27

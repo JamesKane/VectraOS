@@ -35,14 +35,14 @@ The agent writes a register only if the line names an address and a width devmgr
 The tree is served in devmgr(8)'s, at `drivers/scmi-acpi-_SB_.SCMI` on the Sky1, and at `/dev/scmi` in the drivers that use it.
 
 : `ctl`
-  Takes a command a line: `power <domain> on|off` (POWER_STATE_SET, the state on or off with its context lost), `clock <id> on|off` (CLOCK_CONFIG_SET), or `clock <id> rate <hz>` (CLOCK_RATE_SET, synchronous, the platform rounding down, then CLOCK_RATE_GET), or `clock <id> rate` (CLOCK_RATE_GET alone: the rate as it is, shown in the status), numbers in decimal or `0x` hexadecimal.
+  Takes a command a line: `power <domain> on|off` (POWER_STATE_SET, the state on or off with its context lost), `clock <id> on|off` (CLOCK_CONFIG_SET), or `clock <id> rate <hz>` (CLOCK_RATE_SET, synchronous, the platform rounding down, then CLOCK_RATE_GET), or `clock <id> rate` (CLOCK_RATE_GET alone: the rate as it is, shown in the status); `perf <domain> level <level>` (PERFORMANCE_LEVEL_SET, then PERFORMANCE_LEVEL_GET), `perf <domain> level` (PERFORMANCE_LEVEL_GET alone), or `perf <domain> limits` (PERFORMANCE_LIMITS_GET: the lowest and highest level allowed), a level in the platform's units, numbers in decimal or `0x` hexadecimal.
   `cppc <address> <value> <bits>` stores the value in a CPU's desired-performance register, `bits` being 8, 16, 32 or 64: `cppc 0x659009c 8192 32`.
   A `cppc` line that names a register devmgr didn't list, at another width, with a value too wide for it, or in no page the agent was granted, fails the write as invalid, is counted, and changes nothing.
   A line it can't parse fails the write as invalid; a command the platform refused, or that no channel carries, fails it as an I/O error.
 : `status`
   Read only.
   A line for each channel, `mailbox: SCMI 2.0, vendor cix` or `smc c2000001: SCMI 2.0, vendor cix`, or the channel and `FAILED:` and why; `no mailbox: …` where devmgr gave none.
-  Then the last state set for each domain and clock, `power 21 on`, `clock 31 on`, and the rate each clock was set to as read back, or read by `clock <id> rate`, `clock 41 rate 148500000`; the last value written to each CPPC register, `cppc 0x659009c 8192 32`, and `cppc writes refused <n>` once one was refused; `commands <n>, failed <n>`; and `last failure: <command>: <why>`, the why `status <n> (<name>)`, `timed out`, `channel error`, `short answer` or `no channel`, or for a refused `cppc` line `not a desired-performance register devmgr listed`, `value too wide` or `in no page the agent was granted`.
+  Then the last state set for each domain and clock, `power 21 on`, `clock 31 on`, and the rate each clock was set to as read back, or read by `clock <id> rate`, `clock 41 rate 148500000`; each performance domain's level as last set or read, `perf 0 level 1000000`, and its limits as read, `perf 0 limits 72000 1000000`; the last value written to each CPPC register, `cppc 0x659009c 8192 32`, and `cppc writes refused <n>` once one was refused; `commands <n>, failed <n>`; and `last failure: <command>: <why>`, the why `status <n> (<name>)`, `timed out`, `channel error`, `short answer` or `no channel`, or for a refused `cppc` line `not a desired-performance register devmgr listed`, `value too wide` or `in no page the agent was granted`.
 
 # SEE ALSO
 
@@ -50,7 +50,7 @@ devmgr(8), power(8), mali(3), driver(6), intro(3)
 
 # BUGS
 
-Only power domains' and clocks' on and off, and clocks' rates, are sent: no performance levels, sensors, resets or the platform's own messages (the second mailbox and its notifications aren't read).
+Only power domains' and clocks' on and off, clocks' rates, and performance domains' levels and limits are sent: no performance level descriptions or notifications, sensors, resets or the platform's own messages (the second mailbox and its notifications aren't read).
 The channels are polled, not interrupted.
 A CPPC register is written only where it is in a range this agent holds: registers in another page that no driver owns aren't reachable through it.
 Firmware's SMC channel exists only by a board rule; nothing in ACPI describes it.

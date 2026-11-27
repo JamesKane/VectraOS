@@ -197,8 +197,7 @@ extension MaliDevice {
 
   /// Bytes in memory of the submission's own: a fill's pattern, an update's data.
   func stage(_ bytes: [UInt8], held: inout [Region]) throws(GPUError) -> UInt64 {
-    let region = try makeRegion(max(bytes.count, 16))
-    held.append(region)
+    let region = try scratch(max(bytes.count, 16), held: &held)
     var words = [UInt32](repeating: 0, count: (bytes.count + 7) / 8 * 2)
     for (i, b) in bytes.enumerated() { words[i / 4] |= UInt32(b) << UInt32(8 * (i % 4)) }
     store(words, in: region, at: 0)
@@ -281,8 +280,7 @@ extension MaliDevice {
                   heap: (address: UInt64, bytes: Int)?, held: inout [Region]) throws(GPUError) -> Step {
     let program = try transferProgram(k)
     let tableAt = 16 + jobs.count * 4
-    let region = try makeRegion(tableAt + table.count * 4 + 8)
-    held.append(region)
+    let region = try scratch(tableAt + table.count * 4 + 8, held: &held)
     let tableAddress = region.address + UInt64(tableAt)
     var words: [UInt32] = [UInt32(truncatingIfNeeded: tableAddress), UInt32(truncatingIfNeeded: tableAddress >> 32), UInt32(count), 0]
     words += jobs
@@ -624,8 +622,7 @@ extension MaliDevice {
       let tableBytes = entries * 32
       var planeCount = 0
       for t in textures { planeCount += t.planes.count }
-      let region = try makeRegion(tableBytes + planeCount * PlaneDescriptor.size)
-      held.append(region)
+      let region = try scratch(tableBytes + planeCount * PlaneDescriptor.size, held: &held)
       do throws(DescriptorError) {
         store(try SamplerWords(minFilter: .nearest, magFilter: .nearest).words(), in: region, at: 0)
         store(try SamplerWords(minFilter: .linear, magFilter: .linear).words(), in: region, at: 32)

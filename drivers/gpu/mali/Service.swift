@@ -282,6 +282,8 @@ public struct CSFService<Backend: CSFBackend> {
     var queues: [CSFQueueMemory]
     var syncBase: UInt64
     var syncSize: UInt64
+    /// A posted submission (`post`) of the group's was refused: its state says so from then on.
+    var refused = false
   }
 
   struct Sync {
@@ -333,6 +335,10 @@ public struct CSFService<Backend: CSFBackend> {
   var tags: [(tag: UInt64, submission: Int)] = []
   var nextTag: UInt64 = 1
   var nextSubmission = 1
+  /// The service's time for each of the last submits (its checks, the rings, the doorbells and the pump), in nanoseconds,
+  /// for `submitStatusLines`.
+  var submitTimes: [UInt64] = []
+  var submitCount = 0
   /// What the tiler OOMs came to, for status.
   var oomEvents = 0
   var oomGranted = 0
@@ -687,6 +693,7 @@ public struct CSFService<Backend: CSFBackend> {
     if i.timedOut { s |= 1 }
     if i.fatalQueues != 0 { s |= 2 }
     if i.innocent { s |= 4 }
+    if g.refused { s |= 8 }
     return (s, i.fatalQueues, i.csg != nil)
   }
 
@@ -903,9 +910,39 @@ public struct CSFService<Backend: CSFBackend> {
     for s in signals where counter(c, s.id) == nil { throw .notFound }
     let id = nextSubmission
     nextSubmission += 1
+    let start = scheduler.link.nanoseconds
     pending.append(Submission(id: id, context: c, group: Int(handle), jobs: jobs, waits: waits, signals: signals,
                               remaining: jobs.count))
-    pump()
+    // The jobs go to their rings and the doorbells ring now. The rest of a pump (the firmware's events, the completions, the
+    // tick) is the interrupt threads', unless the scheduler wants it now: a group off its slot, a reset, a submission waiting.
+    _ = issuePending()
+    // An empty job completes at once, on the scheduler's list.
+    for d in scheduler.drainCompletions() { complete(d) }
+    if !pending.isEmpty || scheduler.wantsRun { pump() }
+    let took = scheduler.link.nanoseconds &- start
+    if submitTimes.count < 256 { submitTimes.append(took) } else { submitTimes[submitCount % 256] = took }
+    submitCount += 1
+  }
+
+  /// `submit` with no answer (the client's one-way `post`): a submission refused raises its signals, as a failed one does, and
+  /// marks its group (its state's bit 3), which is how the client learns.
+  public mutating func post(_ c: Int, group handle: UInt32, jobs: [CSFJob], waits: [CSFSync], signals: [CSFSync]) {
+    do throws(CSFServiceError) { try submit(c, group: handle, jobs: jobs, waits: waits, signals: signals) } catch {
+      raise(c, signals)
+      if contexts.indices.contains(c), contexts[c] != nil, handle >= 1, Int(handle) <= Self.maxGroups,
+        contexts[c]!.groups[Int(handle) - 1] != nil
+      {
+        contexts[c]!.groups[Int(handle) - 1]!.refused = true
+      }
+    }
+  }
+
+  /// What the last submits took of the service (from its checks to the pump's end), for the status: a line.
+  public var submitStatusLines: [String] {
+    guard !submitTimes.isEmpty else { return ["submits: none"] }
+    let sorted = submitTimes.sorted()
+    return ["submits: \(submitCount); of the last \(sorted.count), the service's part (rings, doorbells, the pump) took"
+      + " \(sorted[sorted.count / 2] / 1000) us at the median, \(sorted[sorted.count - 1] / 1000) us at most"]
   }
 
   // MARK: Time

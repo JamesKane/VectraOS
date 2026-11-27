@@ -74,7 +74,7 @@ extension Selector {
     for v in m.outputs where !isVertex && v.builtin < 0 {
       guard v.location >= 0 && v.location < 8 else { throw BackendError.unsupported("a colour output at location \(v.location)") }
     }
-    // The heap handles of the images and samplers the shader names, from word 0 of a fragment shader's block
+    // The heap handles of the images and samplers the shader names (a vertex shader's after its own words), from word 0 of a fragment shader's block
     // (graphics/mali/lib/GraphicsShader.swift), then the dummy sampler a fetch of a plain image names.
     var keys: [UInt64] = []
     var needsDummy = false
@@ -88,7 +88,6 @@ extension Selector {
       }
       for id in f.blocks[b].insts where f.insts[id].op == .tex {
         let t = f.insts[id]
-        if isVertex { throw BackendError.unsupported("a texture access in a vertex shader") }
         for p in t.payload where p != UInt64.max && !keys.contains(p) { keys.append(p) }
         if t.imm & TexFlags.noSampler != 0 { needsDummy = true }
       }
@@ -118,6 +117,9 @@ extension Selector {
   /// The loads of the stage's inputs, at the top of the entry block.
   mutating func graphicsPrologue() throws(BackendError) {
     var fragmentWord = -1
+    // The sample position the hidden interpolation register holds weights for (12c.2.4): a later load at the same one
+    // retrieves them instead of computing them again, and waits only for the load that stored them (12c.5.5).
+    var storedCentroid: Bool? = nil
     if !isVertex && usedBuiltins[IRBuiltin.helperInvocation] {
       var demotes = false
       for b in layout { for id in f.blocks[b].insts where f.insts[id].op == .demote { demotes = true } }
@@ -148,18 +150,22 @@ extension Selector {
         i.put("offset", VaryingLayout.offset(location: v.location))
         i.put("vsz", vectorSize(comps))
         i.put("vfmt", flat ? "src_flat32" : "src_f32")
-        i.put("spos", !flat && v.centroid ? "centroid" : "center")
-        i.put("upd", flat ? "retrieve" : "store")
+        let retrieve = !flat && storedCentroid == v.centroid
+        i.put("spos", !flat && !retrieve && v.centroid ? "centroid" : "center")
+        i.put("upd", flat || retrieve ? "retrieve" : "store")
         var mi = MInst(i, .message)
-        mi.src[0] = !flat && v.centroid ? .reg(preload(61), 0) : .const(0)
+        mi.src[0] = !flat && !retrieve && v.centroid ? .reg(preload(61), 0) : .const(0)
         mi.stageWrite = .reg(block, 0)
         mi.hidden = !flat
+        mi.hiddenRetrieve = retrieve
         add(mi)
+        if !flat { storedCentroid = v.centroid }
         if v.noPerspective && !flat {
           // 12c.5.6: a no-perspective varying is the interpolated one times the fragment's w.
           if fragmentWord < 0 {
             fragmentWord = newReg()
             addSpecialLoad("frag_w", into: fragmentWord, hidden: true)
+            storedCentroid = nil
           }
           for k in 0..<comps {
             alu("FMA", "f32", dst: .reg(block, k), .reg(block, k), .reg(fragmentWord, 0), .const(0), set: [("neg2", 1)])
@@ -254,49 +260,57 @@ extension Selector {
 
   // MARK: the vertex epilogue
 
-  mutating func vertexEpilogue() throws(BackendError) {
+  /// The vertex shader's outputs by view and the groups of `shader_output` it stores, found once.
+  mutating func vertexGroups() throws(BackendError) -> VertexGroups {
+    if let g = vgroups { return g }
     // The views the shader was replicated for (Prep.replicateViews): one, view 0, unless the draw is multiview.
-    var views: [Int] = []
-    for o in m.outputs where !views.contains(o.view) { views.append(o.view) }
-    views.sort()
-    var posOf: [Int] = []
-    var layerOf: [Int] = []
-    var varyingsOf: [[Int]] = []
-    for v in views {
+    var g = VertexGroups()
+    for o in m.outputs where !g.views.contains(o.view) { g.views.append(o.view) }
+    g.views.sort()
+    for v in g.views {
       var pos = -1
       for (n, o) in m.outputs.enumerated() where o.view == v && o.builtin == Int(BuiltInId.position) { pos = n }
       guard pos >= 0 else { throw BackendError.invalidIR("a vertex shader without a position") }
-      if outputReg[pos] < 0 { outputReg[pos] = newReg(4) }
-      posOf.append(pos)
+      g.posOf.append(pos)
       var varyings: [Int] = []
       for (n, o) in m.outputs.enumerated() where o.view == v && o.location >= 0 { varyings.append(n) }
       varyings.sort { m.outputs[$0].location < m.outputs[$1].location }
-      varyingsOf.append(varyings)
+      g.varyingsOf.append(varyings)
       var layerOut = -1
       for (n, o) in m.outputs.enumerated() where o.view == v && (o.builtin == Int(BuiltInId.layer) || o.builtin == Int(BuiltInId.viewportIndex)) {
         if layerOut >= 0 { throw BackendError.unsupported("a layer and a viewport index together: they share one field (valhall 14.3.7)") }
         layerOut = n
         storesViewportIndex = o.builtin == Int(BuiltInId.viewportIndex)
       }
-      layerOf.append(layerOut)
+      g.layerOf.append(layerOut)
     }
     // Groups, as shader_output's bits name them (12c.4.2): position (bit 0), generic varyings (bit 2).
     // The attribute group (bit 1: point size, layer, primitive id) has no store here: PointSize is accepted and not stored.
-    var bits = [0]
-    if layerOf[0] >= 0 {
-      bits.append(1)
+    g.bits = [0]
+    if g.layerOf[0] >= 0 {
+      g.bits.append(1)
       storesAttributes = true
     }
-    if !varyingsOf[0].isEmpty { bits.append(2) }
-    // A view's slots (12c.4.1): its bit position times 8 with the extended record, else 4, for the position and the attributes
-    // (which are 4 further); times 4 for the generic varyings.
-    let positionStride = storesAttributes ? 8 : 4
+    if !g.varyingsOf[0].isEmpty { g.bits.append(2) }
+    vgroups = g
+    return g
+  }
+
+  mutating func vertexEpilogue() throws(BackendError) {
+    let g = try vertexGroups()
     let base = epilogue
     precondition(base == mf.blocks.count, "the epilogue follows the entry's blocks")
-    for _ in 0..<(2 * bits.count + 1) { _ = newBlock() }
-    let end = base + 2 * bits.count
-    for (g, bit) in bits.enumerated() {
-      let head = base + 2 * g
+    if !groupStores.isEmpty {
+      // Divided: each group was stored behind its test where its outputs were made.
+      _ = newBlock()
+      cur = base
+      add(MInst(op("NOP"), .end))
+      return
+    }
+    for _ in 0..<(2 * g.bits.count + 1) { _ = newBlock() }
+    let end = base + 2 * g.bits.count
+    for (k, bit) in g.bits.enumerated() {
+      let head = base + 2 * k
       let body = head + 1
       let next = head + 2
       cur = head
@@ -309,53 +323,64 @@ extension Selector {
       branchIfBlock(.reg(t, 0), to: next, not: true)
       mf.blocks[head].succs = [next, body]
       cur = body
-      for (k, view) in views.enumerated() {
-        let pos = posOf[k]
-        let layerOut = layerOf[k]
-        let a = newReg(2)
-        var slot: Opd = .reg(preload(59), 0)
-        let index = (bit == 2 ? 4 : positionStride) * view + (bit == 1 ? 4 : 0)
-        if index != 0 {
-          let s = newReg()
-          alu("IADD_IMM", "i32", dst: .reg(s, 0), slot, set: [("imm", index)])
-          slot = .reg(s, 0)
-        }
-        message(
-          "LEA_BUF_IMM", "", address: slot, offset: 0, write: .reg(a, 0), memory: 0,
-          set: [("table", 13), ("index", bit == 2 ? 1 : 0)])
-        if bit == 1 {
-          // The layer or viewport index: a u8 at byte 2 of the attributes (06 6.6.1).
-          if layerOut >= 0 && outputReg[layerOut] >= 0 {
-            message("STORE", "i8", address: .reg(a, 0), offset: 2, read: .reg(outputReg[layerOut], 0), memory: 2, named: [("access", "istream")])
-          }
-        } else if bit == 0 {
-          message("STORE", "i128", address: .reg(a, 0), offset: 0, read: .reg(outputReg[pos], 0), memory: 2, named: [("access", "istream")])
-        } else {
-          let varyings = varyingsOf[k]
-          if opts.varyingProbe == .shaderOutput, let first = varyings.first(where: { outputReg[$0] >= 0 }) {
-            let b = newReg()
-            alu("AND_IMM", "i32", dst: .reg(b, 0), .special(3, 4, 0), set: [("imm", 255)])
-            let fl = newReg()
-            alu("U32_TO_F32", "", dst: .reg(fl, 0), .reg(b, 0))
-            let scale = materialize(0x3B80_8081)
-            alu("FMA", "f32", dst: .reg(outputReg[first], 0), .reg(fl, 0), scale, .const(0), set: [("neg2", 1)])
-          }
-          for n in varyings {
-            let o = m.outputs[n]
-            guard outputReg[n] >= 0 else { continue }
-            let comps = o.type.lanes
-            if o.type.scalarKind == .f32 { try nonPerspective(o, outputReg[n], comps, wReg: outputReg[pos]) }
-            let width = ["i32", "i64", "i96", "i128"][comps - 1]
-            message(
-              "STORE", width, address: .reg(a, 0), offset: VaryingLayout.offset(location: o.location), read: .reg(outputReg[n], 0),
-              memory: 2, named: [("access", "estream")])
-          }
-        }
-      }
+      try storeGroup(bit)
       mf.blocks[body].succs = [next]
     }
     cur = end
     add(MInst(op("NOP"), .end))
+  }
+
+  /// The stores of one group of `shader_output` (0 the position record, 1 the attributes, 2 the generic varyings) for each
+  /// view, at the end of the current block.
+  mutating func storeGroup(_ bit: Int) throws(BackendError) {
+    let g = try vertexGroups()
+    // A view's slots (12c.4.1): its bit position times 8 with the extended record, else 4, for the position and the attributes
+    // (which are 4 further); times 4 for the generic varyings.
+    let positionStride = storesAttributes ? 8 : 4
+    for (k, view) in g.views.enumerated() {
+      let pos = g.posOf[k]
+      if outputReg[pos] < 0 { outputReg[pos] = newReg(4) }
+      let layerOut = g.layerOf[k]
+      let a = newReg(2)
+      var slot: Opd = .reg(preload(59), 0)
+      let index = (bit == 2 ? 4 : positionStride) * view + (bit == 1 ? 4 : 0)
+      if index != 0 {
+        let s = newReg()
+        alu("IADD_IMM", "i32", dst: .reg(s, 0), slot, set: [("imm", index)])
+        slot = .reg(s, 0)
+      }
+      message(
+        "LEA_BUF_IMM", "", address: slot, offset: 0, write: .reg(a, 0), memory: 0,
+        set: [("table", 13), ("index", bit == 2 ? 1 : 0)])
+      if bit == 1 {
+        // The layer or viewport index: a u8 at byte 2 of the attributes (06 6.6.1).
+        if layerOut >= 0 && outputReg[layerOut] >= 0 {
+          message("STORE", "i8", address: .reg(a, 0), offset: 2, read: .reg(outputReg[layerOut], 0), memory: 2, named: [("access", "istream")])
+        }
+      } else if bit == 0 {
+        message("STORE", "i128", address: .reg(a, 0), offset: 0, read: .reg(outputReg[pos], 0), memory: 2, named: [("access", "istream")])
+      } else {
+        let varyings = g.varyingsOf[k]
+        if opts.varyingProbe == .shaderOutput, let first = varyings.first(where: { outputReg[$0] >= 0 }) {
+          let b = newReg()
+          alu("AND_IMM", "i32", dst: .reg(b, 0), .special(3, 4, 0), set: [("imm", 255)])
+          let fl = newReg()
+          alu("U32_TO_F32", "", dst: .reg(fl, 0), .reg(b, 0))
+          let scale = materialize(0x3B80_8081)
+          alu("FMA", "f32", dst: .reg(outputReg[first], 0), .reg(fl, 0), scale, .const(0), set: [("neg2", 1)])
+        }
+        for n in varyings {
+          let o = m.outputs[n]
+          guard outputReg[n] >= 0 else { continue }
+          let comps = o.type.lanes
+          if o.type.scalarKind == .f32 { try nonPerspective(o, outputReg[n], comps, wReg: outputReg[pos]) }
+          let width = ["i32", "i64", "i96", "i128"][comps - 1]
+          message(
+            "STORE", width, address: .reg(a, 0), offset: VaryingLayout.offset(location: o.location), read: .reg(outputReg[n], 0),
+            memory: 2, named: [("access", "estream")])
+        }
+      }
+    }
   }
 
   /// The varying times the position's reciprocal w, when the fragment shader declares it NoPerspective (14.3.6): by the

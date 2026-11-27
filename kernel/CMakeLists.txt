@@ -226,12 +226,12 @@ set(_swift_test_sources ${_user_dir}/test/swift/Main.swift ${_user_dir}/test/swi
     ${_user_dir}/lib/image/Image.swift
     ${PROJECT_SOURCE_DIR}/lib/ring/Ring/Ring.swift ${PROJECT_SOURCE_DIR}/lib/ring/Ring/RingMemory.swift)
 set(_swift_test ${CMAKE_CURRENT_BINARY_DIR}/swifttest.elf)
-croi_user_program(${_swift_test} PIE SOURCES ${_user_dir}/test/swift/LibcSuite.c ${_crypto_accel}
+croi_user_program(${_swift_test} PIE SOURCES ${_user_dir}/test/swift/LibcSuite.c ${_user_dir}/test/swift/LibcSuiteText.c ${_crypto_accel}
   INCLUDES ${PROJECT_SOURCE_DIR}/crypto/accel/include SWIFT ${_swift_test_sources})
 # The same as a fixed-address program with a dynamic section and no
 # relocations (Todhchai's dlopen hosts, linked --export-dynamic).
 set(_swift_test_exec ${CMAKE_CURRENT_BINARY_DIR}/swifttestexec.elf)
-croi_user_program(${_swift_test_exec} EXPORT_DYNAMIC SOURCES ${_user_dir}/test/swift/LibcSuite.c ${_crypto_accel}
+croi_user_program(${_swift_test_exec} EXPORT_DYNAMIC SOURCES ${_user_dir}/test/swift/LibcSuite.c ${_user_dir}/test/swift/LibcSuiteText.c ${_crypto_accel}
   INCLUDES ${PROJECT_SOURCE_DIR}/crypto/accel/include SWIFT ${_swift_test_sources})
 # userboot (K8b), carried in the kernel image like Zircon's; it shares
 # lib/elf's sources with the kernel and loader, and user/lib/loader's
@@ -536,6 +536,7 @@ croi_user_program(${_loinnir_test} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/graph
   ${PROJECT_SOURCE_DIR}/graphics/loinnir/tests/native/CoreCases.swift
   ${PROJECT_SOURCE_DIR}/graphics/loinnir/tests/native/generated/LoinnirShaders.swift
   ${PROJECT_SOURCE_DIR}/graphics/loinnir/tests/native/CoreFeatures.swift
+  ${PROJECT_SOURCE_DIR}/graphics/loinnir/tests/native/CoreFrames.swift
   ${PROJECT_SOURCE_DIR}/graphics/loinnir/tests/native/ResourceCases.swift
   ${PROJECT_SOURCE_DIR}/graphics/loinnir/tests/native/TransferCases.swift
   ${PROJECT_SOURCE_DIR}/graphics/loinnir/tests/native/CoreTexelBuffers.swift
@@ -712,6 +713,23 @@ if(_vulkan_test)
   endif()
   set(_vulkan_test_board_entries bin/vulkan-test=${_vulkan_test}
       etc/manifests/vulkan-test.manifest=${PROJECT_SOURCE_DIR}/user/tier1/vulkan-test-board.manifest)
+  # gl-test (user/tier1/gl-test.c, D183): OpenGL ES and EGL's check, beside vulkan-test in both.
+  get_property(_gl_test GLOBAL PROPERTY CROI_TIER1_GL_TEST)
+  if(_gl_test)
+    list(APPEND _vulkan_test_entries bin/gl-test=${_gl_test}
+         etc/manifests/gl-test.manifest=${PROJECT_SOURCE_DIR}/user/tier1/gl-test.manifest)
+    list(APPEND _vulkan_test_board_entries bin/gl-test=${_gl_test}
+         etc/manifests/gl-test.manifest=${PROJECT_SOURCE_DIR}/user/tier1/gl-test-board.manifest)
+  endif()
+endif()
+# glmark2 (D183, cmake/Glmark2.cmake), where tier 1 and its port are built: the program, its data at lib/glmark2
+# and its manifest, in the board's desktop image only, which runs it.
+get_property(_glmark2 GLOBAL PROPERTY CROI_TIER1_GLMARK2)
+set(_glmark2_entries)
+if(_glmark2)
+  get_property(_glmark2_data GLOBAL PROPERTY CROI_TIER1_GLMARK2_DATA)
+  set(_glmark2_entries bin/glmark2-es2-vectraos=${_glmark2} ${_glmark2_data}
+      etc/manifests/glmark2.manifest=${PROJECT_SOURCE_DIR}/ports/glmark2/glmark2.manifest)
 endif()
 set(CROI_BOOTFS_IMAGE ${CMAKE_BINARY_DIR}/bootfs.img PARENT_SCOPE)
 set(_bootfs_entries bin/m2=${_m2} bin/sys-test=${_sys_test} bin/dl-test=${_dl_test}
@@ -763,6 +781,10 @@ function(croi_bootfs name comment)
 endfunction()
 croi_bootfs(bootfs "Building bootfs"
   ${_bootfs_entries})
+# glmark2 started by userboot in QEMU (glmark2(8)): how far it gets without a GPU's EGL.
+if(_glmark2_entries)
+  croi_bootfs(bootfs-glmark2 "Building bootfs for glmark2 in QEMU" ${_bootfs_entries} ${_glmark2_entries})
+endif()
 # boot-warmboot's (D101): bootfs and this build's kernel at
 # lib/warm/kernel.elf, which bin/warmboot-test warm-boots into.
 croi_bootfs(bootfs-warmboot "Building bootfs for boot-warmboot"
@@ -1142,8 +1164,16 @@ croi_bootfs(bootfs-board-desktop "Building bootfs for the board's desktop"
   bin/crash-test=${_crash_test}
   bin/compose-test=${_compose_test}
   etc/manifests/compose-test.manifest=${PROJECT_SOURCE_DIR}/services/radharc/tests/gpu/compose-test-desktop.manifest
-  ${_vulkan_present_board_entries})
+  ${_vulkan_present_board_entries} ${_glmark2_entries})
 add_dependencies(bootfs-board-desktop cpu-keys)
+# glmark2 off-screen on the board (glmark2(8)): the board image with the port, run until glmark2 ends.
+if(_glmark2_entries)
+  set(_glmark2_offscreen_entries ${_glmark2_entries})
+  list(FILTER _glmark2_offscreen_entries EXCLUDE REGEX "^etc/manifests/glmark2\\.manifest=")
+  croi_bootfs(bootfs-board-glmark2 "Building bootfs for glmark2 on the board"
+    ${_board_entries} lib/factotum/keys=${PROJECT_SOURCE_DIR}/services/factotum/keys ${_glmark2_offscreen_entries}
+    etc/manifests/glmark2-offscreen.manifest=${PROJECT_SOURCE_DIR}/ports/glmark2/glmark2-offscreen.manifest)
+endif()
 
 # Atomics count with one AMO, never a checked add's LR/SC loop
 # (cmake/CheckAtomicsAreAmos.cmake).

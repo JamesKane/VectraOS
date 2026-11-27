@@ -22,6 +22,15 @@ func bytes(_ words: [UInt32]) -> [UInt8] {
 func device() throws -> (MaliDevice, FakeTransport) {
   let t = FakeTransport()
   let gpu = try MaliDevice(transport: t)
+  // A job a stream, so a test reads each step's (ChainTests has the merged form).
+  gpu.mergesQueueJobs = false
+  // The fake GPU never adds to the chain: the timeline's wait, at once.
+  gpu.spinsForCompletion = false
+  // Linear images, which the tests read in place (CompressionTests has the tiled ones).
+  gpu.tiledTextures = false
+  // A pass's tiling and fragment work as a stream on each of two queues, which the tests read apart (ChainTests has the one
+  // stream of the default).
+  gpu.singleQueuePasses = false
   _ = KernelRunner(gpu, t)
   return (gpu, t)
 }
@@ -104,7 +113,7 @@ func trianglePipeline(_ gpu: MaliDevice, _ format: PixelFormat = .rgba8) throws 
     #expect((0..<24).allSatisfy { b[$0] == UInt8($0 + 1) })
   }
 
-  @Test func aDrawIsARenderPassOnTheTwoQueuesSignallingTheTimeline() throws {
+  @Test func aDrawIsARenderPassOnTheFirstTwoQueuesSignallingTheTimeline() throws {
     let (gpu, t) = try device()
     let pipeline = try trianglePipeline(gpu)
     let target = try gpu.makeImage(ImageDescriptor(format: .rgba8, width: 64, height: 64, usage: .renderTarget | .copySource))
@@ -116,15 +125,17 @@ func trianglePipeline(_ gpu: MaliDevice, _ format: PixelFormat = .rgba8) throws 
     try gpu.graphicsQueue.submit(list, wait: 0, signal: 7)
     #expect(t.submits.count == 1)
     let s = t.submits[0]
-    #expect(t.groups[s.group] == [4096, 4096])
-    #expect(s.jobs.map { $0.queue } == [0, 1])
+    // One group of three queues: the tiler's, the fragment's and compute's.
+    #expect(t.groups[s.group] == [16384, 16384, 16384])
+    // The group's first submit starts its three queues, then the pass.
+    #expect(s.jobs.map { $0.queue } == [0, 1, 2, 0, 1])
     #expect(s.signals.count == 1 && s.signals[0].value == 7)
     #expect(gpu.completed == 7)
     // The streams are in memory the VM maps, and say something.
-    #expect(t.streams.count == 2 && t.streams.allSatisfy { $0.contains { $0 != 0 } })
+    #expect(t.streams.count == 5 && t.streams.allSatisfy { $0.contains { $0 != 0 } })
     // A second pass on the same queues starts them no more.
     try gpu.graphicsQueue.submit(list, wait: 7, signal: 8)
-    #expect(t.submits.count == 2 && t.submits[1].group == s.group)
+    #expect(t.submits.count == 2 && t.submits[1].group == s.group && t.submits[1].jobs.map { $0.queue } == [0, 1])
     #expect(t.groups.count == 1)
   }
 
@@ -156,7 +167,7 @@ func trianglePipeline(_ gpu: MaliDevice, _ format: PixelFormat = .rgba8) throws 
       r.draw(pipeline, root: 0x1000, vertices: 3)
     }
     try gpu.graphicsQueue.submit(list, wait: 0, signal: 1)
-    #expect(t.submits.count == 1 && t.submits[0].jobs.map { $0.queue } == [0, 1])
+    #expect(t.submits.count == 1 && t.submits[0].jobs.map { $0.queue } == [0, 1, 2, 0, 1])
     // A pipeline for the wrong format is the caller's mistake, and still raises the value waited for.
     let bgra = try trianglePipeline(gpu, .bgra8)
     var wrong = GPUCommandList()
@@ -240,18 +251,17 @@ func trianglePipeline(_ gpu: MaliDevice, _ format: PixelFormat = .rgba8) throws 
       l.copy(target, to: out)
       return l
     }
-    try gpu.graphicsQueue.submit(list(), wait: 0, signal: 1)
+    try gpu.run(list(), signal: 1)
     t.groupFault = 2
-    #expect(throws: GPUError.self) { try gpu.graphicsQueue.submit(list(), wait: 1, signal: 2) }
-    // The failed list's value is raised, so what waits for it ends, and a later pass goes past it.
+    // The fault is found when the list's value is waited for: the driver raised it, but the steps never added to the chain.
+    #expect(throws: GPUError.self) { try gpu.run(list(), signal: 2) }
     #expect(gpu.completed == 2)
     t.groupFault = 0
-    try gpu.graphicsQueue.submit(list(), wait: 2, signal: 3)
-    // A render group and the compute group of the copies.
-    #expect(t.groups.count == 2 && gpu.completed == 3)
-    // The new render group's first stream initialises the queues again (its first instruction is not a MOVE of the heap).
-    let passes = t.submits.filter { $0.jobs.count == 2 }
-    #expect(passes.count == 3 && passes[2].group != passes[0].group)
+    try gpu.run(list(), signal: 3)
+    // The faulted group was let go of, and the next list made a new one (the pass and the copy on its queues).
+    #expect(t.groups.count == 1 && gpu.completed == 3)
+    #expect(t.submits.count == 3 && t.submits[2].group != t.submits[0].group)
+    #expect(t.submits[2].jobs.map { $0.queue } == [0, 1, 2, 0, 1, 2])
   }
 
   @Test func readbackMemoryAndATargetOnlyTheCPUReadsAreCachedAndMaintained() throws {
