@@ -598,7 +598,8 @@ public final class GLContext {
     guard width > 0, height > 0 else { return }
     let usage: ImageUsage
     switch kind {
-    case .color: usage = .renderTarget | .copySource | .copyDestination | .sampled
+    // Drawn into and sampled (a copy out of it is drawn into a copyable image first): what a device's passes may compress.
+    case .color: usage = .renderTarget | .sampled
     default: usage = .depthStencilTarget
     }
     do throws(GPUError) {

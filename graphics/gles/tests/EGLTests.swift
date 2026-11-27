@@ -128,6 +128,7 @@ extension GLTests {
     var pixel = [UInt8](repeating: 0, count: 4)
     gles_glReadPixels(31, 15, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, &pixel)
     #expect(pixel == [0, 0, 255, 255])
+    #expect(gles_glGetError() == GL_NO_ERROR)
     #expect(gles_eglSwapBuffers(d, pbuffer) == 1)
     #expect(gles_eglMakeCurrent(d, nil, nil, nil) == 1)
     #expect(gles_eglGetCurrentContext() == nil)

@@ -735,10 +735,12 @@ extension GLContext {
     do throws(GPUError) {
       let m = try readbackMemory(w * h * 4)
       frame.endPass()
-      frame.barrier(before: [color.image.handle])
+      // An image no copy reads (drawn into and sampled alone) is drawn into one that can be read first.
+      let source = try copyable(color, width: t.width, height: t.height)
+      frame.barrier(before: [source.image.handle])
       let sy = t.flipped ? t.height - y1 : y0
-      frame.list.copy(color.image, to: m, regions: [
-        BufferImageRegion(subresource: ImageSubresourceLayers(mip: color.baseMip, baseLayer: color.baseLayer),
+      frame.list.copy(source.image, to: m, regions: [
+        BufferImageRegion(subresource: ImageSubresourceLayers(mip: source.baseMip, baseLayer: source.baseLayer),
                           imageOffset: Offset3D(x: x0, y: sy), imageExtent: Extent3D(width: UInt32(w), height: UInt32(h))),
       ])
       try frame.finish()

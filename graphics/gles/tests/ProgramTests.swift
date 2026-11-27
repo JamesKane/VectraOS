@@ -236,6 +236,31 @@ extension GLTests {
     #expect(h.error() == GL_NO_ERROR, "\(unsafe said)")
   }
 
+  /// A texture only drawn into and sampled has no copy usage (AFBC on Mali): ReadPixels, CopyTexImage and mipmaps of it go
+  /// through the library's copy by a draw, which the Mali backend compiles.
+  @Test func aDrawnTextureIsCopiedByADraw() throws {
+    let mali = try MaliDevice(transport: FakeTransport())
+    let h = Harness(mali)
+    var t: GLuint = 0, f: GLuint = 0
+    gles_glGenTextures(1, &t)
+    gles_glBindTexture(GL_TEXTURE_2D, t)
+    gles_glTexImage2D(GL_TEXTURE_2D, 0, GLint(GL_RGBA), 64, 64, 0, GL_RGBA, GL_UNSIGNED_BYTE, nil)
+    let tex = h.gl.share.textures[t]!
+    #expect(!tex.image!.usage.contains(.copySource) && tex.image!.mipLevels == 1)
+    gles_glGenFramebuffers(1, &f)
+    gles_glBindFramebuffer(GL_FRAMEBUFFER, f)
+    gles_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, t, 0)
+    gles_glClearColor(0, 1, 0, 1)
+    gles_glClear(GL_COLOR_BUFFER_BIT)
+    _ = h.read()
+    #expect(h.error() == GL_NO_ERROR)
+    gles_glBindFramebuffer(GL_FRAMEBUFFER, 0)
+    gles_glGenerateMipmap(GL_TEXTURE_2D)
+    gles_glFinish()
+    #expect(h.error() == GL_NO_ERROR)
+    #expect(tex.image!.mipLevels == 7 && tex.image!.usage.contains(.copySource))
+  }
+
   /// A texture sampled in the vertex stage (glmark2's terrain), on the Mali backend.
   @Test func aVertexStageSamples() throws {
     let mali = try MaliDevice(transport: FakeTransport())

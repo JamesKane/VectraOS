@@ -270,8 +270,8 @@ public final class EGLSurfaceObject: DefaultFramebuffer {
 
   /// A pbuffer of `width` by `height`.
   func makePbuffer() throws(GPUError) {
-    image = try device.makeImage(ImageDescriptor(format: .rgba8, width: width, height: height,
-                                                 usage: .renderTarget | .copySource | .copyDestination | .sampled))
+    // Drawn into and sampled alone (ReadPixels draws it into a copyable image), which a device's passes may compress.
+    image = try device.makeImage(ImageDescriptor(format: .rgba8, width: width, height: height, usage: .renderTarget | .sampled))
     try makeDepth()
   }
 

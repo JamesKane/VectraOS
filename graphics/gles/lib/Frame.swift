@@ -307,6 +307,8 @@ final class Frame {
     if let b = blackTexture { device.destroy(b.image) }
     if let b = blackCube { device.destroy(b.image) }
     for s in scratchImages { device.destroy(s.image) }
+    for s in copyScratches { device.destroy(s) }
+    for p in blitPipelines { device.destroy(p.pipeline) }
   }
 
   func release(_ image: GPUImage) { releaseImages.append(image) }
@@ -513,6 +515,10 @@ final class Frame {
     spareBuffers.append((m, bytes, value(ofEpoch: openUse)))
   }
 
+  /// The copy by a draw's stages and pipelines (Copies.swift), and its scratch images.
+  var blitLowered: (vertex: [UInt8], fragment: [UInt8])?
+  var blitPipelines: [(format: PixelFormat, pipeline: GPUPipeline)] = []
+  var copyScratches: [GPUImage] = []
   /// Scratch colour images by size, for passes GL gives no colour attachment.
   var scratchImages: [(width: Int32, height: Int32, image: GPUImage)] = []
 

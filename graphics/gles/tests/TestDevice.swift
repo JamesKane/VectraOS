@@ -164,7 +164,15 @@ final class TestDevice: GPUDevice {
         for a in attachments {
           if case .color(let i, .float(let r, let g, let b, let al)) = a { for rect in rects { fill(p.colors[i].view.image, [r, g, b, al], rect) } }
         }
-      case .draw(let p, let root, let count, _, _, _): draws.append((p, root, false, count))
+      case .draw(let p, let root, let count, _, _, _):
+        draws.append((p, root, false, count))
+        // The library's copy by a draw (no blend state of GL's, no depth): the source texture's texels into the target.
+        if let d = pipelines[p.handle], d.attachmentBlends == nil, d.depthStencilFormat == nil, let target = pass?.colors.first,
+          let source = textures[UInt32(UnsafeRawPointer(bitPattern: UInt(root))!.load(fromByteOffset: 96, as: UInt32.self))],
+          source.width == target.view.image.width, source.height == target.view.image.height
+        {
+          contents[target.view.image.handle] = contents[source.handle]
+        }
       case .drawIndexed(let p, let root, _, _, _, let count, _, _, _, _): draws.append((p, root, true, count))
       case .copyBufferToImageRegions(let m, let image, let regions):
         for r in regions where r.subresource.mip == 0 && r.subresource.baseLayer == 0 { copy(m, r, image, toImage: true) }
