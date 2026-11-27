@@ -452,13 +452,17 @@ func waitFor(_ ring: inout InputConsumer, _ doorbell: borrowing Handle, seconds:
     check(holds((try? events?.readText()) ?? "", "refused nowhere: no theme nowhere\n"), "events hears the refusal")
     check(holds(ns.readText("/svc/windows/theme/active") ?? "", "theme neon-tab\n"), "the theme before stays")
     check((try? ctl?.writeText("load platinum-indigo\n")) != nil, "and Platinum Indigo again")
-    // Drawn before the boot's screendump, which looks at the desk too.
+    // Drawn before the boot's screendump, which looks at the desk and the
+    // window's layers: every pixel it checks, since the desk is redrawn
+    // before the window's area and a corner alone left the image in Neon
+    // Tab's colours (desktop-pixels, 2026-11-27).
     redrawn = false
     for _ in 0..<100 where !redrawn {
-      redrawn = pixel(ns, dx, dy, is: "3f5868")
+      redrawn = pixel(ns, dx, dy, is: "3f5868") && pixel(ns, 20, 20, is: "3f5868")
+        && pixel(ns, 150, 180, is: "336699") && pixel(ns, 110, 110, is: "ff0000") && pixel(ns, 120, 125, is: "00ff00")
       if !redrawn { sleep(until: Clock.monotonic() + 20_000_000) }
     }
-    check(redrawn, "the desk is Platinum Indigo's again")
+    check(redrawn, "the desk and the window are Platinum Indigo's again")
     _ = consume ctl
     _ = consume events
     // The window and its connection live to here: a value's life ends at
