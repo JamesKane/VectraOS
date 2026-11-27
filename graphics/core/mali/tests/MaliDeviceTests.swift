@@ -26,6 +26,8 @@ func device() throws -> (MaliDevice, FakeTransport) {
   gpu.mergesQueueJobs = false
   // The fake GPU never adds to the chain: the timeline's wait, at once.
   gpu.spinsForCompletion = false
+  // Linear images, which the tests read in place (CompressionTests has the tiled ones).
+  gpu.tiledTextures = false
   _ = KernelRunner(gpu, t)
   return (gpu, t)
 }

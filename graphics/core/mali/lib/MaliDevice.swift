@@ -371,6 +371,8 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   public internal(set) var lastProfile = SubmitProfile()
   /// Whether images that qualify are AFBC (`afbcEligible`): on by default; off, every image is linear (a probe, a fallback).
   public var afbc = true
+  /// Whether sampled colour images made from now on are in 64 KiB tiles (`tiledEligible`): on.
+  public var tiledTextures = true
   /// Whether a submission's streams of one queue are one job (Execute.swift's `oneJobAQueue`): on; off, a job a stream (the host
   /// tests read each).
   public var mergesQueueJobs = true

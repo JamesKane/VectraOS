@@ -30,6 +30,20 @@ import Testing
     #expect(try kind(.rgba8, .renderTarget) == .linear)
   }
 
+  @Test func aSampledColourImageIsInTiles() throws {
+    let (gpu, _) = try device()
+    gpu.tiledTextures = true
+    func kind(_ f: PixelFormat, _ u: ImageUsage) throws -> ImageLayoutKind {
+      let i = try gpu.makeImage(ImageDescriptor(format: f, width: 64, height: 64, usage: u))
+      return gpu.images[i.handle]!.layout.kind
+    }
+    #expect(try kind(.rgba8, .sampled | .copyDestination) == .interleaved64K)
+    #expect(try kind(.rgba8, .sampled | .renderTarget | .copySource | .copyDestination) == .interleaved64K, "GL's texture")
+    #expect(try kind(.rgba8, .sampled | .storage) == .linear)
+    #expect(try kind(.rgba8, .copySource) == .linear, "not sampled")
+    #expect(try kind(.depth32f, .sampled | .depthStencilTarget | .copyDestination) == .linear, "a depth plane")
+  }
+
   @Test func aColourTargetHasACRCTableAndAKernelsWriteInvalidatesIt() throws {
     let (gpu, _) = try device()
     let target = try gpu.makeImage(ImageDescriptor(format: .rgba8, width: 64, height: 64, usage: .renderTarget | .copyDestination))

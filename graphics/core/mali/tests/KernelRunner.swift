@@ -101,6 +101,7 @@ func kernelDevice() throws -> (MaliDevice, FakeTransport, KernelRunner) {
   // A job a stream (the tests read each step's), and the timeline's wait at once (the fake GPU never adds to the chain).
   gpu.mergesQueueJobs = false
   gpu.spinsForCompletion = false
+  gpu.tiledTextures = false
   return (gpu, t, KernelRunner(gpu, t))
 }
 

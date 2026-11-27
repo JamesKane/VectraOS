@@ -241,7 +241,11 @@ extension MaliDevice {
     if !d.sparse.isEmpty, let e = sparseImageError(d) { throw e }
     // Linear, but for a sparse image used partly bound: the 64 KiB layout, whose tiles are its blocks (valhall 05 section 5.7.3).
     var kind: ImageLayoutKind = d.sparse.contains(.residency) ? .interleaved64K : .linear
-    if afbcEligible(d) { kind = .afbc }
+    if afbcEligible(d) {
+      kind = .afbc
+    } else if tiledEligible(d) {
+      kind = .interleaved64K
+    }
     var planes: [AspectPlane] = []
     var offset = 0
     for aspect in singleAspects(d.format.aspects) {
@@ -300,6 +304,18 @@ extension MaliDevice {
     guard (colour && d.usage.contains(.renderTarget)) || (depth && d.usage.contains(.depthStencilTarget)) else { return false }
     let allowed = ImageUsage.renderTarget | .depthStencilTarget | .sampled
     return d.usage.rawValue & ~allowed.rawValue == 0
+  }
+
+  /// Whether an image the texture unit samples is laid out in 64 KiB tiles of 16 x 16 u-curve blocks (valhall 05 section 5.7, the
+  /// sparse images' layout) rather than in rows: a 2D or cube colour image of one sample, not compressed, not a storage image or a
+  /// window's, that isn't AFBC. Neighbouring texels share cache lines both ways, as a sampler reads them; the transfer kernels
+  /// address the tiles, and a pass writes them (block format 8). `MaliDevice.tiledTextures` turns it off for images made after.
+  func tiledEligible(_ d: ImageDescriptor) -> Bool {
+    guard tiledTextures, d.sparse.isEmpty, d.usage.contains(.sampled), !d.usage.contains(.storage), !d.usage.contains(.scanout),
+      d.samples == 1, d.dimension == .d2 || d.dimension == .cube, !d.format.isCompressed, d.format.aspects == .color,
+      let t = d.format.texelFormat, ImageLayout.tile64K(bytes: t.bytesPerTexel) != nil
+    else { return false }
+    return true
   }
 
   // MARK: Views in the heap
