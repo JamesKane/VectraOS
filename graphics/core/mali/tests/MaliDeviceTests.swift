@@ -24,6 +24,8 @@ func device() throws -> (MaliDevice, FakeTransport) {
   let gpu = try MaliDevice(transport: t)
   // A job a stream, so a test reads each step's (ChainTests has the merged form).
   gpu.mergesQueueJobs = false
+  // The fake GPU never adds to the chain: the timeline's wait, at once.
+  gpu.spinsForCompletion = false
   _ = KernelRunner(gpu, t)
   return (gpu, t)
 }

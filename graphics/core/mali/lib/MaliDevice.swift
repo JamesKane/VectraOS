@@ -374,6 +374,10 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   /// Whether a submission's streams of one queue are one job (Execute.swift's `oneJobAQueue`): on; off, a job a stream (the host
   /// tests read each).
   public var mergesQueueJobs = true
+  /// Whether `wait` for the last value submitted watches the chain's word in memory before it waits on the timeline (on), and for
+  /// how long.
+  public var spinsForCompletion = true
+  static let spinNanoseconds: UInt64 = 1_000_000
   /// Whether colour targets made from now on have CRC tables (transaction elimination): on by default.
   public var crcTables = true
   /// Whether `lastProfile`'s times are taken (a benchmark's): off, the clock is not read and the times stay 0.
@@ -899,6 +903,16 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   public func wait(_ value: UInt64) throws(GPUError) {
     guard value > 0 else { return }
     defer { syncCached() }
+    // Everything submitted is done once every step has added its one to the chain, after its last tail's clean: the CPU sees it in
+    // memory before the driver's interrupt raises the timeline. A frame loop's wait (GL's glFinish) watches the word for a while
+    // first; the timeline's own wait is for a longer one, a fault, or another value.
+    if spinsForCompletion, value == rule.lastSignalled, let c = chainRegion, chainValue > 0 {
+      let start = transport.nanoseconds()
+      while chainWord(c) < chainValue {
+        if transport.nanoseconds() &- start > Self.spinNanoseconds { break }
+      }
+      if chainWord(c) >= chainValue { return }
+    }
     guard transport.wait(sync: timeline, value: value, timeoutNanoseconds: 60_000_000_000) else {
       if let g = renderGroup, transport.groupState(g) != 0 {
         dropGroup(g)
