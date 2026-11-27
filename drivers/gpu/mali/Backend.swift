@@ -568,21 +568,28 @@ final class MaliCore: @unchecked Sendable {
 
   // MARK: Before the power goes
 
-  /// The supply is ending (D170): the MCU is halted while it still has power
-  /// (06 section 6.4.5: by the interface's version), so the cut never lands on
-  /// a running one, then stopped (MCU_CONTROL disable). It cannot wait for the
-  /// server's lock, whose holder may be waiting on the very hardware that is
-  /// going; `stopped` ends what the pump would ask of it. Returns the line to say.
+  /// The supply is ending (D170): for a power cut, or devmgr's quiesce before
+  /// the machine resets, which needn't reset the GPU (the Sky1's may run on). The MCU
+  /// is halted while it still has power (06 section 6.4.5: by the interface's
+  /// version), then disabled, and the GPU soft reset (03 section 3.7.1), so
+  /// no firmware runs and no address space is live: after a reset the next
+  /// system reuses the memory the firmware ran from and its page tables were
+  /// in. It cannot wait for the server's lock, whose holder may be waiting on
+  /// the very hardware that is going; `stopped` ends what the pump would ask
+  /// of it. Returns the line to say.
   func haltBeforePowerCut(timeout: Int64) -> String {
     stopped = true
     window.store32(GPUControlRegister.irqMask, 0)
     window.store32(GPUControlRegister.jobIrqMask, 0)
     window.store32(GPUControlRegister.mmuIrqMask, 0)
     let start = Clock.monotonic()
+    let before = MCU.statusName(window.load32(GPUControlRegister.mcuStatus))
     let halted = link.host.haltMCU(control, door: window, timeout: timeout)
-    if halted { window.store32(GPUControlRegister.mcuControl, 0) }
+    let haltedStatus = MCU.statusName(window.load32(GPUControlRegister.mcuStatus))
+    let problems = control.stopForGood()
     let ms = (Clock.monotonic() - start) / 1_000_000
-    return halted ? "the MCU halted in \(ms) ms" : "the MCU did not halt in \(ms) ms (MCU_STATUS \(MCU.statusName(window.load32(GPUControlRegister.mcuStatus))))"
+    let halt = halted ? "the MCU (\(before)) halted" : "the MCU (\(before)) did not halt (MCU_STATUS \(haltedStatus))"
+    return halt + (problems.isEmpty ? ", disabled and the GPU soft reset" : ", then: " + problems) + " in \(ms) ms"
   }
 
   // MARK: Status

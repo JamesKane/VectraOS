@@ -34,6 +34,7 @@ Such an instance is marked `pushed` in `status`; removing the file and restartin
 In the same images, a manifest's `reload` gives its service a VMEX range of its own, to load fresh copies of its code (hotreload(2)).
 
 Given `launcher.until=<service>` on the kernel's command line, the launcher runs until that service ends, and exits with its exit code: how a boot test runs a client to its end.
+It then stops: first each running service's `shutdown` line is written (manifest(6)), the last started first, each waited for 5 s at most, so devmgr(8) quiesces the devices while every service still runs; then every service ends.
 Without it, it supervises the services for good.
 
 # FILES
