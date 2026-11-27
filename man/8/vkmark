@@ -61,4 +61,6 @@ A failure is vkmark's message, `Error:` and what failed, and the exit code 1: fo
 There is no MAILBOX or IMMEDIATE in a window: Radharc's protocol takes one present at a time, so a windowed run measures at most the display's rate.
 On a headless surface a finite acquire timeout is not kept: an acquire always returns at once, with a fence and semaphore that the GPU signals.
 A window doesn't follow a resize: vkmark makes its swapchain once.
+On the Orange Pi 6 Plus, the default list stops after texture anisotropy=16, which follows texture anisotropy=0: the GPU faults (`vulkan-core: failed: a pass ended its group`) and vkmark exits; the same scene run after the others completes (docs/boards/orangepi-6-plus/vk.md).
+The clear scene takes about 8.5 ms a frame there, far more than its clear costs.
 There are no signals, so nothing but the end of its benchmarks, Escape or closing the window stops a run (`--run-forever` runs until then).
