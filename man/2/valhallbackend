@@ -114,6 +114,7 @@ A handle is one value for a warp, and a fragment warp mixes primitives and insta
 A fetch of a plain image (OpImage of a sampled image drops the sampler) names the dummy sampler.
 The staging block is one register for each operand in the order of valhall 12b.5: the coordinates, the layer, the offset word, the level word.
 The wide form has no narrow word, so a constant offset, the array index and a fetch's level (zero needs none) are staged.
+The handle pair of a texture and sampler is made once a block, and so is a constant that needs a register of its own (a filter's taps share both).
 The result block holds the channels the shader reads, in order, 32 bits each, and its register type field (`f`, `u` or `s`) is the texel's kind.
 `skip` is clear, since an implicit level needs the helper lanes' coordinates, and the shader has no `discard` flow, so helper lanes stay alive to its end; OpDemoteToHelperInvocation is a `DISCARD` that flags the lane and goes on.
 The wait before the result's first reader is on the instruction before it.

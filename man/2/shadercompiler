@@ -130,9 +130,10 @@ An alloca whose address escapes, or that is indexed by a run-time value, stays.
 `scalarize` then removes every vector value: elementwise operations, compares, selects, conversions and phis split by lane; `vecbuild`, `extract`, `insert` and `shuffle` become choices among lanes; a vector load or store becomes scalar accesses at consecutive element offsets (a backend may merge neighbours); a vector builtin, stage input or stage output becomes its components.
 After that the promotion runs again, and then to a fixed point:
 `foldConstants` evaluates operations on constants (wrapping integers, IEEE f32 and f64 arithmetic; f16, a division by zero, an oversized shift and an out-of-range float to integer are left alone);
-`propagateCopies` forwards the values that only copy: a phi of one value, a select of equal arms, an extract of a vector just built, `x + 0`, `x * 1`;
-`eliminateCommonSubexpressions` merges equal pure instructions within a block (commutative operations in either order; loads never);
+`propagateCopies` forwards the values that only copy: a phi of one value, a select of equal arms, an extract of a vector just built, `x + 0`, `x * 1`, and for floats `x * 0` (zero), `x + 0`, `x - 0` and a fused multiply-add with a zero factor (the addend), as SPIR-V for Vulkan keeps no signed zeros, infinities or NaNs unless the shader asks;
+`eliminateCommonSubexpressions` merges equal pure instructions within a block (commutative operations in either order), and equal loads of a block while no store, atomic, barrier or call comes between them;
 `eliminateDeadCode` removes what nothing live uses, phi cycles included.
+In a fragment shader, when that fixed point is reached, `contractMultiplyAdds` makes a 32-bit float sum with a product of the same block used nowhere else one fused multiply-add (SPIR-V allows contraction; the readers drop NoContraction, so a shader can't forbid it), and the loop goes again.
 Each pass can be run alone; each returns whether it changed anything.
 
 `expandIntegerDivision` is not in `optimize`: a backend whose GPU has no divide instruction runs it after.
