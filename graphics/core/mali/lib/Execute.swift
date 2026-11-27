@@ -106,7 +106,14 @@ extension MaliDevice {
           // another queue waits on the chain (and a wait costs the GPU some 18 us: loinnir-test's frame budgets).
           var c = StepChain(address: chain.address, waitAbove: k == 0 ? nil : k - 1, cleansForHost: i == steps.count - 1)
           let queue: UInt32
-          if case .render = step {
+          if case .render = step, singleQueuePasses {
+            // The pass is one stream on the tiler's queue.
+            queue = Self.tilerQueue
+            if chainQueue == queue {
+              c.waitAbove = nil
+              c.invalidates = k > 0
+            }
+          } else if case .render = step {
             queue = Self.tilerQueue + 1
             if chainQueue == queue { c.fragmentWaits = false }
           } else {
@@ -183,7 +190,9 @@ extension MaliDevice {
     let scoreboards = CSScoreboards(count: info.scoreboards)
     let region = try scratch(3 * 256, held: &held)
     var jobs: [MaliJob] = []
-    for (q, resources) in [(Self.tilerQueue, CSResources.tiler | .idvs), (Self.tilerQueue + 1, .fragment), (Self.computeQueue, .compute)] {
+    // With a pass on one queue, that queue asks for the fragment work's resources too.
+    let tiling = singleQueuePasses ? CSResources.tiler | .idvs | .fragment : CSResources.tiler | .idvs
+    for (q, resources) in [(Self.tilerQueue, tiling), (Self.tilerQueue + 1, .fragment), (Self.computeQueue, .compute)] {
       var b = CSBuilder(address: region.address + UInt64(q) * 256, capacityBytes: 256, registers: registers, scoreboards: scoreboards)
       b.initialiseSlotState()
       b.requestResources(resources)
@@ -979,7 +988,7 @@ extension MaliDevice {
     var request = DrawPassRequest(
       width: width, height: height, format: target.descriptor.format.colourFormat, colourAddress: main.address,
       clear: pass.clear, draws: pass.draws, heapContext: tiler.context.address, heapChunk: tiler.chunk.address,
-      heapChunkBytes: chunkBytes, geometryBuffer: tiler.geometry.address, layout: .splitQueues, initialiseQueues: !renderStarted)
+      heapChunkBytes: chunkBytes, geometryBuffer: tiler.geometry.address, layout: singleQueuePasses ? .singleQueue : .splitQueues, initialiseQueues: !renderStarted)
     // The target's own rows: packed for a window's image, LinearLayout's for any other.
     request.rowStride = main.rowStride
     request.colourSurfaceStride = main.surfaceStride

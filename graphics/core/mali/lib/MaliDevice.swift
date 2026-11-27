@@ -374,6 +374,10 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   /// Whether a submission's streams of one queue are one job (Execute.swift's `oneJobAQueue`): on; off, a job a stream (the host
   /// tests read each).
   public var mergesQueueJobs = true
+  /// Whether a pass is one stream on one queue, the tiling and then the fragment work, waiting on the tiling's slot (MaliCore's
+  /// `.singleQueue` layout) rather than a stream on each of two queues and a sync object between them: off, a probe. Set before
+  /// the first submission (the queues are started for it).
+  public var singleQueuePasses = false
   /// Whether `wait` for the last value submitted watches the chain's word in memory before it waits on the timeline (on), and for
   /// how long.
   public var spinsForCompletion = true

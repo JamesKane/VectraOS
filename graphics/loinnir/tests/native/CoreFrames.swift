@@ -143,7 +143,7 @@ final class FrameBudgets {
   /// never sampled or copied, which the Mali backend makes AFBC (gpucore(2)); and what the pixels are: a pass draws red over the
   /// left half with the depth test, a second keeps both and draws green over all of it behind the red (the depth kept), and a third
   /// samples the colour into a linear target the CPU reads.
-  func glFrame() throws(GPUError) {
+  func glFrame(_ suffix: String = "") throws(GPUError) {
     let colour = try gpu.makeImage(ImageDescriptor(format: .rgba8, width: Int32(width), height: Int32(height), usage: .renderTarget | .sampled))
     let depth = try gpu.makeImage(ImageDescriptor(format: .depth32f, width: Int32(width), height: Int32(height), usage: .depthStencilTarget))
     let ds = DepthStencilState(depthTest: true, depthWrite: true, depthCompare: .less)
@@ -167,8 +167,8 @@ final class FrameBudgets {
     var frame = GPUCommandList()
     frame.render(RenderingInfo(colors: [Attachment(image: colour, load: .clear(0, 0, 1, 1))],
                                depthStencil: DepthStencilAttachment(image: depth, clearDepth: 1))) { l in l.draw(p, root: v.address, vertices: 6) }
-    _ = try measure("GL's frame (AFBC where the backend has it)", "gpu.mali.frame_gl_us", frame)
-    try place("GL's frame") { l in
+    _ = try measure("GL's frame (AFBC where the backend has it)" + suffix, "gpu.mali.frame_gl" + suffix + "_us", frame)
+    try place("GL's frame" + suffix) { l in
       l.render(RenderingInfo(colors: [Attachment(image: colour, load: .clear(0, 0, 1, 1))],
                              depthStencil: DepthStencilAttachment(image: depth, clearDepth: 1))) { r in r.draw(p, root: v.address, vertices: 6) }
     }
@@ -289,6 +289,22 @@ final class FrameBudgets {
       print("loinnir-test: ok: frame: a new device's first pass, after a transfer on the compute queue, drew")
     }
     attempt("GL's frame") { () throws(GPUError) in try glFrame() }
+    // The same frames on a device whose passes are one stream on one queue (a probe: `MaliDevice.singleQueuePasses`).
+    attempt("one queue a pass") { () throws(GPUError) in
+      let fresh = try MaliDevice()
+      fresh.singleQueuePasses = true
+      fresh.profiling = true
+      let probe = try FrameBudgets(fresh, signalled: 0)
+      var list = GPUCommandList()
+      list.render(probe.pass(probe.target)) { l in l.draw(probe.pipeline, root: probe.quads.address, vertices: 6) }
+      _ = try probe.measure("clear and one draw, one queue a pass", "gpu.mali.frame_clear_draw_one_queue_us", list)
+      try probe.place("clear and one draw, one queue a pass") { l in
+        l.render(probe.pass(probe.target)) { r in r.draw(probe.pipeline, root: probe.quads.address, vertices: 6) }
+      }
+      let p = try probe.pixel(probe.target, 400, 300)
+      if p != [255, 0, 0, 255] { throw GPUError.invalid("one queue a pass left \(p) at the centre") }
+      try probe.glFrame("_one_queue")
+    }
     print("loinnir-test: frame budgets: \(failed == 0 ? "done" : "\(failed) FAILED")")
     return failed
   }
