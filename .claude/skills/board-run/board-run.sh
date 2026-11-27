@@ -10,8 +10,14 @@
 #     the previous croi/ as BACKUP_NAME if given and not already there;
 #  4. sets the VectraOS entry (BOOT_ENTRY, default 000A) as BootNext and
 #     reboots;
-#  5. waits for board-test's last line (6 minutes at most), then for
-#     FreeBSD to answer again (4 minutes more), and releases the lock.
+#  5. waits for board-test's last line (BOARD_DEADLINE, 6 minutes), then
+#     for FreeBSD to answer again (BOARD_RETURN, 10 minutes from the
+#     run's end: it can take minutes), and releases the lock.
+#
+# A board that doesn't answer at the start may be in another run's
+# VectraOS boot or rebooting to FreeBSD: the run waits for it
+# (BOARD_WAIT, 15 minutes), and for another live run of this host (a
+# lock directory in TMPDIR), before it says locked or no-board.
 # The last line is always `BOARDRUN DONE <status>`: passed, failed,
 # timeout, locked, no-board, copy-failed or deploy-failed.
 #
@@ -46,6 +52,9 @@ esp=${BOARD_ESP:-/dev/gptid/bbec220e-a11b-4b8d-82b0-6aadb2cfbe9f}
 pass_re=${BOARD_PASS:-board-test: passed}
 fail_re=${BOARD_FAIL:-board-test: FAILED}
 stale_min=${BOARD_STALE_MIN:-20}
+wait_s=${BOARD_WAIT:-900}
+return_s=${BOARD_RETURN:-600}
+local_lock=${TMPDIR:-/tmp}/vx-board-run.lock
 ssh_=(ssh -o HostKeyAlias="$alias_" -o BatchMode=yes -o ConnectTimeout=8)
 scp_=(scp -q -o HostKeyAlias="$alias_" -o BatchMode=yes -o ConnectTimeout=8)
 owner="$(hostname -s) $$ $(date +%s) ${BOARD_TAG:-$USER}"
@@ -53,11 +62,40 @@ status=unknown
 locked=no
 
 finish() {
+  [[ ${have_local:-no} == yes ]] && rm -rf "$local_lock"
   [[ -n ${cat_pid:-} ]] && kill "$cat_pid" 2>/dev/null
   [[ $locked == yes ]] && "${ssh_[@]}" "$board" 'rm -f /root/vx-board.lock' 2>/dev/null
   echo "BOARDRUN DONE $status"
 }
 trap finish EXIT
+
+# This host's runs one at a time: a run in its VectraOS boot holds the
+# board though FreeBSD can't show its lock then. mkdir is atomic.
+start=$SECONDS
+until mkdir "$local_lock" 2>/dev/null; do
+  other=$(cat "$local_lock/pid" 2>/dev/null)
+  if [[ $other =~ ^[0-9]+$ ]] && ! kill -0 "$other" 2>/dev/null; then
+    rm -rf "$local_lock"
+    continue
+  fi
+  if ((SECONDS - start > wait_s)); then
+    echo "board-run: another run here holds the board: ${other:-?}"
+    status=locked
+    exit 1
+  fi
+  sleep 15
+done
+echo $$ > "$local_lock/pid"
+have_local=yes
+# The board, which may still be rebooting from the last run.
+until "${ssh_[@]}" "$board" true 2>/dev/null; do
+  if ((SECONDS - start > wait_s)); then
+    echo "board-run: the board does not answer at $board"
+    status=no-board
+    exit 1
+  fi
+  sleep 15
+done
 
 # The lock. noclobber makes taking it atomic.
 take() { "${ssh_[@]}" "$board" "sh -c 'set -C; echo \"$owner\" > /root/vx-board.lock'" 2>/dev/null; }
@@ -121,7 +159,9 @@ while ((SECONDS < deadline)); do
 done
 [[ $status == unknown ]] && status=timeout
 # FreeBSD back, so the lock can be released.
-while ((SECONDS < deadline + 240)); do
+back=$((SECONDS + return_s))
+while ((SECONDS < back)); do
   "${ssh_[@]}" "$board" true 2>/dev/null && break
   sleep 10
 done
+((SECONDS < back)) || echo "board-run: FreeBSD hasn't answered in $return_s s; the next run waits for it"
