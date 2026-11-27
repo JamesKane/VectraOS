@@ -69,7 +69,7 @@ Workgroup memory is `workgroup_local_pointer` plus a byte offset; stack, private
 
 ## Vertex and fragment shaders
 
-`compileGraphics` compiles the first vertex or fragment entry point (or the one named) the same way, into the data MaliCore builds a draw from: a `VertexShader` or a `FragmentShader` (code, register class 64, preload mask, `GraphicsFauLayout`, and the locations the shader reads and writes).
+`compileGraphics` compiles the first vertex or fragment entry point (or the one named) the same way, into the data MaliCore builds a draw from: a `VertexShader` or a `FragmentShader` (code, register class: 32 when its values fit r0 to r15 and r48 to r63, which doubles the threads a core keeps resident, else 64; preload mask, `GraphicsFauLayout`, and the locations the shader reads and writes).
 The two stages and the driver agree on the ABI below, all of it in `GraphicsShader.swift`.
 
 A vertex shader is one program for both IDVS passes, and it runs whole in each: it ends in two groups of stores, each behind a test of `shader_output`: the position (bit 0) and the generic varyings (bit 2).
