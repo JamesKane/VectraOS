@@ -40,7 +40,7 @@ private func plain(_ listing: String) -> [String] {
     let v = try #require(c.vertex)
     // r59 (the internal vertex id) and r60 (the vertex index): the hand-assembled shader's mask.
     #expect(v.preloadMask == TriangleShaders.positionPreloadMask)
-    #expect(v.registerClass == .r64)
+    #expect(v.registerClass == .r32)  // it fits r0 to r15 and r48 to r63
     #expect(v.layout.viewportWord == 0 && v.layout.nonPerspectiveWord == -1)
     // The root pointer is the first push constant: words 6 and 7, after the viewport's three slots.
     #expect(v.layout.pushWord == 6 && v.layout.pushWords == 2 && v.layout.words == 8)

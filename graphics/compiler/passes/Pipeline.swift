@@ -2,7 +2,8 @@
 
 // The standard pass order: promote memory to registers, scalarize (the
 // defined point where vectors end), promote what the split exposed, then
-// fold, propagate, merge and sweep until nothing changes.
+// fold, propagate, merge and sweep until nothing changes, then contract
+// products into sums (fused multiply-adds) and go again.
 
 extension IRModule {
   /// Run the passes on every function. With `scalarize` false vectors stay.
@@ -21,6 +22,8 @@ extension IRModule {
         if functions[k].propagateCopies() { changed = true }
         if functions[k].eliminateCommonSubexpressions() { changed = true }
         if functions[k].eliminateDeadCode() { changed = true }
+        // (Fragment shaders only: the compute shaders' listings are the board's golden ones.)
+        if !changed && executionModel == 4 && functions[k].contractMultiplyAdds() { changed = true }
         if !changed { break }
       }
     }

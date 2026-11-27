@@ -69,7 +69,7 @@ Workgroup memory is `workgroup_local_pointer` plus a byte offset; stack, private
 
 ## Vertex and fragment shaders
 
-`compileGraphics` compiles the first vertex or fragment entry point (or the one named) the same way, into the data MaliCore builds a draw from: a `VertexShader` or a `FragmentShader` (code, register class 64, preload mask, `GraphicsFauLayout`, and the locations the shader reads and writes).
+`compileGraphics` compiles the first vertex or fragment entry point (or the one named) the same way, into the data MaliCore builds a draw from: a `VertexShader` or a `FragmentShader` (code, register class: 32 when its values fit r0 to r15 and r48 to r63, which doubles the threads a core keeps resident, else 64; preload mask, `GraphicsFauLayout`, and the locations the shader reads and writes).
 The two stages and the driver agree on the ABI below, all of it in `GraphicsShader.swift`.
 
 A vertex shader is one program for both IDVS passes, and it runs whole in each: it ends in two groups of stores, each behind a test of `shader_output`: the position (bit 0) and the generic varyings (bit 2).
@@ -114,6 +114,7 @@ A handle is one value for a warp, and a fragment warp mixes primitives and insta
 A fetch of a plain image (OpImage of a sampled image drops the sampler) names the dummy sampler.
 The staging block is one register for each operand in the order of valhall 12b.5: the coordinates, the layer, the offset word, the level word.
 The wide form has no narrow word, so a constant offset, the array index and a fetch's level (zero needs none) are staged.
+The handle pair of a texture and sampler is made once a block, and so is a constant that needs a register of its own (a filter's taps share both).
 The result block holds the channels the shader reads, in order, 32 bits each, and its register type field (`f`, `u` or `s`) is the texel's kind.
 `skip` is clear, since an implicit level needs the helper lanes' coordinates, and the shader has no `discard` flow, so helper lanes stay alive to its end; OpDemoteToHelperInvocation is a `DISCARD` that flags the lane and goes on.
 The wait before the result's first reader is on the instruction before it.

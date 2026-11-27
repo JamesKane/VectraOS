@@ -109,6 +109,8 @@ struct Selector {
   var storesViewportIndex = false
   /// The texture messages made so far, so the four components of one access are one message (SelectTexture.swift).
   var texGroups: [TexGroup] = []
+  /// The texture and sampler handle pairs made so far, by block (SelectTexture.swift).
+  var handlePairs: [(block: Int, texture: UInt64, sampler: UInt64, textureIndex: ValueID, samplerIndex: ValueID, reg: Int)] = []
   /// The FAU word of each image or sampler binding, and of the dummy sampler (SelectTexture.swift).
   var imageWord: [(key: UInt64, word: Int)] = []
   var dummySamplerWord = -1
@@ -174,12 +176,17 @@ struct Selector {
     return i
   }
 
-  /// A 32-bit constant in a register of its own.
+  /// A 32-bit constant in a register: the one an earlier use in this block made, else one of its own (a convolution's weight is
+  /// used for each channel of each tap).
   mutating func materialize(_ bits: UInt32) -> Opd {
+    if let c = constants.first(where: { $0.block == cur && $0.bits == bits }) { return .reg(c.reg, 0) }
     let r = newReg()
     alu("IADD_IMM", "i32", dst: .reg(r, 0), .const(0), set: [("imm", Int(bits))])
+    constants.append((cur, bits, r))
     return .reg(r, 0)
   }
+  /// The constants materialized so far, by block.
+  var constants: [(block: Int, bits: UInt32, reg: Int)] = []
 
   /// Source operand for a 32-bit value (a register, a FAU word, a constant).
   mutating func opd(_ v: ValueID) -> Opd {
