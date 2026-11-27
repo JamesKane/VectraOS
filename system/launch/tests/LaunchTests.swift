@@ -50,7 +50,33 @@ struct Clients: LaunchIPC.ClientsHandler {
   }
 }
 
-let programs = [("tree", treeProgram), ("exiter", exiter), ("per-client", perClient)]
+/// What `recorder`s were written at their `dev/reboot`, each line its
+/// service's first argument and the text.
+final class Written: @unchecked Sendable {
+  let lock = Lock()
+  var lines: [String] = []
+}
+let written = Written()
+
+/// A service with a `dev/reboot` that records what is written to it.
+let recorder = ProgramEntry { start in
+  do throws(Status) {
+    let dispatcher = try IPCDispatcher()
+    let tree = NodeTree(dispatcher: dispatcher)
+    let name = start.args.count > 1 ? start.args[1] : "?"
+    tree.directory("dev")
+    tree.text("dev/reboot", read: { "" }, write: { (text: String) throws(NodeError) in
+      written.lock.withLock { written.lines.append(name + ": " + text) }
+    })
+    guard let export = start.export() else { Process.exit(code: 98) }
+    try tree.serve(export)
+    try dispatcher.run()
+  } catch {
+    Process.exit(code: 99)
+  }
+}
+
+let programs = [("tree", treeProgram), ("exiter", exiter), ("per-client", perClient), ("recorder", recorder)]
 
 func launcher() throws -> Launcher { try Launcher(programs: programs, rootJob: try Job.root()) }
 
@@ -100,6 +126,22 @@ func launchError(_ files: [(String, String)]) -> String {
   #expect(launchError([("a.m", ok + "use b\n"), ("b.m", "service b\nprogram tree\nexport\nuse a\n")])
     == "a.m:1: services depend on each other: a → b → a")
   #expect(launchError([("a.m", "service a\nprogram tree\nseal\n")]) == "a.m:3: unknown directive 'seal'")
+  #expect(launchError([("a.m", "service a\nprogram tree\nshutdown ctl\n")])
+    == "a.m:3: 'shutdown' takes a file and what to write to it")
+  #expect(launchError([("a.m", "service a\nprogram tree\nshutdown ctl exit 0\n")]) == "a.m:3: 'shutdown' needs 'export'")
+}
+
+@Test func shutdownLinesAreWrittenLastStartedFirstBeforeAnyServiceEnds() throws {
+  let l = try launcher()
+  try l.start([
+    ("a.m", "service a\nprogram recorder\narg a\nexport\nshutdown dev/reboot quiesce\n"),
+    ("b.m", "service b\nprogram recorder\narg b\nexport\nuse a\nshutdown dev/reboot quiesce now\n"),
+    ("c.m", "service c\nprogram tree\nexport\n"),
+  ])
+  l.stop()
+  // b uses a, so a started first and is asked last.
+  let lines = written.lock.withLock { written.lines }
+  #expect(lines == ["b: quiesce now\n", "a: quiesce\n"])
 }
 
 @Test func processesGetWhatTheirManifestsGrantAndNothingElse() throws {

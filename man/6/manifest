@@ -52,6 +52,8 @@ Anything wrong stops the launch with the file and the line; nothing is skipped.
 : `notegroup`
   `notegroup <service>`: the service's job is made under that service's, which starts first, so a note posted to that service's note group (proc(4)'s `notepg`) reaches it and what it starts too.
   The console's shell is in kbdfs(4)'s, whose Delete interrupts it.
+: `shutdown`
+  `shutdown <file> <text>`: when the launcher stops (launcher(8)), before it ends any service, it writes <text> and a newline to <file> in this service's tree, and waits for the write, 5 s at most. Services with it are asked the last started first. It needs `export`. devmgr(8)'s is `shutdown dev/reboot quiesce`, which stops the devices before the machine resets (reboot(8)).
 : `resource`
   One kind of hardware: `mmio`, `irq`, `ioport`, `smc` or `system`, a range of the launcher's own root resource of that kind.
 : `programs`

@@ -283,6 +283,30 @@ public struct PowerController {
     return problem.isEmpty
   }
 
+  /// Before the machine resets or is handed to another kernel: every device
+  /// that is on has its supplies ended and its host ended, as a power-down
+  /// would, so each driver stops its device first (HostShutdown), but no
+  /// provider is asked to cut: the next system finds its power as the
+  /// firmware leaves it. Each is then `quiesced`; `restore` brings one back.
+  /// Returns the indices quiesced.
+  public mutating func quiesce<S: SupplyHolder, H: HostControl>(supplies: S, host: H) -> [Int] {
+    var done: [Int] = []
+    var i = 0
+    while i < devices.count {
+      if same(devices[i].state, "on") {
+        let start = now()
+        let late = supplies.end(devices[i].service, deadlineNs: PowerOrder.deadline) ? "" : "supplies taken at the deadline"
+        host.endHost(devices[i].service)
+        devices[i].state = "quiesced"
+        devices[i].detail = late
+        devices[i].last = "quiesced \(ms(now() - start)) ms at \(ms(now())) ms"
+        done.append(i)
+      }
+      i += 1
+    }
+    return done
+  }
+
   /// `on` for a device that is down: the supplies made again, the steps
   /// in order, the host started. Returns whether it runs.
   public mutating func restore<A: PowerActuator, S: SupplyHolder, H: HostControl>(

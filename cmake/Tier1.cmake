@@ -149,6 +149,9 @@ function(croi_tier1 bootfs_var depends_var)
   # Tier 0's libraries for tier 1 (V2's item 6: rc and FDIO are tier 1):
   # each built by the *-vectraos swiftc into tier1/lib (its module and
   # archive), after those it uses, from the same sources as tier 0's.
+  # Like tier 0 they are built without run-time exclusivity checks (toolchain.cmake): the host builds of the same
+  # sources keep them, so a violation is still found by the host tests. Each access to a class's property was a call
+  # into the runtime; GL's draws spent about half their time there (D183).
   set(_lib ${_out}/lib)
   function(croi_tier1_library name)
     cmake_parse_arguments(T "" "" "SOURCES;USES;INCLUDES;CSOURCES" ${ARGN})
@@ -170,6 +173,7 @@ function(croi_tier1 bootfs_var depends_var)
     add_custom_command(OUTPUT ${_lib}/lib${name}.a ${_lib}/${name}.swiftmodule
       COMMAND ${CMAKE_COMMAND} -E make_directory ${_lib}
       COMMAND ${_swiftc} -parse-as-library -wmo -strict-memory-safety -enable-experimental-feature Lifetimes
+              -enforce-exclusivity=unchecked
               -I ${_lib} ${T_INCLUDES} -load-plugin-executable "${CROI_IPC_PLUGIN}\#IPCMacros"
               -emit-library -static -emit-module -module-name ${name} -emit-module-path ${_lib}/${name}.swiftmodule
               -o ${_lib}/lib${name}.a ${T_SOURCES}

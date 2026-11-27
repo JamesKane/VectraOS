@@ -908,9 +908,28 @@ public final class Launcher: @unchecked Sendable {
     }
   }
 
-  /// Ends every service and the launcher's threads.
+  /// How long `stop` waits for each service's `shutdown` line.
+  public static let shutdownPatience: Int64 = 5_000_000_000
+
+  /// Ends every service and the launcher's threads. First, each running
+  /// service's `shutdown` line is written to its file, the last started
+  /// first, while every service still runs (devmgr's stops the devices):
+  /// each on a thread of its own, waited for `shutdownPatience` at most.
   public func stop() {
     locked { stopping = true }
+    let asked = locked {
+      services.reversed().compactMap { s -> (service: String, file: String, text: String)? in
+        guard let d = s.manifest.shutdown, s.process != nil, s.export != nil else { return nil }
+        return (s.manifest.service, d.file, d.text)
+      }
+    }
+    for a in asked {
+      guard let thread = try? Thread.spawn({ [self] in
+        guard var client = try? open(a.service) else { return }
+        _ = try? client.writeText(a.text + "\n", a.file)
+      }) else { continue }
+      _ = try? thread.wait(for: Signals.terminated, deadline: Clock.monotonic() + Launcher.shutdownPatience)
+    }
     if let statusNode { tree.remove(statusNode) }
     statusNode = nil
     if let c = locked({ control }) {

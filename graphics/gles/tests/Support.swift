@@ -36,7 +36,7 @@ final class TestSurface: DefaultFramebuffer {
   let flipped: Bool
   var serial: UInt64 = 1
   var target: RenderTarget {
-    var t = RenderTarget()
+    let t = RenderTarget()
     t.color = ImageView(image)
     t.colorFormat = image.format
     t.width = image.width

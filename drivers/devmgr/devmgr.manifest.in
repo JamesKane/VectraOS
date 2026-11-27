@@ -5,7 +5,8 @@
 # has I/O ports, and `resource smc` on arm64, for firmware a board rule
 # names; the system resource names the IOMMUs and allocates MSIs.
 # kbdfs's kbin and the mouse service's mousein go to each input driver's
-# host (D83).
+# host (D83). At the launcher's stop, before any service ends, devmgr
+# quiesces the devices (reboot(8)): a reset may not reset them.
 service devmgr
 program devmgr
 resource mmio
@@ -18,3 +19,4 @@ mount /dev/kbin kbdfs/kbin
 mount /dev/mousein mouse/mousein
 programs
 export
+shutdown dev/reboot quiesce

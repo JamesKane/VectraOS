@@ -121,7 +121,7 @@ public struct ControlFailure: Error, Equatable, Sendable {
   }
 }
 
-/// How long each step may take (03 section 3.3.1, 3.4.1; 04 section 4.3.3; 05
+/// How long each step may take (03 section 3.3.1, 3.4.1, 3.7.1; 04 section 4.3.3; 05
 /// section 5.5), nanoseconds; the intervals are the polls' spacing.
 public enum ControlTimeout {
   public static let reset: Int64 = 100_000_000
@@ -133,6 +133,9 @@ public enum ControlTimeout {
   public static let l2Interval: Int64 = 100_000
   public static let addressSpaceInterval: Int64 = 10_000
   public static let mcuBootInterval: Int64 = 200_000
+  /// MCU_CONTROL 0 to MCU_STATUS 0 (03 section 3.7.1 step 2).
+  public static let mcuDisable: Int64 = 100_000_000
+  public static let mcuDisableInterval: Int64 = 10_000
 }
 
 /// What the Sky1's order writes beyond the generic one (panthor 11
@@ -305,6 +308,24 @@ public struct GPUControl<R: GPURegisterFile, C: GPUClock> {
         + " (\(MCU.statusName(status))), JOB_IRQ_RAWSTAT \(hex(regs.load32(GPUControlRegister.jobIrqRawStat)))")
     }
     regs.store32(GPUControlRegister.jobIrqClear, JobInterrupt.global)
+  }
+
+  /// The GPU stopped for good, after the MCU's halt was asked for (03
+  /// section 3.7.1 steps 2 to 4, with no fast restart to come): the JOB
+  /// block masked, MCU_CONTROL 0 and MCU_STATUS 0 waited for (100 ms), then a
+  /// soft reset, which leaves every address space disabled and the cores and
+  /// L2 off, so nothing on the GPU reads or writes memory after it. The soft
+  /// reset is commanded even if the MCU didn't stop. Returns what didn't
+  /// happen, or an empty string.
+  public func stopForGood() -> String {
+    regs.store32(GPUControlRegister.jobIrqMask, 0)
+    regs.store32(GPUControlRegister.mcuControl, 0)
+    let disabled = wait(timeout: ControlTimeout.mcuDisable, interval: ControlTimeout.mcuDisableInterval) {
+      regs.load32(GPUControlRegister.mcuStatus) == 0
+    }
+    var problems = disabled ? "" : "MCU_STATUS \(MCU.statusName(regs.load32(GPUControlRegister.mcuStatus))) after 100 ms; "
+    do throws(ControlFailure) { try softReset() } catch { problems += error.why }
+    return problems
   }
 
   /// GPU_TIMESTAMP, read high, low, high until the highs agree (02 section 2.1).

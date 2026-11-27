@@ -134,7 +134,7 @@ These reset the whole GPU, the firmware loaded and booted again, groups that wer
 - an address-space command or a cache flush that is still busy after 100 ms.
 
 The `event:` line that opens the reset says which: `GPU reset <n>: cause <why>`, the reasons of every request that was merged into it in the order they came, joined by `; `.
-When devmgr(8) ends the GPU's supply, mali first asks the MCU to halt (by the interface's version: a request bit before 4.1, a state from it), waits up to 300 ms for it, and stops it, so the power is not cut under a running MCU; the line `mali: supply ending: ...` says how it went.
+When devmgr(8) ends the GPU's supply, for a power cut or the quiesce before the machine resets (reboot(8)), mali first asks the MCU to halt (by the interface's version: a request bit before 4.1, a state from it), waits up to 300 ms for it, then disables it (`MCU_CONTROL` 0, `MCU_STATUS` 0 waited for up to 100 ms) and soft resets the GPU, whether or not the MCU halted, so no firmware runs and no address space is live: the power is not cut under a running MCU, and where a reset doesn't reset the GPU, as the Orange Pi 6 Plus's may not, the firmware does not run on into the next system from memory that system reuses. The line `mali: supply ending: ...` says how it went: the MCU's state before, whether it halted, and the time.
 
 # FILES
 

@@ -58,6 +58,9 @@ public final class FakeTransport: MaliTransport {
   public var memory: [[UInt32]] = []
   /// The regions the VM mapped at the last submit.
   public var boundAtSubmit: [(address: UInt64, size: Int)] = []
+  /// Whether a submit keeps what it was given (`submits`, `streams`, `memory`): off for a cost test, whose submits then cost only
+  /// the signals.
+  public var keepsSubmits = true
 
   public func createVM() throws(GPUError) -> (id: UInt32, userRange: UInt64) { (nextID, userRange) }
   public func destroyVM(_ vm: UInt32) {}
@@ -153,6 +156,10 @@ public final class FakeTransport: MaliTransport {
   public func submit(group: UInt32, jobs: [MaliJob], waits: [(sync: UInt32, value: UInt64)],
               signals: [(sync: UInt32, value: UInt64)]) throws(GPUError) {
     if failSubmit { throw .failed("submit", code: -1) }
+    guard keepsSubmits else {
+      for s in signals { raiseSync(s.sync, to: s.value) }
+      return
+    }
     submits.append((group, jobs, waits, signals))
     boundAtSubmit = bound.map { (address: $0.address, size: $0.buffer.size) }
     for j in jobs { if let s = stream(of: j) { streams.append(s); storeTimestamps(s) } }

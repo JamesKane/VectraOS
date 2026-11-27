@@ -187,8 +187,9 @@ final class HeapSlots {
   }
 }
 
-/// What a pass draws into: its attachments, and how GL's framebuffer maps onto them.
-struct RenderTarget: Equatable {
+/// What a pass draws into: its attachments, and how GL's framebuffer maps onto them. A class, made once for each framebuffer
+/// state the context finds and not changed after: a draw passes it on without copying its views.
+final class RenderTarget: Equatable {
   var color: ImageView?
   var depthStencil: ImageView?
   var colorFormat: PixelFormat?
@@ -340,9 +341,7 @@ final class Frame {
         info.colors[i].store = .discard
       }
     }
-    list.beginRendering(info)
-    list.append(contentsOf: passList)
-    passList = GPUCommandList()
+    list.insert(.beginRendering(info), at: passStart)
     list.endRendering()
     passesSubmitted += 1
     stats.passes += 1
@@ -391,8 +390,9 @@ final class Frame {
     info.depthStencil = ds
   }
 
-  /// The open pass's commands, recorded after its begin as it ends.
-  var passList = GPUCommandList()
+  /// Where the open pass's commands begin in the list: they are recorded there as the pass draws, and its begin, known only as
+  /// it ends, is put before them then (moved, where a list of their own was copied into the frame's, each command counted).
+  var passStart = 0
 
   /// Images written in the open list since its last barrier: a pass's attachments, a copy's destination.
   var written: [UInt64] = []
@@ -416,6 +416,7 @@ final class Frame {
     guard var p = pass, !p.begun else { return }
     let t = p.target
     barrier(before: p.reads)
+    passStart = list.count
     if let c = t.color { noteWrite(c.image) }
     if let d = t.depthStencil { noteWrite(d.image) }
     var colors: [Attachment] = []

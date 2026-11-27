@@ -365,8 +365,12 @@ public struct GPUCommandList: Sendable, Equatable {
   public private(set) var commands: [Command] = []
   public init() {}
   public var isEmpty: Bool { commands.isEmpty }
+  public var count: Int { commands.count }
 
   public mutating func append(_ c: Command) { commands.append(c) }
+  /// `c` before the command at `index` (`count`: after the last). A recorder that learns a pass's begin only as the pass
+  /// ends puts it before the pass's commands this way, moving them rather than copying them.
+  public mutating func insert(_ c: Command, at index: Int) { commands.insert(c, at: index) }
   public mutating func append(contentsOf other: GPUCommandList) { commands.append(contentsOf: other.commands) }
 
   public mutating func beginRendering(_ info: RenderingInfo) { commands.append(.beginRendering(info)) }
