@@ -201,6 +201,60 @@ Every other scene rose 1 to 10 percent. ideas alone, twice in one run, gave 902 
 the scene is the CPU's, and the core the scheduler gives it moves it by several percent. Its frame is then about 300 us of
 GL's recording, 360 of the submit and 130 of waiting.
 
+## The draws' CPU cost, 2026-11-27 (draw-cost after gl 803dd3ef)
+
+ideas' frame is 227 draws early in the scene and 353 later (316 DrawElements with nothing changed between most of them, 37
+DrawArrays; per frame 96 UniformMatrix4fv, 37 UniformMatrix3fv, 126 VertexAttribPointer, 68 BindBuffer, 14 UseProgram, counted
+with GLES_STATS). Its late frames were about 620 us of recording, 610 of submit (plan 230, recipe 310) and 220 of waiting.
+A Mac profile of the same frame (CostTests.swift, `whatAManyDrawFrameCosts`) found about 40% of GL's per-draw time in the
+runtime's exclusivity checks (`swift_beginAccess`, one for each access to a class's property), and the rest largely copies:
+the render target and the last pipeline's tuple each draw, an array made for the driver words, a pass's commands copied into
+the frame's list, and on the Mali side the pass's dynamic values and depth binding copied into each shared draw and every draw
+copied by the recipe's loops. Tier 1's libraries are now built without the run-time checks, as tier 0's always were (the host
+builds keep them), and the copies are gone. On the Mac the frame went from 299 us to 142 (GL's part from 159 to 44).
+
+ideas alone, three times in one boot (FPS):
+
+| Build | Run 1 | Run 2 | Run 3 |
+|---|---:|---:|---:|
+| gl 803dd3ef | 878 | 881 | 884 |
+| after | 1201 | 1207 | 1165 |
+
+The full run at the same commit, **glmark2 Score: 4879** (4712 before, the reference's 3064):
+
+| Scene | Reference | Before | After | Ratio |
+|---|---:|---:|---:|---:|
+| build use-vbo=false | 1610 | | 2779 | 1.73 |
+| build use-vbo=true | 3523 | | 6467 | 1.84 |
+| texture nearest | 4887 | | 6395 | 1.31 |
+| texture linear | 4925 | | 6338 | 1.29 |
+| texture mipmap | 4892 | | 6554 | 1.34 |
+| shading gouraud | 2223 | | 4861 | 2.19 |
+| shading blinn-phong-inf | 2212 | | 4755 | 2.15 |
+| shading phong | 1560 | | 3690 | 2.37 |
+| shading cel | 1541 | | 3763 | 2.44 |
+| bump high-poly | 892 | | 2382 | 2.67 |
+| bump normals | 5506 | | 8296 | 1.51 |
+| bump height | 4782 | | 7482 | 1.56 |
+| effect2d 3x3 | 5678 | | 6868 | 1.21 |
+| effect2d 5x3 | 4091 | | 4925 | 1.20 |
+| pulsar | 4742 | | 7164 | 1.51 |
+| desktop blur | 753 | 1116 | 1156 | 1.54 |
+| desktop shadow | 2256 | 2438 | 2692 | 1.19 |
+| buffer map | 400 | | 1335 | 3.34 |
+| buffer subdata | 391 | | 1337 | 3.42 |
+| buffer interleaved map | 431 | | 1777 | 4.12 |
+| ideas | 973 | 878 | 1169 | **1.20** |
+| jellyfish | 2615 | 3119 | 3213 | 1.23 |
+| terrain | 95 | | 124 | 1.31 |
+| shadow | 1749 | 2083 | 2157 | 1.23 |
+| refract | 149 | | 160 | 1.07 |
+| conditionals (three) | 4718-4925 | | 7112-8310 | 1.51-1.69 |
+| function (two) | 4584-4752 | | 8054-8088 | 1.69-1.76 |
+| loop (three) | 4713-4901 | | 7733-8025 | 1.64-1.66 |
+
+"Before" is the last section's run, where it gave the scene. Every scene now beats the reference.
+
 ## The shaders glmark2 compiles
 
 `MESA_SHADER_DUMP_PATH` on the same run, every scene at 0.3 s: 69 distinct
