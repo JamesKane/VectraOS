@@ -46,16 +46,21 @@ extension Frame {
   /// Copies level `source.baseMip`, layer `source.baseLayer` of `source` (sampled) into `target` (a render target view of
   /// one level and layer), `width` by `height` texels from the origin, by a pass of its own.
   func copyByDraw(from source: ImageView, to target: ImageView, width: Int32, height: Int32, sampler: UInt32,
-                  kind: DrawCopy = .texels) throws(GPUError) {
+                  kind: DrawCopy = .texels, sourceSlot: UInt32? = nil) throws(GPUError) {
     endPass()
     let pipeline = try blitPipeline(target.format, kind)
-    let slot = try heap.takeTextureSlot()
-    var view = source
-    view.dimension = .d2
-    view.mipCount = 1
-    view.layerCount = 1
-    try device.writeTexture(slot, view)
-    heap.releaseTextureSlot(slot)
+    let slot: UInt32
+    if let s = sourceSlot {
+      slot = s
+    } else {
+      slot = try heap.takeTextureSlot()
+      var view = source
+      view.dimension = .d2
+      view.mipCount = 1
+      view.layerCount = 1
+      try device.writeTexture(slot, view)
+      heap.releaseTextureSlot(slot)
+    }
     let root = try ring.allocate(96 + descriptorSize)
     unsafe root.pointer.initializeMemory(as: UInt8.self, repeating: 0, count: 96 + descriptorSize)
     unsafe root.pointer.storeBytes(of: root.address + 96, toByteOffset: RootBlock.setsOffset, as: UInt64.self)
@@ -82,6 +87,20 @@ extension Frame {
 }
 
 extension GLContext {
+  /// The heap slot of a view of one level of one face of the texture's image, written once while the image lives: what
+  /// a mipmap's pass reads, frame after frame, with no heap write.
+  func levelSlot(_ t: GLTexture, level: Int, face: Int) throws(GPUError) -> UInt32 {
+    guard let image = t.image else { throw .invalid("a texture with no image") }
+    let key = face * 32 + level
+    if let s = t.levelSlots.first(where: { $0.key == key }) { return s.slot }
+    let slot = try frame.heap.takeTextureSlot()
+    try device.writeTexture(slot, ImageView(image, dimension: .d2, baseMip: UInt32(level), mipCount: 1, baseLayer: UInt32(face),
+                                            layerCount: 1))
+    t.levelSlots.append((key, slot))
+    frame.stats.textureWrites += 1
+    return slot
+  }
+
   /// A view of `view`'s image that can be copied from: the view itself, or a scratch image it was drawn into.
   func copyable(_ view: ImageView, width: Int32, height: Int32) throws(GPUError) -> ImageView {
     if view.image.usage.contains(.copySource) { return view }

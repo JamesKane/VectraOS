@@ -62,6 +62,8 @@ extension GLContext {
   func dropImage(_ t: GLTexture) {
     if let image = t.image { releaseImage(image) }
     if let s = t.slot { frame.heap.releaseTextureSlot(s) }
+    for s in t.levelSlots { frame.heap.releaseTextureSlot(s.slot) }
+    t.levelSlots = []
     t.image = nil
     t.slot = nil
     t.completeCache = nil
@@ -374,7 +376,8 @@ extension GLContext {
         for f in 0..<t.faces {
           try frame.copyByDraw(from: ImageView(image, dimension: .d2, baseMip: UInt32(l - 1), mipCount: 1, baseLayer: UInt32(f), layerCount: 1),
                                to: ImageView(image, dimension: .d2, baseMip: UInt32(l), mipCount: 1, baseLayer: UInt32(f), layerCount: 1),
-                               width: e.width, height: e.height, sampler: linear, kind: .downsample)
+                               width: e.width, height: e.height, sampler: linear, kind: .downsample,
+                               sourceSlot: try levelSlot(t, level: l - 1, face: f))
         }
       }
     } catch { fail(error) }
