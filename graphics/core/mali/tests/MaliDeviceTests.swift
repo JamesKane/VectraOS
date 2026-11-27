@@ -22,6 +22,8 @@ func bytes(_ words: [UInt32]) -> [UInt8] {
 func device() throws -> (MaliDevice, FakeTransport) {
   let t = FakeTransport()
   let gpu = try MaliDevice(transport: t)
+  // A job a stream, so a test reads each step's (ChainTests has the merged form).
+  gpu.mergesQueueJobs = false
   _ = KernelRunner(gpu, t)
   return (gpu, t)
 }

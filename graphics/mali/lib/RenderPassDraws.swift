@@ -201,6 +201,9 @@ public struct DrawPassRequest: Sendable {
   /// Target 0's CRC table (08 section 8.6): the pass checks each tile's checksum and writes back only the tiles that changed. Only
   /// for a pass of one layer and one sample over the whole of a target's level 0, whose effective tile is 16 x 16 or more.
   public var crc: CRCTable?
+  /// Where the sample patterns' table already is (`SamplePatterns.table`, 64-byte aligned): the device keeps one, and a pass then
+  /// doesn't lay out its own.
+  public var sampleTable: UInt64?
   /// The depth and stencil target; nil for a pass with none (PipelineState.swift).
   public var zs: ZSTarget?
   /// The colour targets after the first (08 section 8.4); with any, a pass can't keep its target's contents.
@@ -362,7 +365,7 @@ extension RenderPass {
     // Each draw's state, made once (a pass may have hundreds of draws).
     let zsStates = r.draws.map { zsState($0) }
     for z in zsStates { drawZSDAt.append(z != nil ? place(DepthStencilDescriptor.size, DepthStencilDescriptor.alignment) : -1) }
-    let samplesAt = place(SamplePatterns.tableBytes, 64)
+    let samplesAt = r.sampleTable == nil ? place(SamplePatterns.tableBytes, 64) : -1
     let tableAt = r.heapAddress == nil && r.storageAddress == nil ? -1 : place(DescriptorHeap.tableEntries * ResourceTable.entrySize, ResourceTable.alignment)
     var shaders: [(code: [UInt64], spd: Int, at: Int)] = []
     func shaderSlot(_ code: [UInt64]) -> Int {
@@ -465,7 +468,7 @@ extension RenderPass {
     let rtAt = fbdAt + FramebufferParameters.size + (zsExtension ? ZSTarget.size : 0)
     var framebuffer = FramebufferParameters(
       width: r.width, height: r.height, sampleCountLog2: UInt32(log2Floor(UInt64(r.samples))), samplePattern: pattern,
-      sampleLocations: va(samplesAt) + UInt64(SamplePatterns.blockBytes) * UInt64(pattern),
+      sampleLocations: (r.sampleTable ?? va(samplesAt)) + UInt64(SamplePatterns.blockBytes) * UInt64(pattern),
       effectiveTileLog2: plan.tileLog2, colourAllocationKiB: plan.allocationField, tiler: va(tilerAt))
     framebuffer.zs = r.zs
     let crcUsed = r.crc != nil && plan.tilePixels >= 256 && r.layers == 1 && r.viewMask == 0 && r.samples == 1
@@ -917,7 +920,7 @@ extension RenderPass {
           at: tableAt)
       }
     } catch { throw .descriptor(error) }
-    m.store(bytes: SamplePatterns.table(), at: samplesAt)
+    if samplesAt >= 0 { m.store(bytes: SamplePatterns.table(), at: samplesAt) }
     if let p = r.preload {
       m.store(words: preDCD, at: dcdAt)
       m.store(words: BlendDescriptor(renderTarget: 0, isSRGB: p.isSRGB).words, at: preBlendAt)
@@ -1002,7 +1005,7 @@ extension RenderPass {
     let image = RenderPassImage(
       memory: m, base: base, streams: streams, plan: plan, hierarchyMask: mask, tilerContext: va(tilerAt),
       heapDescriptor: va(heapAt), framebuffer: va(fbdAt), renderTarget: va(rtAt),
-      sampleTable: va(samplesAt), blend: va(blendAt[0]), depthStencil: va(zsdAt), vertexTable: 0,
+      sampleTable: r.sampleTable ?? va(samplesAt), blend: va(blendAt[0]), depthStencil: va(zsdAt), vertexTable: 0,
       vertexShader: va(shaders[vslot[vslot.count - 1]].at), fragmentShader: va(shaders[fslot[fslot.count - 1]].at),
       vertexSPD: last.vertexSPD, fragmentSPD: last.fragmentSPD, localStorage: va(tsdAt), syncObject: syncVA, draw: last,
       fragmentPointer: fbdPointer)

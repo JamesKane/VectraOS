@@ -272,6 +272,8 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   var arena = TransientArena()
   var threadStorage: Region?
   var workgroupStorage: Region?
+  /// The sample patterns' table every pass points at (Execute.swift's `sampleTable`).
+  var samplePatterns: Region?
   /// The steps chained on the GPU (StepChain): a 64-bit sync object every step adds one to when it is done, and the count
   /// the CPU has submitted, which it reaches once they all are.
   var chainRegion: Region?
@@ -369,6 +371,9 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   public internal(set) var lastProfile = SubmitProfile()
   /// Whether images that qualify are AFBC (`afbcEligible`): on by default; off, every image is linear (a probe, a fallback).
   public var afbc = true
+  /// Whether a submission's streams of one queue are one job (Execute.swift's `oneJobAQueue`): on; off, a job a stream (the host
+  /// tests read each).
+  public var mergesQueueJobs = true
   /// Whether colour targets made from now on have CRC tables (transaction elimination): on by default.
   public var crcTables = true
   /// Whether `lastProfile`'s times are taken (a benchmark's): off, the clock is not read and the times stay 0.
@@ -517,7 +522,7 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     if let c = chainRegion { release([c]) }
     if let h = heapCopy { release([h.region]) }
     if let h = storageCopy { release([h.region]) }
-    for r in [threadStorage, workgroupStorage] { if let r { release([r]) } }
+    for r in [threadStorage, workgroupStorage, samplePatterns] { if let r { release([r]) } }
     for r in retired { release(r.regions) }
     for r in memories.all { release([r]) }
     for i in images.all { release([i.region] + (i.planeRegion.map { [$0] } ?? [])) }

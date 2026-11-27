@@ -119,7 +119,7 @@ extension MaliDevice {
           jobs += try self.jobs(step, chain: c, held: &held)
           chainQueue = queue
         }
-        try launch(group: try workGroup(), jobs: jobs, signal: signal)
+        try launch(group: try workGroup(), jobs: try oneJobAQueue(jobs, held: &held), signal: signal)
         chainValue = base + UInt64(steps.count)
       }
     } catch {
@@ -145,6 +145,20 @@ extension MaliDevice {
     chainRegion = c
     chainValue = 0
     return c
+  }
+
+  /// The sample patterns' table (valhall 07 section 7.9), made at first use and kept: every pass points at it.
+  func sampleTable() throws(GPUError) -> Region {
+    if let t = samplePatterns { return t }
+    let t = try makeRegion(SamplePatterns.tableBytes)
+    let bytes = SamplePatterns.table()
+    var words = [UInt32](repeating: 0, count: bytes.count / 4)
+    for i in 0..<words.count {
+      words[i] = UInt32(bytes[4 * i]) | UInt32(bytes[4 * i + 1]) << 8 | UInt32(bytes[4 * i + 2]) << 16 | UInt32(bytes[4 * i + 3]) << 24
+    }
+    store(words, in: t, at: 0)
+    samplePatterns = t
+    return t
   }
 
   /// The one group, made at first use.
@@ -712,6 +726,36 @@ extension MaliDevice {
     }
   }
 
+  /// The submission's jobs as one job a queue: a stream that CALLs each of the queue's streams in order (valhall 01 section 1.1.3; the
+  /// kernel's wrapper is one frame of the call stack, this a second). A queue runs its jobs in order either way, and every stream
+  /// ends by draining its slots; one job saves the driver's ring sequence, its cache flush, its completion and its interrupt for
+  /// each of the others. A queue with one job keeps it.
+  func oneJobAQueue(_ jobs: [MaliJob], held: inout [Region]) throws(GPUError) -> [MaliJob] {
+    var queues: [UInt32] = []
+    for j in jobs where !queues.contains(j.queue) { queues.append(j.queue) }
+    guard mergesQueueJobs, queues.count < jobs.count else { return jobs }
+    let info = transport.info
+    let registers = CSRegisterMap(workRegisters: info.workRegisters, unpreserved: info.unpreservedRegisters)
+    let scoreboards = CSScoreboards(count: info.scoreboards)
+    var out: [MaliJob] = []
+    for q in queues {
+      let mine = jobs.filter { $0.queue == q }
+      if mine.count == 1 {
+        out.append(mine[0])
+        continue
+      }
+      let bytes = mine.count * 24 + 64
+      let region = try scratch(bytes, held: &held)
+      var b = CSBuilder(address: region.address, capacityBytes: region.size, registers: registers, scoreboards: scoreboards)
+      for j in mine { b.call(address: j.address, size: j.size) }
+      let stream: CSStream
+      do throws(CSBuildError) { stream = try b.finish() } catch { throw .unsupported("a queue's calling stream refused: \(error)") }
+      for (i, w) in stream.words.enumerated() { region.buffer.store(w, at: i * 8) }
+      out.append(MaliJob(queue: q, address: stream.address, size: UInt32(stream.size)))
+    }
+    return out
+  }
+
   /// The jobs the driver takes in one submit (its `maxJobs`).
   static let jobsPerSubmit = 256
 
@@ -1067,6 +1111,7 @@ extension MaliDevice {
       for (_, code) in d.blendShaders { codeWords += code.count + 16 }
     }
     request.chain = chain
+    request.sampleTable = try sampleTable().address
     // The pass's block is within one 4 GiB window (the arena's are): a blend shader's address is 32 bits and the fragment shader
     // jumps to it (09 section 9.9.1). What a draw takes is a few hundred bytes; a pass that needs more is laid out again.
     var capacity = codeWords * 8 + 32768 + 2048 * pass.draws.count

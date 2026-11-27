@@ -150,6 +150,14 @@ public struct CSBuilder: Sendable {
     wait(mask: scoreboards.slotMask(CSScoreboards.loadStoreSlot))
   }
 
+  /// CALL the stream of `size` bytes at `address` (01 section 1.1.3): its range, then on with the next instruction. Registers 68 to 71
+  /// hold the range (any registers would do: they are set just before each call).
+  public mutating func call(address: UInt64, size: UInt32) {
+    move64(Self.chainAddressRegister, address)
+    move32(Self.chainValueRegister, size)
+    emit(CSInstruction.call(address: Self.chainAddressRegister, size: Self.chainValueRegister))
+  }
+
   // MARK: Steps chained on the GPU (02 section 2.6.4: queues ordered only through sync objects)
 
   /// Wait until the 64-bit sync object at `address` is above `reference`: the step before this one, on another queue, has

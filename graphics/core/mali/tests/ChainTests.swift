@@ -75,6 +75,24 @@ func chainUse(_ words: [UInt64], address: UInt64) -> (waits: [UInt64], adds: Int
     #expect(gpu.chainValue == 2)
   }
 
+  @Test func aQueuesStreamsAreOneJobThatCallsEach() throws {
+    let (gpu, t) = try device()
+    gpu.mergesQueueJobs = true
+    let pipeline = try trianglePipeline(gpu)
+    let a = try gpu.makeImage(ImageDescriptor(format: .rgba8, width: 64, height: 64, usage: .renderTarget | .copySource))
+    let out = try gpu.allocate(.readback, bytes: 64 * 64 * 4)
+    var list = GPUCommandList()
+    list.render(RenderingInfo(colors: [Attachment(image: a, load: .clear(0, 0, 0, 1))])) { r in r.draw(pipeline, root: 0x1000, vertices: 3) }
+    list.render(RenderingInfo(colors: [Attachment(image: a, load: .load)])) { r in r.draw(pipeline, root: 0x1000, vertices: 3) }
+    list.copy(a, to: out)
+    try gpu.run(list, signal: 1)
+    // The start streams and two passes on queues 0 and 1, the start stream and the copy on 2: a job a queue, each a stream of
+    // CALLs (opcode 32), one for each stream of its queue.
+    let s = t.submits[0]
+    #expect(s.jobs.map { $0.queue } == [0, 1, 2])
+    #expect(t.streams.map { w in w.filter { $0 >> 56 == 32 }.count } == [3, 3, 2])
+  }
+
   @Test func aPassTakesAHundredDrawsAndMore() throws {
     let (gpu, t) = try device()
     let pipeline = try trianglePipeline(gpu)
