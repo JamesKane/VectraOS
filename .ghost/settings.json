@@ -1,0 +1,20 @@
+{
+  "gates": {
+    "changed": {
+      "command": ".build/debug/vx test --changed",
+      "parser": "ctest",
+      "expectedSeconds": 900,
+      "description": "The local check: only what the change risks (D88), on the arches this Mac configures. Not the merge gate."
+    },
+    "brimstone": {
+      "command": ".claude/skills/remote-test/brimstone-run.sh \"$(git branch --show-current)\"",
+      "expectedSeconds": 900,
+      "sandbox": false,
+      "description": "The merge gate: vx test --changed amd64 arm64 on brimstone at the branch's last commit (uncommitted changes are not tested). Read build/vx/brimstone/ before reporting a pass. Needs the remote-test skill's lock handling, so never run brimstone by hand."
+    }
+  },
+  "autopilot": {
+    "decisions": "recommended",
+    "escalate": "contradicting an Accepted decision (a D-number); reading sources the clean-room rules restrict; pushing to GitHub origin; merging to main; a failure that 'passed on rerun'; anything that can't be undone"
+  }
+}
