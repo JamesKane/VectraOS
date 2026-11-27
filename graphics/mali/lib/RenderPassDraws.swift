@@ -629,7 +629,6 @@ extension RenderPass {
     framebuffer.zs = r.zs
     let crcUsed = r.crc != nil && plan.tilePixels >= 256 && r.layers == 1 && r.viewMask == 0 && r.samples == 1
     framebuffer.crc = crcUsed
-    framebuffer.emptyTileRead = crcUsed && targetCount == 1
     if smallTile, framebuffer.zs?.depthAFBC == true { framebuffer.zs!.reverseIssueOrder = true }
     framebuffer.renderTargetCount = descriptorCount
     if r.preload != nil {

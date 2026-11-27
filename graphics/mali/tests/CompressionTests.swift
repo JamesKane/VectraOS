@@ -65,7 +65,6 @@ import Testing
   var f = FramebufferParameters(width: 64, height: 64, sampleCountLog2: 0, samplePattern: 0, sampleLocations: 0, effectiveTileLog2: 8,
                                 colourAllocationKiB: 1, tiler: 0)
   f.crc = true
-  f.emptyTileRead = true
   let fw = try? f.words()
-  #expect(fw.map { $0[12] >> 21 & 1 == 1 && $0[12] >> 28 == 0xF } == true, "the extension, empty tile read and write, CRC read and write")
+  #expect(fw.map { $0[12] >> 21 & 1 == 1 && $0[12] >> 28 == 0xE } == true, "the extension, empty tile write, CRC read and write")
 }

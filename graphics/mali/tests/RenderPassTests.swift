@@ -474,6 +474,17 @@ private func texturedDraws(second: BlendState = BlendState(enabled: true, equati
   #expect(tiler == 1 && framebuffer == 1)
 }
 
+@Test func aTexturedPassWithACRCTableNeverReadsEmptyTiles() throws {
+  // vkmark's texture scene: a pass that samples, of one colour target with a CRC table. With empty tile read (08 word 12 bit 28)
+  // its fragment run stopped for good on the Orange Pi 6 Plus within 30 seconds; CRC read and write and empty tile write stay.
+  var request = try texturedDraws()
+  request.crc = CRCTable(address: 0x70_0000, rowStride: 64, counter: 1)
+  let (img, _, _) = try RenderPass.build(at: base, capacity: 16384, request: request, registers: regs, scoreboards: sbs)
+  let w12 = img.memory.load32(at: Int(img.framebuffer - base) + 48)
+  #expect(w12 >> 21 & 1 == 1 && w12 >> 29 == 7, "the extension, empty tile write, CRC read and write")
+  #expect(w12 >> 28 & 1 == 0, "no empty tile read")
+}
+
 @Test func sharedShadersAreLaidOutOnce() throws {
   let (img, records, _) = try RenderPass.build(at: base, capacity: 16384, request: texturedDraws(), registers: regs, scoreboards: sbs)
   #expect(records[0].vertexSPD == records[1].vertexSPD && records[0].fragmentSPD == records[1].fragmentSPD)
