@@ -1,0 +1,46 @@
+{
+  "gates": {
+    "changed": {
+      "command": ".build/debug/vx test --changed",
+      "parser": "ctest",
+      "expectedSeconds": 900,
+      "description": "The local check: only what the change risks (D88), on the arches this Mac configures. Not the merge gate."
+    },
+    "brimstone": {
+      "command": ".claude/skills/remote-test/brimstone-run.sh \"$(git branch --show-current)\"",
+      "expectedSeconds": 900,
+      "sandbox": false,
+      "description": "The merge gate: vx test --changed amd64 arm64 on brimstone at the branch's last commit (uncommitted changes are not tested). Read build/vx/brimstone/ before reporting a pass. Needs the remote-test skill's lock handling, so never run brimstone by hand."
+    }
+  },
+  "autopilot": {
+    "decisions": "recommended",
+    "escalate": "contradicting an Accepted decision (a D-number); reading sources the clean-room rules restrict; pushing to GitHub origin; merging to main; a failure that 'passed on rerun'; anything that can't be undone"
+  },
+  "hosts": {
+    "board": {
+      "address": "root@192.168.0.32",
+      "hostKeyAlias": "192.168.0.19",
+      "probe": "uname -s | grep -qx FreeBSD",
+      "lease": "board",
+      "description": "The Orange Pi 6 Plus, between runs in FreeBSD. Runs go through board-run.sh (it holds /root/vx-board.lock), not RemoteJob. Use Monitor host board with a request when it needs a power-cycle."
+    },
+    "brimstone": {
+      "address": "brimstone.local",
+      "hostKeyAlias": "brimstone",
+      "loginShell": "zsh -lic",
+      "workdir": "~/Projects/OS/VectraOS",
+      "minFreeGB": 20,
+      "description": "The Linux test host. Test runs go through the brimstone gate (brimstone-run.sh takes the slot locks); no pushRemote here on purpose, so RemoteJob is for read-only commands only."
+    }
+  },
+  "corpus": [
+    {
+      "name": "decisions",
+      "files": [
+        "docs/decisions/D*.md"
+      ],
+      "ids": "D\\d+"
+    }
+  ]
+}

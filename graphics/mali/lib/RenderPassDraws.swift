@@ -166,6 +166,20 @@ public struct PassDraw: Sendable {
 
   /// A draw with `template`'s shaders, blends, state and bindings (shared, not copied) and counts and push constants of its own:
   /// `push`, or `root` as words 0 and 1 with no array made.
+  /// A draw with this one's shaders, blends, state and bindings, as `init(sharingState:)` makes, read where this draw is (an
+  /// array's element) rather than from a copy of it.
+  public func sharing(vertexCount: Int, instanceCount: Int = 1, root: UInt64) -> PassDraw {
+    PassDraw(shared: shared, vertexCount: vertexCount, instanceCount: instanceCount, root: root)
+  }
+
+  init(shared: Shared, vertexCount: Int, instanceCount: Int, root: UInt64) {
+    self.shared = shared
+    self.vertexCount = vertexCount
+    self.instanceCount = instanceCount
+    self.push = []
+    self.root = root
+  }
+
   public init(sharingState template: PassDraw, vertexCount: Int, instanceCount: Int = 1, push: [UInt32] = [], root: UInt64? = nil) {
     shared = template.shared
     self.vertexCount = vertexCount
@@ -393,16 +407,21 @@ extension RenderPass {
     // blocks). Each draw is read once here; what is made from its shared state is made once for each run of draws that share it.
     var same = [Bool](repeating: false, count: r.draws.count)
     var sameRun = same
-    var previous: PassDraw? = nil
-    for (n, d) in r.draws.enumerated() {
-      guard d.indirect != nil || (d.vertexCount >= d.state.minimumVertices && d.instanceCount >= 1) else { throw .badRequest }
-      guard d.occlusionQuery & 7 == 0 else { throw .badRequest }
-      if let i = d.indirect { guard i.address & 3 == 0 else { throw .badRequest } }
-      if let p = previous, p.shared === d.shared {
+    // (The draws are read in place through a span: a copy of a draw, as an array's subscript gives, counts each of its references.)
+    let ds = r.draws.span
+    for n in r.draws.indices {
+      let indirect = ds[n].indirect
+      guard indirect != nil || (ds[n].vertexCount >= ds[n].state.minimumVertices && ds[n].instanceCount >= 1)
+      else { throw .badRequest }
+      guard ds[n].occlusionQuery & 7 == 0 else { throw .badRequest }
+      if let i = indirect { guard i.address & 3 == 0 else { throw .badRequest } }
+      if n > 0, ds[n - 1].shared === ds[n].shared {
         same[n] = true
-        sameRun[n] = d.occlusionQuery == p.occlusionQuery && d.flags0Or == p.flags0Or && d.flags0Clear == p.flags0Clear
-          && d.indices?.size == p.indices?.size && d.varyingBytes == p.varyingBytes
+        sameRun[n] = ds[n].occlusionQuery == ds[n - 1].occlusionQuery && ds[n].flags0Or == ds[n - 1].flags0Or
+          && ds[n].flags0Clear == ds[n - 1].flags0Clear && ds[n].indices?.size == ds[n - 1].indices?.size
+          && ds[n].varyingBytes == ds[n - 1].varyingBytes
       } else {
+        let d = r.draws[n]
         guard d.blend.renderTarget == 0, d.extraBlends.count == targetCount - 1 else { throw .badRequest }
         // A target in mode Shader has its shader (and a draw with a shader has the constants' words in its FAU).
         func check(_ i: Int, _ b: BlendDescriptor) throws(RenderError) {
@@ -412,7 +431,6 @@ extension RenderPass {
         try check(0, d.blend)
         for (i, b) in d.extraBlends.enumerated() { try check(i + 1, b) }
       }
-      previous = d
     }
     for t in r.extraTargets { guard t.clear.count == 4, t.address & 63 == 0 else { throw .badRequest } }
     guard let pattern = SamplePatterns.pattern(samples: r.samples) else { throw .badRequest }
@@ -737,22 +755,25 @@ extension RenderPass {
           coverageBitmaskType: 1).words
       }
       phase(1)
-      for (n, d) in r.draws.enumerated() {
+      var vertexWords = 1, fragmentWords = 0
+      let ds = r.draws.span
+      for n in r.draws.indices {
         // The draw before's run state, where this draw shares its state and its flags' inputs: its own FAU blocks, counts,
-        // offsets and index data.
+        // offsets and index data (read in place: the shaders' sizes are the run's, and nothing of the draw is copied).
         if sameRun[n] {
           var s = states[n - 1]
-          s.vertexFAU = try FAUPointer.value(address: va(vfauAt[n]), words: max(d.vertexShader.layout.slots, 1))
-          if d.fragmentShader.layout.slots > 0 {
-            s.fragmentFAU = try FAUPointer.value(address: va(ffauAt[n]), words: d.fragmentShader.layout.slots)
+          s.vertexFAU = try FAUPointer.value(address: va(vfauAt[n]), words: vertexWords)
+          if fragmentWords > 0 {
+            s.fragmentFAU = try FAUPointer.value(address: va(ffauAt[n]), words: fragmentWords)
           }
-          s.indexCount = UInt32(max(d.vertexCount, 0))
-          s.instanceCount = UInt32(max(d.instanceCount, 0))
-          s.indexOffset = d.firstIndex
-          s.vertexOffset = UInt32(bitPattern: d.vertexOffset)
-          s.instanceOffset = d.firstInstance
-          s.indexBuffer = d.indices?.address ?? IDVSState().indexBuffer
-          s.indexBufferSize = d.indices?.bytes ?? IDVSState().indexBufferSize
+          s.indexCount = UInt32(max(ds[n].vertexCount, 0))
+          s.instanceCount = UInt32(max(ds[n].instanceCount, 0))
+          s.indexOffset = ds[n].firstIndex
+          s.vertexOffset = UInt32(bitPattern: ds[n].vertexOffset)
+          s.instanceOffset = ds[n].firstInstance
+          let indices = ds[n].indices
+          s.indexBuffer = indices?.address ?? IDVSState().indexBuffer
+          s.indexBufferSize = indices?.bytes ?? IDVSState().indexBufferSize
           states.append(s)
           if r.wantsRecords { records.append(
             DrawRecords(
@@ -760,10 +781,13 @@ extension RenderPass {
               fragmentSPD: s.fragmentSPD, state: s)) }
           continue
         }
+        let d = r.draws[n]
+        vertexWords = max(d.vertexShader.layout.slots, 1)
+        fragmentWords = d.fragmentShader.layout.slots
         var s = IDVSState()
-        s.vertexFAU = try FAUPointer.value(address: va(vfauAt[n]), words: max(d.vertexShader.layout.slots, 1))
-        if d.fragmentShader.layout.slots > 0 {
-          s.fragmentFAU = try FAUPointer.value(address: va(ffauAt[n]), words: d.fragmentShader.layout.slots)
+        s.vertexFAU = try FAUPointer.value(address: va(vfauAt[n]), words: vertexWords)
+        if fragmentWords > 0 {
+          s.fragmentFAU = try FAUPointer.value(address: va(ffauAt[n]), words: fragmentWords)
         }
         s.blend = try BlendDescriptor.register(address: va(blendAt[n]), count: targetCount)
         s.tilerContext = va(tilerAt)
@@ -896,18 +920,21 @@ extension RenderPass {
       // Each run's registers are those the last run read but for what differs (a draw of the same pipeline: its counts and FAU).
       var last: IDVSState? = nil
       for k in 0..<contexts {
-      for (n, d) in r.draws.enumerated() {
-        if k > 0 && !d.vertexShader.writesLayer { continue }
+      // (Each draw's fields read in place, through a span.)
+      let ds = r.draws.span
+      for n in r.draws.indices {
+        if k > 0 && !ds[n].vertexShader.writesLayer { continue }
         var s = states[n]
         s.tilerContext = va(tilerAt) + UInt64(k * TilerContext.size)
         s.load(into: &b, after: last)
         // An indirect draw's counts come from memory into the registers: the next draw sets them all again.
-        last = d.indirect == nil ? s : nil
-        if let a = d.indirect {
+        let indirect = ds[n].indirect
+        last = indirect == nil ? s : nil
+        if let a = indirect {
           // The counts come from memory when the stream runs: the words land in the count registers (33 to 37) and the
           // run waits for the load (01 section 1.4.2, a load signals the load/store slot).
           b.move64(heapContextRegister, a.address)
-          if d.indices != nil {
+          if ds[n].indices != nil {
             b.emit(CSInstruction.loadMultiple(base: IDVSState.Register.indexCount, address: heapContextRegister, mask: 0b11111))
           } else {
             // vertexCount, instanceCount, firstVertex, firstInstance: registers 33, 34, 36 and 37.
@@ -915,13 +942,13 @@ extension RenderPass {
           }
           b.wait(mask: b.scoreboards.slotMask(dataSlot))
         }
-        if d.indirect != nil {
+        if indirect != nil {
           // 06 section 6.4.7: what the hardware does for a zero count is no source's to say, so the stream does not issue
           // the run for one: it branches over it when the count of vertices or indices, or of instances, is zero.
           b.emit(CSInstruction.branch(.equal, register: IDVSState.Register.indexCount, offset: 2))
           b.emit(CSInstruction.branch(.equal, register: IDVSState.Register.instanceCount, offset: 1))
         }
-        b.emit(CSInstruction.runIDVS2(deferredShading: d.deferredShading))
+        b.emit(CSInstruction.runIDVS2(deferredShading: ds[n].deferredShading))
       }
       }
       b.emit(CSInstruction.finishTiling)
@@ -1130,26 +1157,28 @@ extension RenderPass {
     }
     for s in shaders { m.store(words: s.code, at: s.at) }
     for b in blendCodes { m.store(words: b.code, at: b.at) }
-    for (n, d) in r.draws.enumerated() {
-      let vp = d.state.viewport ?? DrawViewport(x: 0, y: 0, width: Float(r.width), height: Float(r.height))
+    for n in r.draws.indices {
+      // (Read in place through the span, but for a draw whose blends are its own.)
+      let vp = ds[n].state.viewport ?? DrawViewport(x: 0, y: 0, width: Float(r.width), height: Float(r.height))
       let viewport = ViewportTransform(x: vp.x, y: vp.y, width: vp.width, height: vp.height, minDepth: vp.minDepth, maxDepth: vp.maxDepth)
       // The blocks are stored in place (the vertex shader's nonPerspective, base vertex and base instance words are zero, as
       // `block` leaves them for a draw that gives none).
-      d.vertexShader.layout.store(into: &m, at: vfauAt[n], viewport: viewport, push: d.push, root: d.root, images: d.images, dummySampler: d.dummySampler,
+      ds[n].vertexShader.layout.store(into: &m, at: vfauAt[n], viewport: viewport, push: ds[n].push, root: ds[n].root, images: ds[n].images, dummySampler: ds[n].dummySampler,
                       viewportTable: viewportsAt[n] >= 0 ? va(viewportsAt[n]) : 0)
       if viewportsAt[n] >= 0 {
         var transforms: [ViewportTransform] = []
-        for k in 0..<max(d.state.viewports.count, 1) {
-          let v = (k < d.state.viewports.count ? d.state.viewports[k] : nil) ?? DrawViewport(x: 0, y: 0, width: Float(r.width), height: Float(r.height))
+        for k in 0..<max(ds[n].state.viewports.count, 1) {
+          let v = (k < ds[n].state.viewports.count ? ds[n].state.viewports[k] : nil) ?? DrawViewport(x: 0, y: 0, width: Float(r.width), height: Float(r.height))
           transforms.append(ViewportTransform(x: v.x, y: v.y, width: v.width, height: v.height, minDepth: v.minDepth, maxDepth: v.maxDepth))
         }
         m.store(words: ViewportTable.words(transforms), at: viewportsAt[n])
       }
-      if scissorsAt[n] >= 0 { m.store(words: ScissorArray(state: d.state, width: r.width, height: r.height).words(stride: d.state.scissorProbe == 3 ? 16 : 8), at: scissorsAt[n]) }
-      d.fragmentShader.layout.store(into: &m, at: ffauAt[n], push: d.push, root: d.root, images: d.images, dummySampler: d.dummySampler,
-                                    blendConstants: d.blendConstants)
+      if scissorsAt[n] >= 0 { m.store(words: ScissorArray(state: ds[n].state, width: r.width, height: r.height).words(stride: ds[n].state.scissorProbe == 3 ? 16 : 8), at: scissorsAt[n]) }
+      ds[n].fragmentShader.layout.store(into: &m, at: ffauAt[n], push: ds[n].push, root: ds[n].root, images: ds[n].images, dummySampler: ds[n].dummySampler,
+                                    blendConstants: ds[n].blendConstants)
       // Its blend descriptors are the draw before's (`same`).
       if same[n] { continue }
+      let d = r.draws[n]
       func withShader(_ b: BlendDescriptor, _ target: Int) -> [UInt32] {
         var b = b
         if b.mode == .shader, let p = blendCodeAt[n][target] { b.shaderAddress = UInt32(truncatingIfNeeded: va(p)) }

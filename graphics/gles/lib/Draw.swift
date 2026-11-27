@@ -166,6 +166,27 @@ let topologies: [PrimitiveTopology] = [.pointList, .lineList, .lineStrip, .trian
 let dynamicStates: DynamicStates = .stencilReference | .stencilCompareMask | .stencilWriteMask | .depthBias | .blendConstants
   | .lineWidth
 
+/// The last draw's pipeline and what it was found by (its target by number: two targets of one number are one).
+final class LastPipeline {
+  let program: GLProgram
+  let link: UInt64
+  let serial: UInt64
+  let layout: VertexLayout
+  let topology: PrimitiveTopology
+  let target: UInt64
+  let pipeline: GPUPipeline
+  init(_ program: GLProgram, _ link: UInt64, _ serial: UInt64, _ layout: VertexLayout, _ topology: PrimitiveTopology, _ target: UInt64,
+       _ pipeline: GPUPipeline) {
+    self.program = program
+    self.link = link
+    self.serial = serial
+    self.layout = layout
+    self.topology = topology
+    self.target = target
+    self.pipeline = pipeline
+  }
+}
+
 /// What a draw reads its indices from.
 enum IndexSource {
   case none
@@ -271,15 +292,15 @@ extension GLContext {
   func pipeline(_ program: GLProgram, _ layout: VertexLayout, _ topology: PrimitiveTopology, _ target: RenderTarget)
     throws(GPUError) -> GPUPipeline
   {
-    // The last draw's, where nothing it was found by has changed: no key is made.
+    // The last draw's, where nothing it was found by has changed: no key is made (and nothing of the target copied).
     if let c = lastPipeline, c.program === program, c.link == program.linkSerial, c.serial == pipelineSerial, c.layout == layout,
-      c.topology == topology, c.target == target
+      c.topology == topology, target.id != 0, c.target == target.id
     {
       return c.pipeline
     }
     let key = pipelineKey(layout, topology, target)
     if let p = program.pipelines[key] {
-      lastPipeline = (program, program.linkSerial, pipelineSerial, layout, topology, target, p)
+      lastPipeline = LastPipeline(program, program.linkSerial, pipelineSerial, layout, topology, target.id, p)
       return p
     }
     let vertex: [UInt8]
@@ -288,7 +309,7 @@ extension GLContext {
     }
     let p = try device.makeGraphicsPipeline(pipelineDescriptor(program, key, vertex: vertex, target))
     program.pipelines[key] = p
-    lastPipeline = (program, program.linkSerial, pipelineSerial, layout, topology, target, p)
+    lastPipeline = LastPipeline(program, program.linkSerial, pipelineSerial, layout, topology, target.id, p)
     pipelinesMade += 1
     frame.stats.pipelines += 1
     return p
@@ -342,51 +363,51 @@ extension GLContext {
     guard var p = frame.pass else { return }
     let v = coreViewport(t, shaderFlips: shaderFlips)
     if p.viewport != v {
-      frame.passList.setViewports([v])
+      frame.list.setViewports([v])
       p.viewport = v
     }
     let s = coreScissor(t)
     if p.scissor != s {
-      frame.passList.setScissor(x: s.x, y: s.y, width: s.width, height: s.height)
+      frame.list.setScissor(x: s.x, y: s.y, width: s.width, height: s.height)
       p.scissor = s
     }
     if t.hasStencil {
       let ref = (UInt32(bitPattern: stencilFront.reference) & 0xFF, UInt32(bitPattern: stencilBack.reference) & 0xFF)
       if p.stencilReference == nil || p.stencilReference! != ref {
-        frame.passList.setStencilReference(.front, ref.0)
-        frame.passList.setStencilReference(.back, ref.1)
+        frame.list.setStencilReference(.front, ref.0)
+        frame.list.setStencilReference(.back, ref.1)
         p.stencilReference = ref
       }
       let compare = (stencilFront.valueMask & 0xFF, stencilBack.valueMask & 0xFF)
       if p.stencilCompare == nil || p.stencilCompare! != compare {
-        frame.passList.setStencilCompareMask(.front, compare.0)
-        frame.passList.setStencilCompareMask(.back, compare.1)
+        frame.list.setStencilCompareMask(.front, compare.0)
+        frame.list.setStencilCompareMask(.back, compare.1)
         p.stencilCompare = compare
       }
       let write = (stencilFront.writeMask & 0xFF, stencilBack.writeMask & 0xFF)
       if p.stencilWrite == nil || p.stencilWrite! != write {
-        frame.passList.setStencilWriteMask(.front, write.0)
-        frame.passList.setStencilWriteMask(.back, write.1)
+        frame.list.setStencilWriteMask(.front, write.0)
+        frame.list.setStencilWriteMask(.back, write.1)
         p.stencilWrite = write
       }
     }
     if polygonOffsetFill {
       let bias = (polygonOffset.units, polygonOffset.factor)
       if p.depthBias == nil || p.depthBias! != bias {
-        frame.passList.setDepthBias(constant: bias.0, slope: bias.1)
+        frame.list.setDepthBias(constant: bias.0, slope: bias.1)
         p.depthBias = bias
       }
     }
     if blend {
       let k = BlendConstants(red: blendColor.0, green: blendColor.1, blue: blendColor.2, alpha: blendColor.3)
       if p.blendConstants != k {
-        frame.passList.setBlendConstants(k)
+        frame.list.setBlendConstants(k)
         p.blendConstants = k
       }
     }
     let width = frame.limits.features.wideLines ? min(lineWidth, frame.limits.maxLineWidth) : 1
     if p.lineWidth != width {
-      frame.passList.setLineWidth(width)
+      frame.list.setLineWidth(width)
       p.lineWidth = width
     }
     frame.pass = p
@@ -590,12 +611,21 @@ extension GLContext {
     unsafe root.pointer.storeBytes(of: root.address + UInt64(rootBytes), toByteOffset: RootBlock.setsOffset, as: UInt64.self)
     if let at = program.interface.driverWords, let block = unsafe program.block, at + 28 <= program.blockBytes {
       // The driver words for this target: GL's rows kept (off-screen), or flipped (a window, first row its top).
+      // (Stored one by one: an array of them was an allocation every draw.)
       let (n, f) = depthRange
-      let words: [Float] = target.flipped ? [-1, -1, Float(target.height), 1, n, f, f - n] : [1, 1, 0, -1, n, f, f - n]
-      for (k, w) in words.enumerated() where unsafe block.load(fromByteOffset: at + 4 * k, as: Float.self) != w {
+      let flipped = target.flipped
+      func word(_ k: Int, _ w: Float) {
+        guard unsafe block.load(fromByteOffset: at + 4 * k, as: Float.self) != w else { return }
         unsafe block.storeBytes(of: w, toByteOffset: at + 4 * k, as: Float.self)
         program.blockDirty = true
       }
+      word(0, flipped ? -1 : 1)
+      word(1, flipped ? -1 : 1)
+      word(2, flipped ? Float(target.height) : 0)
+      word(3, flipped ? 1 : -1)
+      word(4, n)
+      word(5, f)
+      word(6, f - n)
     }
     if program.blockDirty || program.blockStamp != frame.ring.recycles || program.blockAddress == 0 {
       let u = try frame.ring.allocate(program.blockBytes)
@@ -618,10 +648,10 @@ extension GLContext {
     openPass(target, reads: reads)
     recordDynamicState(target, shaderFlips: program.interface.driverWords != nil)
     if let m = indexMemory {
-      frame.passList.drawIndexed(pipeline, root: root.address, indices: m, indexOffset: indexOffset, indexType: indexType,
+      frame.list.drawIndexed(pipeline, root: root.address, indices: m, indexOffset: indexOffset, indexType: indexType,
                              count: UInt32(drawCount))
     } else {
-      frame.passList.draw(pipeline, root: root.address, vertices: UInt32(count), firstVertex: UInt32(first))
+      frame.list.draw(pipeline, root: root.address, vertices: UInt32(count), firstVertex: UInt32(first))
     }
     frame.pass!.draws += 1
     if depthTest { frame.pass!.usedDepth = true }
@@ -686,7 +716,7 @@ extension GLContext {
     if c.depth != nil { aspects = aspects | .depth }
     if c.stencil != nil { aspects = aspects | .stencil }
     if !aspects.isEmpty { attachments.append(.depthStencil(aspects: aspects, depth: c.depth ?? 1, stencil: c.stencil ?? 0)) }
-    frame.passList.clearAttachments(attachments, rects: [ClearRect(x: area.x, y: area.y, width: area.width, height: area.height)])
+    frame.list.clearAttachments(attachments, rects: [ClearRect(x: area.x, y: area.y, width: area.width, height: area.height)])
     frame.pass!.draws += 1
     if c.depth != nil { frame.pass!.usedDepth = true }
     if c.color != nil { frame.pass!.usedColor = true }

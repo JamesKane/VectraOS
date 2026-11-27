@@ -235,7 +235,7 @@ public final class EGLSurfaceObject: DefaultFramebuffer {
   var device: any GPUDevice { display.device! }
 
   var target: RenderTarget {
-    var t = RenderTarget()
+    let t = RenderTarget()
     if window != nil {
       let i = frames[current].image
       t.color = ImageView(i)

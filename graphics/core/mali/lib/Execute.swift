@@ -451,6 +451,10 @@ extension MaliDevice {
       case .draw(let p, let root, let vertices, let instances, let firstVertex, let firstInstance):
         // A draw of too few vertices for its topology, or of no instances, makes no primitive (appendDraw).
         if instances == 0 { break }
+        if appendSharing(
+          p, root: root, into: &draws, usesHeap: &usesHeap, inPass: target != nil, vertices: Int(vertices), instances: Int(instances),
+          vertexOffset: Int32(truncatingIfNeeded: firstVertex), firstInstance: firstInstance, query: activeQuery)
+        { break }
         try appendDraw(
           p, root: root, into: &draws, usesHeap: &usesHeap, target: target, vertices: Int(vertices), instances: Int(instances),
           vertexOffset: Int32(truncatingIfNeeded: firstVertex), firstInstance: firstInstance, query: activeQuery, dynamic: dyn, zs: zs)
@@ -458,6 +462,10 @@ extension MaliDevice {
                         let vertexOffset, let firstInstance):
         if instances == 0 { break }
         let source = try indexSource(indices, indexOffset, type)
+        if appendSharing(
+          p, root: root, into: &draws, usesHeap: &usesHeap, inPass: target != nil, vertices: Int(count), instances: Int(instances),
+          vertexOffset: vertexOffset, firstInstance: firstInstance, indices: source, firstIndex: firstIndex, query: activeQuery)
+        { break }
         try appendDraw(
           p, root: root, into: &draws, usesHeap: &usesHeap, target: target, vertices: Int(count), instances: Int(instances),
           vertexOffset: vertexOffset, firstInstance: firstInstance, indices: source, firstIndex: firstIndex, query: activeQuery, dynamic: dyn, zs: zs)
@@ -584,6 +592,40 @@ extension MaliDevice {
       extent: Extent3D(width: UInt32(v.width), height: UInt32(v.height)))
   }
 
+  /// A draw of the pass being planned that shares the draw before's state, for a draw of the same pipeline in the same pass with
+  /// the same dynamic state: its template (shared, not copied) with this draw's counts, offsets and push words, and nothing of the
+  /// pipeline's record read again. False where there is no such template (`appendDraw` then makes the draw). It takes none of
+  /// the pass's state: passing that (the dynamic values, the depth and stencil binding) copied it for every draw.
+  func appendSharing(
+    _ p: GPUPipeline, root: UInt64, into draws: inout [PassDraw], usesHeap: inout Bool, inPass: Bool, vertices: Int, instances: Int,
+    vertexOffset: Int32, firstInstance: UInt32, indices: IndexSource? = nil, firstIndex: UInt32 = 0, query: UInt64
+  ) -> Bool {
+    guard inPass, !probing else { return false }
+    let t0 = clock()
+    defer { lastProfile.drawNanoseconds &+= clock() &- t0 }
+    var i = 0
+    while i < drawCache.count,
+      !(drawCache[i].pipeline == p.handle && drawCache[i].version == dynVersion && drawCache[i].pass == planPass)
+    { i += 1 }
+    guard i < drawCache.count, drawCache[i].template != nil else { return false }
+    if vertices < drawCache[i].minimumVertices { return true }
+    usesHeap = usesHeap || drawCache[i].heapDraw
+    guard var draw = drawCache[i].template?.sharing(vertexCount: vertices, instanceCount: instances, root: root) else { return false }
+    draw.indices = indices
+    draw.firstIndex = firstIndex
+    draw.vertexOffset = vertexOffset
+    draw.firstInstance = firstInstance
+    draw.occlusionQuery = query
+    draws.append(draw)
+    return true
+  }
+
+  /// Whether a probe changes the draws' state (no draw then shares another's).
+  var probing: Bool {
+    probeScissorArrayLength != nil || probeScissorMode != 0 || probeViewports != nil || probeScissors != nil
+      || probeScissorArrayFill != nil || probeFlags0.or != 0 || probeFlags0.clear != 0
+  }
+
   /// One draw of the pass being planned.
   func appendDraw(
     _ p: GPUPipeline, root: UInt64, into draws: inout [PassDraw], usesHeap: inout Bool, target: ImageRecord?, vertices: Int,
@@ -593,10 +635,8 @@ extension MaliDevice {
     let t0 = clock()
     defer { lastProfile.drawNanoseconds &+= clock() &- t0 }
     guard let record = target else { throw .invalid("a draw outside a pass") }
-    // The draw before's, for a draw of the same pipeline in the same pass with the same dynamic state: its template (shared, not
-    // copied) with this draw's counts, offsets and push words. Nothing of the pipeline's record is read again.
-    let probing = probeScissorArrayLength != nil || probeScissorMode != 0 || probeViewports != nil || probeScissors != nil
-      || probeScissorArrayFill != nil || probeFlags0.or != 0 || probeFlags0.clear != 0
+    // The draw before's, for a draw of the same pipeline in the same pass with the same dynamic state (an indirect one: the
+    // direct ones are appendSharing's): its template with this draw's counts, offsets and push words.
     if !probing, let i = drawCache.firstIndex(where: { $0.pipeline == p.handle && $0.version == dynVersion && $0.pass == planPass }),
       let template = drawCache[i].template
     {
