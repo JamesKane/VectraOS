@@ -10,6 +10,8 @@
 //   gpu.mali.frame_100_draws_us   a pass cleared and 100 draws of small quads
 //   gpu.mali.frame_two_passes_us  two passes, the second into another target (render to texture, then the frame)
 //   gpu.mali.frame_small_pass_us  a pass cleared and one draw at 64 x 64: what a pass costs but for its pixels
+//   gpu.mali.frame_gl_us          GL's frame: an 800 x 600 colour target GL samples (no copies: AFBC on Mali) and a depth buffer,
+//                                 cleared, one draw with the depth test, both stored
 //
 // The first pass is also placed on the CPU's clock by two timestamps around it (the GPU's counter is the CPU's
 // architected counter): from the submit's return to the GPU's start, the GPU's own time, and from its end to the
@@ -137,6 +139,66 @@ final class FrameBudgets {
       + " and the waiting thread runs \(back[m]) us after it ends (medians)")
   }
 
+  /// GL's frame (glmark2's off-screen one): a colour target that is drawn and sampled but never copied, and a depth buffer that is
+  /// never sampled or copied, which the Mali backend makes AFBC (gpucore(2)); and what the pixels are: a pass draws red over the
+  /// left half with the depth test, a second keeps both and draws green over all of it behind the red (the depth kept), and a third
+  /// samples the colour into a linear target the CPU reads.
+  func glFrame(_ suffix: String = "") throws(GPUError) {
+    let colour = try gpu.makeImage(ImageDescriptor(format: .rgba8, width: Int32(width), height: Int32(height), usage: .renderTarget | .sampled))
+    let depth = try gpu.makeImage(ImageDescriptor(format: .depth32f, width: Int32(width), height: Int32(height), usage: .depthStencilTarget))
+    let ds = DepthStencilState(depthTest: true, depthWrite: true, depthCompare: .less)
+    let p = try gpu.makeGraphicsPipeline(GraphicsPipelineDescriptor(
+      vertex: LoinnirShaders.triangleVert, fragment: LoinnirShaders.triangleFrag, colorFormats: [.rgba8], blend: .opaque,
+      depthStencilFormat: .depth32f, depthStencil: ds))
+    // The left half red, the whole green (vertices of triangle.vert: position at 0, colour at 16).
+    let v = try gpu.allocate(.upload, bytes: 12 * 32)
+    var k = 0
+    func quad(_ x0: Float, _ x1: Float, _ c: [Float]) {
+      for (x, y) in [(x0, Float(-1)), (x1, -1), (x0, 1), (x1, -1), (x1, 1), (x0, 1)] {
+        let f = unsafe v.pointer!.advanced(by: k * 32).assumingMemoryBound(to: Float.self)
+        unsafe f[0] = x
+        unsafe f[1] = y
+        for i in 0..<4 { unsafe f[4 + i] = c[i] }
+        k += 1
+      }
+    }
+    quad(-1, 0, [1, 0, 0, 1])
+    quad(-1, 1, [0, 1, 0, 1])
+    var frame = GPUCommandList()
+    frame.render(RenderingInfo(colors: [Attachment(image: colour, load: .clear(0, 0, 1, 1))],
+                               depthStencil: DepthStencilAttachment(image: depth, clearDepth: 1))) { l in l.draw(p, root: v.address, vertices: 6) }
+    _ = try measure("GL's frame (AFBC where the backend has it)" + suffix, "gpu.mali.frame_gl" + suffix + "_us", frame)
+    try place("GL's frame" + suffix) { l in
+      l.render(RenderingInfo(colors: [Attachment(image: colour, load: .clear(0, 0, 1, 1))],
+                             depthStencil: DepthStencilAttachment(image: depth, clearDepth: 1))) { r in r.draw(p, root: v.address, vertices: 6) }
+    }
+    // What it drew, through a second pass that keeps both and a third that samples the colour.
+    var list = frame
+    list.render(RenderingInfo(colors: [Attachment(image: colour, load: .load)],
+                              depthStencil: DepthStencilAttachment(image: depth, depthLoad: .load, stencilLoad: .dontCare))) { l in
+      l.draw(p, root: v.address + 6 * 32, vertices: 6)
+    }
+    try gpu.writeTexture(7, colour)
+    try gpu.writeSampler(1, SamplerDescriptor(filter: .nearest, addressMode: .clampToEdge, mipmapMode: .nearest))
+    let params = try gpu.allocate(.upload, bytes: 32)
+    let q = unsafe params.pointer!
+    unsafe q.storeBytes(of: UInt32(7), toByteOffset: 0, as: UInt32.self)
+    unsafe q.storeBytes(of: UInt32(1), toByteOffset: 4, as: UInt32.self)
+    for (i, f) in [Float(0), 0, 1, 1, 0, 0].enumerated() { unsafe q.storeBytes(of: f, toByteOffset: 8 + 4 * i, as: Float.self) }
+    let sampler = try gpu.makeGraphicsPipeline(GraphicsPipelineDescriptor(
+      vertex: LoinnirShaders.quadVert, fragment: LoinnirShaders.sampleFrag, colorFormats: [.rgba8], blend: .opaque))
+    list.render(pass(second)) { l in l.draw(sampler, root: params.address, vertices: 6) }
+    signalled += 1
+    try gpu.run(list, signal: signalled)
+    let left = try pixel(second, 100, 300), right = try pixel(second, 700, 300)
+    if left != [255, 0, 0, 255] || right != [0, 255, 0, 255] {
+      throw GPUError.invalid("GL's frame drew \(left) on the left and \(right) on the right, not red and green")
+    }
+    print("loinnir-test: ok: frame: GL's frame (colour and depth AFBC on Mali), its depth kept and its colour sampled, exact at both halves")
+    gpu.destroy(colour)
+    gpu.destroy(depth)
+  }
+
   /// The pixel at (x, y) of `image` after the list that drew it.
   func pixel(_ image: GPUImage, _ x: Int, _ y: Int) throws(GPUError) -> [UInt8] {
     var list = GPUCommandList()
@@ -225,6 +287,23 @@ final class FrameBudgets {
       let got = [unsafe px[centre], unsafe px[centre + 1], unsafe px[centre + 2], unsafe px[centre + 3]]
       if got != [255, 0, 0, 255] { throw GPUError.invalid("a new device's first pass after a transfer drew \(got)") }
       print("loinnir-test: ok: frame: a new device's first pass, after a transfer on the compute queue, drew")
+    }
+    attempt("GL's frame") { () throws(GPUError) in try glFrame() }
+    // The same frames on a device whose passes are one stream on one queue (a probe: `MaliDevice.singleQueuePasses`).
+    attempt("one queue a pass") { () throws(GPUError) in
+      let fresh = try MaliDevice()
+      fresh.singleQueuePasses = true
+      fresh.profiling = true
+      let probe = try FrameBudgets(fresh, signalled: 0)
+      var list = GPUCommandList()
+      list.render(probe.pass(probe.target)) { l in l.draw(probe.pipeline, root: probe.quads.address, vertices: 6) }
+      _ = try probe.measure("clear and one draw, one queue a pass", "gpu.mali.frame_clear_draw_one_queue_us", list)
+      try probe.place("clear and one draw, one queue a pass") { l in
+        l.render(probe.pass(probe.target)) { r in r.draw(probe.pipeline, root: probe.quads.address, vertices: 6) }
+      }
+      let p = try probe.pixel(probe.target, 400, 300)
+      if p != [255, 0, 0, 255] { throw GPUError.invalid("one queue a pass left \(p) at the centre") }
+      try probe.glFrame("_one_queue")
     }
     print("loinnir-test: frame budgets: \(failed == 0 ? "done" : "\(failed) FAILED")")
     return failed

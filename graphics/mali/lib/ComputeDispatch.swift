@@ -283,8 +283,7 @@ public enum ComputeDispatch {
     }
     b.emit(CSInstruction.runCompute(taskIncrement: task.increment, taskAxis: task.axis, epLimit: epLimit))
     // The tail (02 section 2.9.1): every slot drained, the caches cleaned for the CPU.
-    b.waitAll()
-    b.cleanCachesForHost()
+    b.stepTail(r.chain)
     b.endStep(r.chain)
     let stream: CSStream
     do throws(CSBuildError) { stream = try b.finish() } catch { throw .stream(error) }

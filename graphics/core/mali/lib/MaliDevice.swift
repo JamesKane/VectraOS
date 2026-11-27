@@ -99,6 +99,11 @@ final class ImageRecord {
   var planes: [AspectPlane] = []
   /// Where `planeAt` is: the image's own region, or (a sparse image, whose region has no pages of its own) a region of its own.
   var planeRegion: Region?
+  /// A colour target's CRC table (valhall 08 section 8.6: transaction elimination), its row stride, and the counter that a write of
+  /// the image by anything but a pass that checks the table changes, so no checksum stored before matches.
+  var crc: (region: Region, rowStride: Int)?
+  var crcCounter: UInt16 = 1
+  func invalidateCRC() { if crc != nil { crcCounter &+= 1 } }
   init(region: Region, descriptor: ImageDescriptor, rowStride: Int, layout: ImageLayout, planeAt: Int?) {
     self.region = region
     self.descriptor = descriptor
@@ -267,6 +272,8 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   var arena = TransientArena()
   var threadStorage: Region?
   var workgroupStorage: Region?
+  /// The sample patterns' table every pass points at (Execute.swift's `sampleTable`).
+  var samplePatterns: Region?
   /// The steps chained on the GPU (StepChain): a 64-bit sync object every step adds one to when it is done, and the count
   /// the CPU has submitted, which it reaches once they all are.
   var chainRegion: Region?
@@ -362,6 +369,23 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   }
   /// Where the last submission spent the CPU's time (`submit`, to its return): what a benchmark reads to say where a frame goes.
   public internal(set) var lastProfile = SubmitProfile()
+  /// Whether images that qualify are AFBC (`afbcEligible`): on by default; off, every image is linear (a probe, a fallback).
+  public var afbc = true
+  /// Whether sampled colour images made from now on are in 64 KiB tiles (`tiledEligible`): on.
+  public var tiledTextures = true
+  /// Whether a submission's streams of one queue are one job (Execute.swift's `oneJobAQueue`): on; off, a job a stream (the host
+  /// tests read each).
+  public var mergesQueueJobs = true
+  /// Whether a pass is one stream on one queue, the tiling and then the fragment work, waiting on the tiling's slot (MaliCore's
+  /// `.singleQueue` layout) rather than a stream on each of two queues and a sync object between them: off, a probe. Set before
+  /// the first submission (the queues are started for it).
+  public var singleQueuePasses = false
+  /// Whether `wait` for the last value submitted watches the chain's word in memory before it waits on the timeline (on), and for
+  /// how long.
+  public var spinsForCompletion = true
+  static let spinNanoseconds: UInt64 = 1_000_000
+  /// Whether colour targets made from now on have CRC tables (transaction elimination): on by default.
+  public var crcTables = true
   /// Whether `lastProfile`'s times are taken (a benchmark's): off, the clock is not read and the times stay 0.
   public var profiling = false
   /// The clock for `lastProfile`, read only while `profiling`.
@@ -508,7 +532,7 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     if let c = chainRegion { release([c]) }
     if let h = heapCopy { release([h.region]) }
     if let h = storageCopy { release([h.region]) }
-    for r in [threadStorage, workgroupStorage] { if let r { release([r]) } }
+    for r in [threadStorage, workgroupStorage, samplePatterns] { if let r { release([r]) } }
     for r in retired { release(r.regions) }
     for r in memories.all { release([r]) }
     for i in images.all { release([i.region] + (i.planeRegion.map { [$0] } ?? [])) }
@@ -674,7 +698,7 @@ public final class MaliDevice: GPUDevice, GPUQueue {
 
   public func destroy(_ image: GPUImage) {
     guard let record = images.remove(image.handle) else { return }
-    retire([record.region] + (record.planeRegion.map { [$0] } ?? []))
+    retire([record.region] + (record.planeRegion.map { [$0] } ?? []) + (record.crc.map { [$0.region] } ?? []))
   }
 
   // MARK: The heap (MaliCore's textures land here)
@@ -885,6 +909,16 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   public func wait(_ value: UInt64) throws(GPUError) {
     guard value > 0 else { return }
     defer { syncCached() }
+    // Everything submitted is done once every step has added its one to the chain, after its last tail's clean: the CPU sees it in
+    // memory before the driver's interrupt raises the timeline. A frame loop's wait (GL's glFinish) watches the word for a while
+    // first; the timeline's own wait is for a longer one, a fault, or another value.
+    if spinsForCompletion, value == rule.lastSignalled, let c = chainRegion, chainValue > 0 {
+      let start = transport.nanoseconds()
+      while chainWord(c) < chainValue {
+        if transport.nanoseconds() &- start > Self.spinNanoseconds { break }
+      }
+      if chainWord(c) >= chainValue { return }
+    }
     guard transport.wait(sync: timeline, value: value, timeoutNanoseconds: 60_000_000_000) else {
       if let g = renderGroup, transport.groupState(g) != 0 {
         dropGroup(g)
