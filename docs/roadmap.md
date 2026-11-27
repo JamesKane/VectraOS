@@ -37,8 +37,13 @@ here, and its history, step by step, is in git and `docs/decisions/`.
   (2026-11-23): multisampling, layers, multiview, transfers as GPU kernels,
   sparse resources; polygon modes and more than one viewport stay off (the
   hardware has no polygon modes, and its scissor array faulted on the
-  board). Next: the vkmark port and the CTS as a report (D174's step 7),
-  then the video codec (the linlon-vpu spec), then the NPU.
+  board). OpenGL ES 2.0 and EGL are our own library over the core (D183,
+  2026-11-27), with a GLSL ES front end into the compiler; glmark2, a tier
+  1 port, runs every scene off-screen on the board above AbyssBSD's
+  Panfrost (score 4879 against 3064; docs/boards/orangepi-6-plus/gl.md).
+  Next: the vkmark port (begun: every scene headless, a GPU fault in the
+  default order open) and the CTS as a report (D174's step 7), then the
+  video codec (the linlon-vpu spec), then the NPU.
 - **Audio, in QEMU while the board is allocated elsewhere** (V6f item 3,
   2026-11-26): the graph and the buffer as the hardware's are decided
   (D179, D180), and its clock is a counter (D181); audio(3)'s class and
