@@ -207,8 +207,12 @@ struct RenderTarget: Equatable {
   var redBits: GLint = 8, greenBits: GLint = 8, blueBits: GLint = 8, alphaBits: GLint = 8
   var depthBits: GLint = 0, stencilBits: GLint = 0
 
+  /// A number for the target as the context last found it (0: none): two targets of one number are one.
+  var id: UInt64 = 0
+
   static func == (a: RenderTarget, b: RenderTarget) -> Bool {
-    a.color == b.color && a.depthStencil == b.depthStencil && a.flipped == b.flipped
+    if a.id != 0 && a.id == b.id { return true }
+    return a.color == b.color && a.depthStencil == b.depthStencil && a.flipped == b.flipped
   }
 }
 
@@ -221,8 +225,12 @@ struct PendingClear {
 
 /// The open pass, and the state it was last told. A pass is opened by the first clear or draw of a target, and its
 /// begin is recorded at its first draw: until then a clear only changes what it loads.
-struct OpenPass {
+final class OpenPass {
   var target: RenderTarget
+  init(target: RenderTarget, reads: [UInt64] = []) {
+    self.target = target
+    self.reads = reads
+  }
   var begun = false
   var clear = PendingClear()
   /// The pass's attachments and loads, as begun; its stores are decided as it ends.

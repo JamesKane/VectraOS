@@ -502,8 +502,17 @@ extension GLContext {
   private func record(_ program: GLProgram, _ mode: GLenum, _ topology: PrimitiveTopology, first: Int, count: Int,
                       indices: IndexSource, _ target: RenderTarget) throws(GPUError) {
     // The textures first: finding a sampler slot may submit the open list.
-    var slots: [(UInt32, UInt32)] = []
-    var reads: [UInt64] = []
+    // The context's own arrays, kept between draws: a draw makes none.
+    var slots = drawSlots
+    var reads = drawReads
+    slots.removeAll(keepingCapacity: true)
+    reads.removeAll(keepingCapacity: true)
+    drawSlots = []
+    drawReads = []
+    defer {
+      drawSlots = slots
+      drawReads = reads
+    }
     for n in program.samplerBindings.indices {
       let unit = program.unit(n)
       guard unit >= 0, unit < GLContext.textureUnits else {

@@ -52,6 +52,16 @@ struct UniformLocation {
   var element: Int
 }
 
+/// One uniform location as glUniform*'s common case writes it: one value, at a place in the block.
+struct LocationInfo {
+  /// 0 float, 1 int, 2 bool, 3 matrix, 4 sampler.
+  var kind: UInt8
+  /// Components of a vector, columns of a matrix.
+  var components: Int
+  var offset: Int
+  var matrixStride: Int
+}
+
 /// A program's lowered vertex stage, by the vertex layout it was lowered against.
 struct LoweredVertex {
   var layout: VertexLayout
@@ -104,6 +114,7 @@ struct VertexLayout: Hashable {
   // What the last successful link made.
   var interface = ProgramInterface(vertexSPIRV: [], fragmentSPIRV: [], attributes: [], uniforms: [], uniformBlockBytes: 0)
   var locations: [UniformLocation] = []
+  var locationInfo: [LocationInfo] = []
   /// The first location of each uniform.
   var firstLocation: [Int] = []
   /// The uniform block, as glUniform* leaves it.
@@ -161,9 +172,26 @@ struct VertexLayout: Hashable {
     interface = i
     locations = []
     firstLocation = []
+    locationInfo = []
     for (u, uniform) in i.uniforms.enumerated() {
       firstLocation.append(locations.count)
-      for e in 0..<max(uniform.arraySize, 1) { locations.append(UniformLocation(uniform: u, element: e)) }
+      let t = uniform.type
+      let kind: UInt8
+      var components = componentCount(t)
+      switch t {
+      case GL_FLOAT, GL_FLOAT_VEC2, GL_FLOAT_VEC3, GL_FLOAT_VEC4: kind = 0
+      case GL_INT, GL_INT_VEC2, GL_INT_VEC3, GL_INT_VEC4: kind = 1
+      case GL_FLOAT_MAT2, GL_FLOAT_MAT3, GL_FLOAT_MAT4:
+        kind = 3
+        components = t == GL_FLOAT_MAT2 ? 2 : t == GL_FLOAT_MAT3 ? 3 : 4
+      case GL_SAMPLER_2D, GL_SAMPLER_CUBE: kind = 4
+      default: kind = 2
+      }
+      for e in 0..<max(uniform.arraySize, 1) {
+        locations.append(UniformLocation(uniform: u, element: e))
+        locationInfo.append(LocationInfo(kind: kind, components: components, offset: uniform.offset + e * uniform.arrayStride,
+                                         matrixStride: uniform.matrixStride))
+      }
     }
     unsafe block?.deallocate()
     blockBytes = align(max(i.uniformBlockBytes, 16), 16)

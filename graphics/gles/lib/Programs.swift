@@ -213,6 +213,17 @@ extension GLContext {
 
   /// glUniform{1234}{if}v: `count` values of `components` floats (or ints) from `values`, from the location on.
   func uniform(_ location: GLint, count: GLsizei, components: Int, integers: Bool, _ values: UnsafeRawPointer?) {
+    // The common case: one float or int value of the type the location has.
+    if count == 1, let p = program, p.linkStatus, location >= 0, Int(location) < p.locationInfo.count, let values = unsafe values,
+      let block = unsafe p.block
+    {
+      let li = p.locationInfo[Int(location)]
+      if li.kind == (integers ? 1 : 0), li.components == components, li.offset + 4 * components <= p.blockBytes {
+        unsafe (block + li.offset).copyMemory(from: values, byteCount: 4 * components)
+        p.blockDirty = true
+        return
+      }
+    }
     guard count >= 0 else { return fail(.invalidValue) }
     guard let (p, l, u) = uniformTarget(location), let values = unsafe values else { return }
     if let first = u.samplerBinding {
@@ -256,6 +267,18 @@ extension GLContext {
   }
 
   func uniformMatrix(_ location: GLint, count: GLsizei, columns: Int, transpose: Bool, _ values: UnsafePointer<Float>?) {
+    if count == 1, !transpose, let p = program, p.linkStatus, location >= 0, Int(location) < p.locationInfo.count,
+      let values = unsafe values, let block = unsafe p.block
+    {
+      let li = p.locationInfo[Int(location)]
+      if li.kind == 3, li.components == columns, li.offset + (columns - 1) * li.matrixStride + 4 * columns <= p.blockBytes {
+        for c in 0..<columns {
+          unsafe (block + li.offset + c * li.matrixStride).copyMemory(from: UnsafeRawPointer(values + c * columns), byteCount: 4 * columns)
+        }
+        p.blockDirty = true
+        return
+      }
+    }
     guard count >= 0 else { return fail(.invalidValue) }
     guard let (p, l, u) = uniformTarget(location), let values = unsafe values else { return }
     let type = [GL_FLOAT_MAT2, GL_FLOAT_MAT3, GL_FLOAT_MAT4][columns - 2]
