@@ -258,7 +258,14 @@ extension Selector {
       let i = f.insts[id]
       switch i.op {
       case .phi: break
-      case .br, .condbr, .switch_, .ret, .unreachable, .kill: try terminate(b, i, next: next)
+      case .br, .condbr, .switch_, .ret, .unreachable, .kill:
+        // A divided vertex shader stores a group where its outputs were made (Prep.divideVertexPasses).
+        for g in groupStores where g.block == b { for bit in g.bits { try storeGroup(bit) } }
+        try terminate(b, i, next: next)
+      case .extract:
+        // A word of a combined load (Prep.combineLoads).
+        guard case .reg(let r) = loc[i.args[0]] else { throw BackendError.unsupported("an extract of a vector that isn't a load") }
+        loc[i.result] = .part(r, i.imm)
       case .iadd, .isub, .imul, .ineg, .and, .or, .xor, .not, .shl, .lshr, .ashr, .smin, .smax, .umin, .umax, .udiv, .sdiv,
         .urem, .srem:
         if foldedShift[max(i.result, 0)] >= 0 && i.result >= 0 { continue }

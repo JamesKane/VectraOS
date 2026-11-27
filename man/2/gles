@@ -96,6 +96,7 @@ A uniform's location is its first element's place among every element of the pro
 # ENVIRONMENT
 
 `GLES_STATS`, set at all, counts each frame (from one `glFinish` or window swap to the next) and every 500 frames prints the means as a line `gles: stats: per frame ...`: submissions, passes, draws, commands, copies and blits, barriers, sampler and texture slots written, images and pipelines made, the CPU's time from the last frame's end to the submission, the submission's and the wait's, and on Mali the last submission's steps and times (its `SubmitProfile`).
+`GLES_STATS=gpu` also puts a timestamp before each submission's first step and after each pass, copy, blit and dispatch, and prints each step's mean GPU time in microseconds in the order of the frame's last submission (`gles: stats: gpu us p412 c20 ...`, p a pass, c a copy or blit, d a dispatch, sixteen a line) and their sum; the timestamps cost the GPU time of their own, so the times say where the frame goes, not what it costs without them.
 
 # SEE ALSO
 

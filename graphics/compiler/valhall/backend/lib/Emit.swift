@@ -22,6 +22,7 @@ struct PInst {
   /// Registers some message in flight at this instruction still reads as staging (after its own wait).
   var inflight: UInt64 = 0
   var hidden = false
+  var hiddenRetrieve = false
   var fixedSlot = -1
 }
 
@@ -88,6 +89,7 @@ extension MFunc {
         p.target = m.target
         p.memory = m.memory
         p.hidden = m.hidden
+        p.hiddenRetrieve = m.hiddenRetrieve
         p.fixedSlot = m.fixedSlot
         let (r, w, sw2) = PInst.regUse(inst)
         p.reads = r
@@ -195,6 +197,8 @@ enum Schedule {
         for s in 0..<3 where st.stores[s] || st.loads[s] { need |= 1 << UInt8(s) }
       }
       if p.kind == .barrier || p.kind == .fence { need |= st.busyMask }
+      // A store into the hidden register that has been waited for is done: a later slot of the same number is another message.
+      if hiddenSlot >= 0 && !st.busy[hiddenSlot] { hiddenSlot = -1 }
       // The hidden interpolation register: wait for the last load that used it before the next one does (12c.5.5).
       if p.hidden && hiddenSlot >= 0 && st.busy[hiddenSlot] { need |= 1 << UInt8(hiddenSlot) }
       if need != 0 {
@@ -215,7 +219,7 @@ enum Schedule {
         let s = p.fixedSlot >= 0 ? p.fixedSlot : st.next
         if p.fixedSlot < 0 { st.next = (st.next + 1) % 3 }
         if p.inst.def.fieldIndex(role: .slot) >= 0 { p.inst.put("slot", s) }
-        if p.hidden { hiddenSlot = s }
+        if p.hidden && !p.hiddenRetrieve { hiddenSlot = s }
         st.busy[s] = true
         st.pending[s] |= p.stageWrites
         if p.memory == 1 { st.loads[s] = true }
