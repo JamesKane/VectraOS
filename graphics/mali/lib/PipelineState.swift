@@ -124,6 +124,10 @@ public struct ZSTarget: Equatable, Sendable {
   /// Bytes from one layer of each plane to the next (05 section 5.5.3's array stride), for a pass of layers.
   public var depthLayerStride = 0
   public var stencilLayerStride = 0
+  /// The depth plane is AFBC (block format 12, 8.5.1): its address the header area's, `depthRowStride` the header row stride and
+  /// `depthSurfaceStride` the body's offset; `reverseIssueOrder` (word 0 `[30]`) where a superblock is larger than the tile.
+  public var depthAFBC = false
+  public var reverseIssueOrder = false
 
   public init(depthFormat: DepthFormat?, hasStencil: Bool) {
     self.depthFormat = depthFormat
@@ -151,7 +155,8 @@ public struct ZSTarget: Equatable, Sendable {
       guard depthRowStride > 0, depthRowStride < 1 << 27, depthSurfaceStride >= 0, UInt64(depthSurfaceStride) < 1 << 37 else {
         throw .outOfRange
       }
-      w[0] |= f.writeFormat | 2 << 4 | (depthMSAA & 3) << 8
+      w[0] |= f.writeFormat | (depthAFBC ? 12 : 2) << 4 | (depthMSAA & 3) << 8
+      if depthAFBC && reverseIssueOrder { w[0] |= 1 << 30 }
       w[8] = UInt32(truncatingIfNeeded: a)
       w[9] = UInt32(truncatingIfNeeded: a >> 32)
       w[10] = UInt32(depthRowStride) | UInt32(truncatingIfNeeded: UInt64(depthSurfaceStride) >> 32) << 27

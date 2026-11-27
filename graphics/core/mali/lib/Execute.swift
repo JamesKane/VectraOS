@@ -104,19 +104,29 @@ extension MaliDevice {
           // A stream on the queue the step before ended on needs no wait: the queue runs its jobs in order, each to its last
           // slot's wait, and the next job starts with the driver's clean and invalidate of the caches. Only a stream on
           // another queue waits on the chain (and a wait costs the GPU some 18 us: loinnir-test's frame budgets).
-          var c = StepChain(address: chain.address, waitAbove: k == 0 ? nil : k - 1)
+          var c = StepChain(address: chain.address, waitAbove: k == 0 ? nil : k - 1, cleansForHost: i == steps.count - 1)
           let queue: UInt32
-          if case .render = step {
+          if case .render = step, singleQueuePasses {
+            // The pass is one stream on the tiler's queue.
+            queue = Self.tilerQueue
+            if chainQueue == queue {
+              c.waitAbove = nil
+              c.invalidates = k > 0
+            }
+          } else if case .render = step {
             queue = Self.tilerQueue + 1
             if chainQueue == queue { c.fragmentWaits = false }
           } else {
             queue = Self.computeQueue
-            if chainQueue == queue { c.waitAbove = nil }
+            if chainQueue == queue {
+              c.waitAbove = nil
+              c.invalidates = k > 0
+            }
           }
           jobs += try self.jobs(step, chain: c, held: &held)
           chainQueue = queue
         }
-        try launch(group: try workGroup(), jobs: jobs, signal: signal)
+        try launch(group: try workGroup(), jobs: try oneJobAQueue(jobs, held: &held), signal: signal)
         chainValue = base + UInt64(steps.count)
       }
     } catch {
@@ -144,6 +154,20 @@ extension MaliDevice {
     return c
   }
 
+  /// The sample patterns' table (valhall 07 section 7.9), made at first use and kept: every pass points at it.
+  func sampleTable() throws(GPUError) -> Region {
+    if let t = samplePatterns { return t }
+    let t = try makeRegion(SamplePatterns.tableBytes)
+    let bytes = SamplePatterns.table()
+    var words = [UInt32](repeating: 0, count: bytes.count / 4)
+    for i in 0..<words.count {
+      words[i] = UInt32(bytes[4 * i]) | UInt32(bytes[4 * i + 1]) << 8 | UInt32(bytes[4 * i + 2]) << 16 | UInt32(bytes[4 * i + 3]) << 24
+    }
+    store(words, in: t, at: 0)
+    samplePatterns = t
+    return t
+  }
+
   /// The one group, made at first use.
   func workGroup() throws(GPUError) -> UInt32 {
     if let g = renderGroup { return g }
@@ -166,7 +190,9 @@ extension MaliDevice {
     let scoreboards = CSScoreboards(count: info.scoreboards)
     let region = try scratch(3 * 256, held: &held)
     var jobs: [MaliJob] = []
-    for (q, resources) in [(Self.tilerQueue, CSResources.tiler | .idvs), (Self.tilerQueue + 1, .fragment), (Self.computeQueue, .compute)] {
+    // With a pass on one queue, that queue asks for the fragment work's resources too.
+    let tiling = singleQueuePasses ? CSResources.tiler | .idvs | .fragment : CSResources.tiler | .idvs
+    for (q, resources) in [(Self.tilerQueue, tiling), (Self.tilerQueue + 1, .fragment), (Self.computeQueue, .compute)] {
       var b = CSBuilder(address: region.address + UInt64(q) * 256, capacityBytes: 256, registers: registers, scoreboards: scoreboards)
       b.initialiseSlotState()
       b.requestResources(resources)
@@ -186,7 +212,15 @@ extension MaliDevice {
   /// The steps of a list; a transfer's parameters are laid out in memory now, held until the submission is done.
   func plan(_ list: GPUCommandList, held: inout [Region]) throws(GPUError) -> [Step] {
     var steps: [Step] = []
-    func transfer(_ t: Transfer) throws(GPUError) { steps += try transferSteps(t, held: &held) }
+    func transfer(_ t: Transfer) throws(GPUError) {
+      // A kernel that writes an image changes its bytes behind its CRC table (valhall 08 section 8.6.4).
+      switch t {
+      case .bufferToImage(_, let i, _), .clearColor(let i, _, _), .clearDepthStencil(let i, _, _, _): i.invalidateCRC()
+      case .copyImage(_, let i, _), .blit(_, let i, _, _), .resolve(_, let i, _): i.invalidateCRC()
+      default: break
+      }
+      steps += try transferSteps(t, held: &held)
+    }
     var target: ImageRecord?
     var clear: [Float] = []
     var draws: [PassDraw] = []
@@ -274,6 +308,26 @@ extension MaliDevice {
       case .endRendering:
         guard let record = target else { throw .invalid("a pass ends that didn't begin") }
         guard activeQuery == 0 else { throw .invalid("a pass ends inside an occlusion query") }
+        // A pass over an AFBC attachment that draws nothing still runs, with its clears drawn: AFBC is written by a pass only (no
+        // clear kernel writes its headers, valhall 05 section 5.11.10.1).
+        let afbc = record.layout.kind == .afbc || zs?.image.planes.contains(where: { $0.layout.kind == .afbc }) == true
+          || extraTargets.contains(where: { $0.image.layout.kind == .afbc })
+        if draws.isEmpty && afbc {
+          var cleared: [ClearAttachment] = []
+          if !loads { cleared.append(.color(index: 0, .float(clear[0], clear[1], clear[2], clear[3]))) }
+          for (i, e) in extraTargets.enumerated() { cleared.append(.color(index: i + 1, .float(e.clear[0], e.clear[1], e.clear[2], e.clear[3]))) }
+          if let z = zs, !z.loadDepth && !z.loadStencil {
+            let f = z.image.descriptor.format
+            var aspects = ImageAspects(rawValue: 0)
+            if f.hasDepth { aspects = aspects | .depth }
+            if f.hasStencil { aspects = aspects | .stencil }
+            cleared.append(.depthStencil(aspects: aspects, depth: z.clearDepth, stencil: z.clearStencil))
+          }
+          if !cleared.isEmpty {
+            try appendClears(cleared, [ClearRect(width: UInt32(planSize.width), height: UInt32(planSize.height), layerCount: UInt32(layers))],
+                             into: &draws, target: target, zs: zs, view: views.first, layers: viewMask != 0 ? 1 : layers, viewMask: viewMask)
+          }
+        }
         if draws.isEmpty {
           // A pass that keeps the contents and draws nothing changes nothing.
           // The clear kernel clears what the views cover: their level and the pass's layers.
@@ -681,6 +735,36 @@ extension MaliDevice {
     }
   }
 
+  /// The submission's jobs as one job a queue: a stream that CALLs each of the queue's streams in order (valhall 01 section 1.1.3; the
+  /// kernel's wrapper is one frame of the call stack, this a second). A queue runs its jobs in order either way, and every stream
+  /// ends by draining its slots; one job saves the driver's ring sequence, its cache flush, its completion and its interrupt for
+  /// each of the others. A queue with one job keeps it.
+  func oneJobAQueue(_ jobs: [MaliJob], held: inout [Region]) throws(GPUError) -> [MaliJob] {
+    var queues: [UInt32] = []
+    for j in jobs where !queues.contains(j.queue) { queues.append(j.queue) }
+    guard mergesQueueJobs, queues.count < jobs.count else { return jobs }
+    let info = transport.info
+    let registers = CSRegisterMap(workRegisters: info.workRegisters, unpreserved: info.unpreservedRegisters)
+    let scoreboards = CSScoreboards(count: info.scoreboards)
+    var out: [MaliJob] = []
+    for q in queues {
+      let mine = jobs.filter { $0.queue == q }
+      if mine.count == 1 {
+        out.append(mine[0])
+        continue
+      }
+      let bytes = mine.count * 24 + 64
+      let region = try scratch(bytes, held: &held)
+      var b = CSBuilder(address: region.address, capacityBytes: region.size, registers: registers, scoreboards: scoreboards)
+      for j in mine { b.call(address: j.address, size: j.size) }
+      let stream: CSStream
+      do throws(CSBuildError) { stream = try b.finish() } catch { throw .unsupported("a queue's calling stream refused: \(error)") }
+      for (i, w) in stream.words.enumerated() { region.buffer.store(w, at: i * 8) }
+      out.append(MaliJob(queue: q, address: stream.address, size: UInt32(stream.size)))
+    }
+    return out
+  }
+
   /// The jobs the driver takes in one submit (its `maxJobs`).
   static let jobsPerSubmit = 256
 
@@ -885,7 +969,9 @@ extension MaliDevice {
     let layout = plane?.layout ?? image.layout
     let level = layout.levels[min(Int(view.baseMip), layout.levels.count - 1)]
     let offset = (plane?.offset ?? 0) + Int(view.baseLayer) * layout.arrayStride + level.offset
-    return (image.region.address + UInt64(offset), level.rowStride, level.surfaceStride, layout.arrayStride, level.width, level.height)
+    // An AFBC plane's "surface stride" slot is its body's offset from the header area (valhall 08 sections 8.4.4 and 8.5.1).
+    let surface = layout.kind == .afbc ? level.bodyOffset : level.surfaceStride
+    return (image.region.address + UInt64(offset), level.rowStride, surface, layout.arrayStride, level.width, level.height)
   }
 
   func renderJobs(_ pass: DrawPass, chain: StepChain?, held: inout [Region]) throws(GPUError) -> [MaliJob] {
@@ -902,7 +988,7 @@ extension MaliDevice {
     var request = DrawPassRequest(
       width: width, height: height, format: target.descriptor.format.colourFormat, colourAddress: main.address,
       clear: pass.clear, draws: pass.draws, heapContext: tiler.context.address, heapChunk: tiler.chunk.address,
-      heapChunkBytes: chunkBytes, geometryBuffer: tiler.geometry.address, layout: .splitQueues, initialiseQueues: !renderStarted)
+      heapChunkBytes: chunkBytes, geometryBuffer: tiler.geometry.address, layout: singleQueuePasses ? .singleQueue : .splitQueues, initialiseQueues: !renderStarted)
     // The target's own rows: packed for a window's image, LinearLayout's for any other.
     request.rowStride = main.rowStride
     request.colourSurfaceStride = main.surfaceStride
@@ -948,6 +1034,18 @@ extension MaliDevice {
     request.colourSurfaceStride = targets[0].surfaceStride
     request.colourLayerStride = targets[0].layerStride
     request.extraTargets = Array(targets.dropFirst())
+    // Transaction elimination (valhall 08 section 8.6) for target 0 where the pass covers its level 0 whole, one layer, one sample:
+    // a tile whose checksum matches the one stored is not written back. Any other pass that writes a target with a table changes
+    // its bytes behind it, and invalidates it.
+    let v0 = pass.views[0]
+    if let c = target.crc, pass.samples == 1, pass.layers == 1, pass.viewMask == 0, v0.baseMip == 0, v0.baseLayer == 0,
+      width == Int(target.descriptor.width), height == Int(target.descriptor.height), pass.resolves.isEmpty {
+      request.crc = CRCTable(address: c.region.address, rowStride: c.rowStride, counter: target.crcCounter)
+    } else {
+      target.invalidateCRC()
+    }
+    for e in pass.extra { e.image.invalidateCRC() }
+    for r in pass.resolves { r.image.invalidateCRC() }
     request.queryReports = probeSkipQueryZero ? [] : pass.queries
     if probeQueryReadback && !pass.queries.isEmpty {
       let r = try makeRegion(4096)
@@ -982,6 +1080,7 @@ extension MaliDevice {
         target.depthRowStride = at.rowStride
         target.depthSurfaceStride = at.surfaceStride
         target.depthLayerStride = at.layerStride
+        target.depthAFBC = planeImage.planes.first(where: { $0.aspect == .depth })?.layout.kind == .afbc
       }
       if (z.storeStencil || resolveOnly) && f.hasStencil {
         let at = placement(planeImage, planeView, aspect: .stencil)
@@ -1021,6 +1120,7 @@ extension MaliDevice {
       for (_, code) in d.blendShaders { codeWords += code.count + 16 }
     }
     request.chain = chain
+    request.sampleTable = try sampleTable().address
     // The pass's block is within one 4 GiB window (the arena's are): a blend shader's address is 32 bits and the fragment shader
     // jumps to it (09 section 9.9.1). What a draw takes is a few hundred bytes; a pass that needs more is laid out again.
     var capacity = codeWords * 8 + 32768 + 2048 * pass.draws.count

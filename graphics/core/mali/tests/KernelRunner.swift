@@ -98,6 +98,10 @@ func kernelDevice() throws -> (MaliDevice, FakeTransport, KernelRunner) {
   let t = FakeTransport()
   let gpu = try MaliDevice(transport: t)
   gpu.probeEnableResources()
+  // A job a stream (the tests read each step's), and the timeline's wait at once (the fake GPU never adds to the chain).
+  gpu.mergesQueueJobs = false
+  gpu.spinsForCompletion = false
+  gpu.tiledTextures = false
   return (gpu, t, KernelRunner(gpu, t))
 }
 
