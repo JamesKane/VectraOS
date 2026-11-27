@@ -747,6 +747,7 @@ public final class GLContext {
       guard check((d.width, d.height)) else { return (GL_FRAMEBUFFER_INCOMPLETE_DIMENSIONS, nil) }
       depthView = d.view
       t.hasDepth = true
+      if case .texture = f.depth { t.depthSampled = true }
       t.depthBits = d.kind.pixelFormat == .depth16 ? 16 : 24
       if case .depthStencil = d.kind, f.stencil.isNone { t.hasStencil = false }
       any = true
@@ -762,6 +763,7 @@ public final class GLContext {
       if let d = depthView, d.image != s.view.image { return (GL_FRAMEBUFFER_UNSUPPORTED, nil) }
       depthView = s.view
       t.hasStencil = true
+      if case .texture = f.stencil { t.depthSampled = true }
       t.stencilBits = 8
       any = true
     }

@@ -127,6 +127,7 @@ extension GLTests {
     #expect(h.linked(p), "\(h.log(p))")
     h.uniforms(p, color: [0, 0, 1, 1])
     h.fullTriangle()
+    gles_glEnable(GL_DEPTH_TEST)
     for _ in 0..<3 {
       gles_glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
       gles_glDrawArrays(GL_TRIANGLES, 0, 3)
@@ -140,6 +141,37 @@ extension GLTests {
     #expect(d.passes[2].depthStencil?.depthLoad == .clear)
     #expect(h.gl.pipelinesMade == 1)
     #expect(h.error() == GL_NO_ERROR)
+  }
+
+  /// A pass whose draws don't test depth neither loads nor stores it; its clear is the next pass's that does.
+  @Test func depthAPassDoesntUseIsntMoved() {
+    let h = Harness(depth: .depth32f)
+    let p = h.program("flat.vert", "flat.frag")
+    h.uniforms(p, color: [0, 0, 1, 1])
+    h.fullTriangle()
+    var t: GLuint = 0, f: GLuint = 0
+    gles_glGenTextures(1, &t)
+    gles_glBindTexture(GL_TEXTURE_2D, t)
+    gles_glTexImage2D(GL_TEXTURE_2D, 0, GLint(GL_RGBA), 16, 16, 0, GL_RGBA, GL_UNSIGNED_BYTE, nil)
+    gles_glGenFramebuffers(1, &f)
+    gles_glBindFramebuffer(GL_FRAMEBUFFER, f)
+    gles_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, t, 0)
+    gles_glBindFramebuffer(GL_FRAMEBUFFER, 0)
+    // Pass 1, 2D: depth cleared, never tested.
+    gles_glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+    gles_glDrawArrays(GL_TRIANGLES, 0, 3)
+    gles_glBindFramebuffer(GL_FRAMEBUFFER, f)
+    gles_glDrawArrays(GL_TRIANGLES, 0, 3)
+    gles_glBindFramebuffer(GL_FRAMEBUFFER, 0)
+    // Pass 3: depth tested, so the first pass's clear is its load.
+    gles_glEnable(GL_DEPTH_TEST)
+    gles_glDrawArrays(GL_TRIANGLES, 0, 3)
+    gles_glFinish()
+    let d = h.test
+    #expect(d.passes.count == 3)
+    #expect(d.passes[0].depthStencil?.depthLoad == .dontCare && d.passes[0].depthStencil?.depthStore == .discard)
+    #expect(d.passes[2].depthStencil?.depthLoad == .clear && d.passes[2].depthStencil?.depthStore == .store)
+    #expect(d.passes[2].colors[0].load == .load)
   }
 
   @Test func aPassTakesEveryDraw() {

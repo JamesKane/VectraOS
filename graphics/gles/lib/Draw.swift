@@ -624,6 +624,9 @@ extension GLContext {
       frame.passList.draw(pipeline, root: root.address, vertices: UInt32(count), firstVertex: UInt32(first))
     }
     frame.pass!.draws += 1
+    if depthTest { frame.pass!.usedDepth = true }
+    if colorMask.0 || colorMask.1 || colorMask.2 || colorMask.3 { frame.pass!.usedColor = true }
+    if stencilTest { frame.pass!.usedStencil = true }
     frame.drawsSubmitted += 1
     frame.stats.draws += 1
   }
@@ -685,6 +688,9 @@ extension GLContext {
     if !aspects.isEmpty { attachments.append(.depthStencil(aspects: aspects, depth: c.depth ?? 1, stencil: c.stencil ?? 0)) }
     frame.passList.clearAttachments(attachments, rects: [ClearRect(x: area.x, y: area.y, width: area.width, height: area.height)])
     frame.pass!.draws += 1
+    if c.depth != nil { frame.pass!.usedDepth = true }
+    if c.color != nil { frame.pass!.usedColor = true }
+    if c.stencil != nil { frame.pass!.usedStencil = true }
   }
 
   // MARK: Discarding

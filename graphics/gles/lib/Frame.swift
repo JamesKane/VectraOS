@@ -197,6 +197,8 @@ struct RenderTarget: Equatable {
   var hasStencil = false
   var width: Int32 = 0
   var height: Int32 = 0
+  /// The depth and stencil image is a texture's, which a shader may read: what it holds is always stored.
+  var depthSampled = false
   /// The colour attachment a pass has where GL's framebuffer has none: drawn into with nothing written, never stored.
   var scratch: ImageView?
   /// A window's image, whose first row is the top: drawn with the viewport flipped.
@@ -238,6 +240,10 @@ final class OpenPass {
   var discardColor = false
   var discardDepth = false
   var discardStencil = false
+  /// What its draws and clears used of the attachments: one they didn't is neither loaded nor stored.
+  var usedColor = false
+  var usedDepth = false
+  var usedStencil = false
   var draws = 0
   /// Images its draws read.
   var reads: [UInt64] = []
@@ -323,6 +329,14 @@ final class Frame {
     if p.discardColor { for i in info.colors.indices { info.colors[i].store = .discard } }
     if p.discardDepth { info.depthStencil?.depthStore = .discard }
     if p.discardStencil { info.depthStencil?.stencilStore = .discard }
+    settleDepthStencil(&info, p)
+    // A colour attachment no draw wrote, and no clear: what it holds stays, neither loaded nor stored.
+    if !p.usedColor, p.target.color != nil {
+      for i in info.colors.indices where info.colors[i].load == .load {
+        info.colors[i].load = .dontCare
+        info.colors[i].store = .discard
+      }
+    }
     list.beginRendering(info)
     list.append(contentsOf: passList)
     passList = GPUCommandList()
@@ -330,6 +344,48 @@ final class Frame {
     passesSubmitted += 1
     stats.passes += 1
     pass = nil
+  }
+
+  /// Clears of a depth and stencil image (a renderbuffer's or a surface's, which no shader reads) that no pass has stored
+  /// yet: the pass that next uses it clears it as it begins, in place of loading it.
+  var pendingClears: [(image: UInt64, depth: Float?, stencil: UInt32?)] = []
+
+  /// Settles the pass's depth and stencil loads and stores by what its draws used: an aspect no draw used isn't loaded or
+  /// stored (the image keeps what it held), and a clear of it is kept to be the load of the next pass that uses it.
+  func settleDepthStencil(_ info: inout RenderingInfo, _ p: OpenPass) {
+    guard var ds = info.depthStencil, !p.target.depthSampled else { return }
+    let h = ds.view.image.handle
+    var pending: (image: UInt64, depth: Float?, stencil: UInt32?) = pendingClears.first { $0.image == h } ?? (h, nil, nil)
+    // Depth.
+    if ds.view.image.format.hasDepth {
+      if !p.usedDepth {
+        if ds.depthLoad == .clear { pending.depth = ds.clearDepth }
+        ds.depthLoad = .dontCare
+        ds.depthStore = .discard
+      } else {
+        if ds.depthLoad == .load, let d = pending.depth {
+          ds.depthLoad = .clear
+          ds.clearDepth = d
+        }
+        if ds.depthStore == .store || ds.depthLoad != .load { pending.depth = nil }
+      }
+    }
+    if ds.view.image.format.hasStencil {
+      if !p.usedStencil {
+        if ds.stencilLoad == .clear { pending.stencil = ds.clearStencil }
+        ds.stencilLoad = .dontCare
+        ds.stencilStore = .discard
+      } else {
+        if ds.stencilLoad == .load, let s = pending.stencil {
+          ds.stencilLoad = .clear
+          ds.clearStencil = s
+        }
+        if ds.stencilStore == .store || ds.stencilLoad != .load { pending.stencil = nil }
+      }
+    }
+    pendingClears.removeAll { $0.image == h }
+    if pending.depth != nil || pending.stencil != nil { pendingClears.append(pending) }
+    info.depthStencil = ds
   }
 
   /// The open pass's commands, recorded after its begin as it ends.
