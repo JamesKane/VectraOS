@@ -409,8 +409,10 @@ void (*gles_eglGetProcAddress(const char *name))(void) {
   return NULL;
 }
 
-// GLES_STATS in the environment counts each frame (gles(2), ENVIRONMENT), set as the library loads.
+// GLES_STATS in the environment counts each frame (gles(2), ENVIRONMENT), set as the library loads; GLES_STATS=gpu also
+// times each step on the GPU.
 extern void gles_setStats(int on);
 __attribute__((constructor)) static void stats_from_environment(void) {
-  if (getenv("GLES_STATS")) gles_setStats(1);
+  const char *s = getenv("GLES_STATS");
+  if (s) gles_setStats(strcmp(s, "gpu") == 0 ? 2 : 1);
 }

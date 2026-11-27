@@ -287,6 +287,7 @@ final class Frame {
   var passesSubmitted = 0
   var submissions = 0
   var stats = FrameStats()
+  var timer = StepTimer()
   /// Called when the list is submitted, with its value (a window's present waits for it).
   var onSubmit: ((UInt64) -> Void)?
 
@@ -447,7 +448,7 @@ final class Frame {
     endPass()
     guard !list.isEmpty else { return lastSubmitted }
     let value = self.value(ofEpoch: epoch)
-    let l = list
+    let l = unsafe glesGPUTimes ? timed(list) : list
     list = GPUCommandList()
     let counting = unsafe glesStats
     var t0: UInt64 = 0
@@ -480,6 +481,7 @@ final class Frame {
     let t0 = counting ? unsafe glesClock() : 0
     if v > device.completed { try device.wait(v) }
     ring.reclaim()
+    if unsafe glesGPUTimes { addStepTimes() }
     if counting {
       let t1 = unsafe glesClock()
       stats.waitNs &+= t1 &- t0

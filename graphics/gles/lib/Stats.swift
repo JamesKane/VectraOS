@@ -6,14 +6,19 @@
 
 import GPUCore
 
-/// Whether frames are counted (c/procs.c sets it from GLES_STATS when the library loads).
+/// Whether frames are counted (c/procs.c sets it from GLES_STATS when the library loads), and whether each step of a
+/// submission is also timed on the GPU (GLES_STATS=gpu).
 public nonisolated(unsafe) var glesStats = false
+public nonisolated(unsafe) var glesGPUTimes = false
 /// The monotonic clock in nanoseconds (the native platform's; 0 hosted).
 public nonisolated(unsafe) var glesClock: () -> UInt64 = { 0 }
 /// The device's account of its last submission, for the stats line (the native platform's, on Mali).
 public nonisolated(unsafe) var glesDeviceProfile: ((any GPUDevice) -> String?)? = nil
 
-@c(gles_setStats) public func gles_setStats(_ on: Int32) { unsafe glesStats = on != 0 }
+@c(gles_setStats) public func gles_setStats(_ on: Int32) {
+  unsafe glesStats = on != 0
+  unsafe glesGPUTimes = on == 2
+}
 
 struct FrameStats {
   var frames = 0
@@ -35,6 +40,19 @@ struct FrameStats {
   var frameStart: UInt64 = 0
   /// The heap's sampler writes when the count began.
   var samplerBase = 0
+  /// GLES_STATS=gpu: each step's GPU time summed over the frames, by its place in the frame's last submission, with what
+  /// the step is (p a pass, c a copy or blit, d a dispatch), and the frames the sums are of.
+  var stepNs: [UInt64] = []
+  var stepKinds: [UInt8] = []
+  var timedFrames = 0
+}
+
+/// GLES_STATS=gpu: the timestamps of the submission being timed.
+struct StepTimer {
+  var set: GPUQuerySet?
+  /// The steps of the last submission timed, by kind (its timestamps are one more).
+  var kinds: [UInt8] = []
+  var failed = false
 }
 
 extension Frame {
@@ -53,6 +71,51 @@ extension Frame {
     }
   }
 
+  /// GLES_STATS=gpu: the list with a timestamp before its first step and after each.
+  func timed(_ l: GPUCommandList) -> GPUCommandList {
+    if timer.set == nil && !timer.failed {
+      timer.set = try? device.makeQuerySet(.timestamp, count: 1024)
+      if timer.set == nil { timer.failed = true }
+    }
+    guard let set = timer.set else { return l }
+    var out = GPUCommandList()
+    var kinds: [UInt8] = []
+    out.writeTimestamp(set, index: 0)
+    for c in l.commands {
+      out.append(c)
+      var kind: UInt8 = 0
+      switch c {
+      case .endRendering: kind = UInt8(ascii: "p")
+      case .copyBuffer, .copyBufferToImage, .copyImageToBuffer, .copyImage, .blitImage, .copyBufferToImageRegions,
+        .copyImageToBufferRegions, .fillBuffer, .updateBuffer:
+        kind = UInt8(ascii: "c")
+      case .dispatch, .dispatchIndirect: kind = UInt8(ascii: "d")
+      default: break
+      }
+      if kind != 0 && kinds.count < 1023 {
+        kinds.append(kind)
+        out.writeTimestamp(set, index: kinds.count)
+      }
+    }
+    timer.kinds = kinds
+    return out
+  }
+
+  /// GLES_STATS=gpu: the timed submission is done; its steps' times are added.
+  func addStepTimes() {
+    guard let set = timer.set, !timer.kinds.isEmpty, let t = try? device.results(set, first: 0, count: timer.kinds.count + 1)
+    else { return }
+    if stats.stepKinds != timer.kinds {
+      stats.stepKinds = timer.kinds
+      stats.stepNs = [UInt64](repeating: 0, count: timer.kinds.count)
+      stats.timedFrames = 0
+    }
+    let ps = limits.timestampPeriodPicoseconds
+    for k in 0..<timer.kinds.count where t[k + 1] >= t[k] { stats.stepNs[k] &+= (t[k + 1] - t[k]) &* ps / 1000 }
+    stats.timedFrames += 1
+    timer.kinds = []
+  }
+
   /// A frame ended (glFinish or a swap): every 500, the means.
   func frameEnded() {
     guard unsafe glesStats else { return }
@@ -69,6 +132,21 @@ extension Frame {
       + "images, \(m(stats.pipelines)) pipelines made")
     say("stats: per frame recording \(us(stats.recordNs)) us, submitting \(us(stats.submitNs)) us, waiting \(us(stats.waitNs)) us")
     if let p = unsafe glesDeviceProfile, let s = p(device) { say("stats: the last submission: " + s) }
+    if stats.timedFrames > 0 {
+      // Each step's mean in microseconds, sixteen a line.
+      var line = ""
+      var total: UInt64 = 0
+      for (k, ns) in stats.stepNs.enumerated() {
+        let us = ns / UInt64(stats.timedFrames) / 1000
+        total += us
+        line += " " + String(UnicodeScalar(stats.stepKinds[k])) + String(us)
+        if k % 16 == 15 || k == stats.stepNs.count - 1 {
+          say("stats: gpu us" + line)
+          line = ""
+        }
+      }
+      say("stats: gpu us total \(total) over \(stats.timedFrames) frames")
+    }
     let start = stats.frameStart
     stats = FrameStats()
     stats.samplerBase = heap.writes

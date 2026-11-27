@@ -59,6 +59,15 @@ enum Loc {
   case part(Int, Int)
 }
 
+/// A vertex shader's outputs by view, and the groups of `shader_output` it stores (SelectGraphics.swift).
+struct VertexGroups {
+  var views: [Int] = []
+  var posOf: [Int] = []
+  var layerOf: [Int] = []
+  var varyingsOf: [[Int]] = []
+  var bits: [Int] = []
+}
+
 struct Selector {
   let f: Function
   let m: IRModule
@@ -107,6 +116,10 @@ struct Selector {
   /// A vertex shader's attribute-section stores: a layer or viewport index (SelectGraphics.swift).
   var storesAttributes = false
   var storesViewportIndex = false
+  /// A divided vertex shader's groups, stored where their outputs are made (Prep.divideVertexPasses); empty: the epilogue
+  /// stores them all.
+  var groupStores: [GroupStores] = []
+  var vgroups: VertexGroups?
   /// The texture messages made so far, so the four components of one access are one message (SelectTexture.swift).
   var texGroups: [TexGroup] = []
   /// The texture and sampler handle pairs made so far, by block (SelectTexture.swift).

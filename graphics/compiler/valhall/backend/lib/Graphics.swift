@@ -62,6 +62,8 @@ extension ValhallBackend {
     let vertex = module.executionModel == 0
     var m = module
     try Prep.inlineCalls(&m)
+    // One function now: its private variables are its own, so promotion makes them values, not stack memory.
+    m.localizePrivateGlobals()
     // A vertex shader is replicated for each view of a multiview draw (valhall 07 section 7.8.2), and ViewIndex is each copy's view.
     if vertex {
       var views: [Int] = []
@@ -88,11 +90,18 @@ extension ValhallBackend {
       Prep.uniformImageAtomics(&f)
       Prep.uniformTextureHandles(&f)
     }
+    // The position's work in the position pass only, the varyings' in the varying pass only.
+    let groups = vertex ? Prep.divideVertexPasses(&f, m, options) : nil
+    // Uniforms and vertex inputs loaded early would be live together across the shader: each load goes to its use, and
+    // neighbouring words are one message.
+    f.sinkLoadsToUses()
+    Prep.combineLoads(&f)
     Prep.splitCriticalEdges(&f)
     // Class 32 when the values fit r0 to r15 and r48 to r63 (twice the resident threads, valhall 04 section 4.3), else 64;
     // `preferClass32` false asks for 64.
     let o = options
     var sel = Selector(m, f, o)
+    sel.groupStores = groups ?? []
     var mf = try sel.run()
     mf.legalize()
     var alloc = try mf.allocate(o)
