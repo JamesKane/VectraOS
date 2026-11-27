@@ -1,0 +1,10 @@
+# vkmark's windowed board run (vkmark(8)): the image esp-board-vkmark-window runs its default benchmark in a window of
+# 800x600 of the Radharc on the display (FIFO, paced by Radharc), until it ends (launcher.until=vkmark-window), then
+# reboots. It starts after Radharc, which it needs.
+service vkmark-window
+program vkmark
+arg -s
+arg 800x600
+use windows
+mount /dev devmgr/dev
+mount /lib/vkmark bootfs/lib/vkmark

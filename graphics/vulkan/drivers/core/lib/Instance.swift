@@ -71,11 +71,11 @@ func fillExtensionProperties(_ list: [(name: String, version: UInt32)], _ pPrope
   return n < list.count ? VK_INCOMPLETE : VK_SUCCESS
 }
 
-/// The device extensions the layer has: VK_EXT_descriptor_buffer always, and VK_EXT_custom_border_color where the core's device
+/// The device extensions the layer has: VK_EXT_descriptor_buffer and VK_KHR_swapchain always, and VK_EXT_custom_border_color where the core's device
 /// has a sampler's own border colour.
 func extensions(of gpu: (any GPUDevice)?) -> [(name: String, version: UInt32)] {
   var out: [(name: String, version: UInt32)] = [("VK_EXT_descriptor_buffer", 1)]
-  if unsafe CoreDriver.windowSystem != nil { out.append(("VK_KHR_swapchain", 70)) }
+  out.append(("VK_KHR_swapchain", 70))
   if let gpu, gpu.limits.features.customBorderColor { out.append(("VK_EXT_custom_border_color", 12)) }
   return out
 }
@@ -84,7 +84,7 @@ func core_vkCreateInstance(_ pCreateInfo: UnsafePointer<VkInstanceCreateInfo>?, 
                            _ pInstance: UnsafeMutablePointer<VkInstance?>?) -> VkResult
 {
   guard let pInstance = unsafe pInstance, let info = unsafe pCreateInfo else { return VK_ERROR_INITIALIZATION_FAILED }
-  // The instance extensions it has: the surface ones, where there is a window system.
+  // The instance extensions it has: the surfaces.
   let instanceExtensionsHave = instanceExtensions()
   for i in 0..<Int(unsafe info.pointee.enabledExtensionCount) {
     guard let name = unsafe info.pointee.ppEnabledExtensionNames[i], instanceExtensionsHave.contains(where: { unsafe $0.name == String(cString: name) }) else {

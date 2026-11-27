@@ -332,6 +332,13 @@ if(CROI_ARCH STREQUAL arm64)
     croi_esp(board-glmark2 "userboot.next=bin/launcher userboot.shutdown=reboot croi.halt_on_panic=false launcher.until=glmark2-offscreen"
       BOOTFS bootfs-board-glmark2)
   endif()
+  # vkmark on the board (vkmark(8)), off-screen and in a window of Radharc's, rebooting into its own OS when done.
+  if(TARGET bootfs-board-vkmark)
+    croi_esp(board-vkmark "userboot.next=bin/launcher userboot.shutdown=reboot croi.halt_on_panic=false launcher.until=vkmark-offscreen"
+      BOOTFS bootfs-board-vkmark)
+    croi_esp(board-vkmark-window "userboot.next=bin/launcher userboot.shutdown=reboot croi.halt_on_panic=false launcher.until=vkmark-window"
+      BOOTFS bootfs-board-vkmark-window)
+  endif()
   # The board's desktop: Radharc on its display, and the cpu server.
   croi_esp(board-desktop "userboot.next=bin/launcher croi.debug_syscalls=on croi.halt_on_panic=false"
     BOOTFS bootfs-board-desktop)

@@ -45,6 +45,7 @@ import TDVulkan
   public var vkGetPhysicalDeviceSurfaceFormatsKHR: PFN_vkGetPhysicalDeviceSurfaceFormatsKHR?
   public var vkGetPhysicalDeviceSurfacePresentModesKHR: PFN_vkGetPhysicalDeviceSurfacePresentModesKHR?
   public var vkGetPhysicalDevicePresentRectanglesKHR: PFN_vkGetPhysicalDevicePresentRectanglesKHR?
+  public var vkCreateHeadlessSurfaceEXT: PFN_vkCreateHeadlessSurfaceEXT?
   public var vkDestroyDevice: PFN_vkDestroyDevice?
   public var vkGetDeviceQueue: PFN_vkGetDeviceQueue?
   public var vkQueueSubmit: PFN_vkQueueSubmit?
@@ -386,6 +387,7 @@ import TDVulkan
     unsafe vkGetPhysicalDeviceSurfaceFormatsKHR = unsafeBitCast(get(instance, "vkGetPhysicalDeviceSurfaceFormatsKHR"), to: PFN_vkGetPhysicalDeviceSurfaceFormatsKHR?.self)
     unsafe vkGetPhysicalDeviceSurfacePresentModesKHR = unsafeBitCast(get(instance, "vkGetPhysicalDeviceSurfacePresentModesKHR"), to: PFN_vkGetPhysicalDeviceSurfacePresentModesKHR?.self)
     unsafe vkGetPhysicalDevicePresentRectanglesKHR = unsafeBitCast(get(instance, "vkGetPhysicalDevicePresentRectanglesKHR"), to: PFN_vkGetPhysicalDevicePresentRectanglesKHR?.self)
+    unsafe vkCreateHeadlessSurfaceEXT = unsafeBitCast(get(instance, "vkCreateHeadlessSurfaceEXT"), to: PFN_vkCreateHeadlessSurfaceEXT?.self)
     unsafe vkDestroyDevice = unsafeBitCast(get(instance, "vkDestroyDevice"), to: PFN_vkDestroyDevice?.self)
     unsafe vkGetDeviceQueue = unsafeBitCast(get(instance, "vkGetDeviceQueue"), to: PFN_vkGetDeviceQueue?.self)
     unsafe vkQueueSubmit = unsafeBitCast(get(instance, "vkQueueSubmit"), to: PFN_vkQueueSubmit?.self)

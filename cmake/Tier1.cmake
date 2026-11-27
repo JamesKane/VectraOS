@@ -600,6 +600,12 @@ function(croi_tier1 bootfs_var depends_var)
     croi_tier1_glmark2()
     get_property(_glmark2 GLOBAL PROPERTY CROI_TIER1_GLMARK2)
   endif()
+  # vkmark (vkmark(8), cmake/Vkmark.cmake), where its port's source is fetched and patched (ports/vkmark) and the
+  # Vulkan layer is built.
+  if(_vulkan_core_driver_t1 AND EXISTS ${PROJECT_SOURCE_DIR}/.cache/ports/vkmark/src/ws/vectraos_native_system.cpp)
+    include(${PROJECT_SOURCE_DIR}/cmake/Vkmark.cmake)
+    croi_tier1_vkmark()
+  endif()
   # Every library tier 1 built, shared, in bootfs's lib/.
   foreach(_so ${_t1_so} ${_kit_so} ${_app_so} ${_gpu_so} ${_gles_so} ${_lib}/libRc.so ${_lib}/libCommands.so ${_lib}/libLd.so)
     get_filename_component(_n ${_so} NAME)

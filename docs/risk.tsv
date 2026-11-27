@@ -76,6 +76,8 @@ user/test/	all	-	boot-smoke,boot-smoke-kvm,boot-smoke-apic-oneshot,boot-intremap
 user/tier1/	all	-	boot-floor-hello,boot-cxx-hello,boot-swift-hello,boot-swift-start,boot-swift-async,boot-foundation-test,boot-node-test-t1,boot-fdio-test	-
 ports/glmark2/	arm64	-	-	man
 cmake/Glmark2.cmake	arm64	-	-	man
+ports/vkmark/	arm64	-	-	man
+cmake/Vkmark.cmake	arm64	-	-	man
 user/tier1/vulkan-test.c	all	-	boot-venus,boot-board	man
 user/tier1/vulkan-test.manifest	all	-	boot-venus,boot-board	man
 user/tier1/vulkan-test-board.manifest	all	-	boot-venus,boot-board	man

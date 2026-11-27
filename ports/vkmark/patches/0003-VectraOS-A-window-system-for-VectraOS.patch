@@ -1,0 +1,312 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: VectraOS port <port@vectraos.invalid>
+Date: Fri, 27 Nov 2026 04:56:25 -0600
+Subject: [VectraOS] A window system for VectraOS
+
+VectraOSNativeSystem: a window of Radharc's, VectraOS's compositor, as a
+surface through VK_VECTRA_window_surface (vulkan_vectra.h, included after
+Khronos's headers), presented to through VK_KHR_swapchain. --size is the
+window's size in points and the swapchain's extent the surface's current
+one in pixels; --fullscreen asks for the screen and waits for the resize.
+Closing the window or pressing Escape ends the run. The probe is good
+where the program's namespace has /svc/windows. Radharc presents FIFO
+only, so mailbox, vkmark's default, becomes FIFO.
+---
+ src/ws/vectraos_native_system.cpp        | 163 +++++++++++++++++++++++
+ src/ws/vectraos_native_system.h          |  47 +++++++
+ src/ws/vectraos_window_system_plugin.cpp |  52 ++++++++
+ src/ws/window_system_priority.h          |   1 +
+ 4 files changed, 263 insertions(+)
+ create mode 100644 src/ws/vectraos_native_system.cpp
+ create mode 100644 src/ws/vectraos_native_system.h
+ create mode 100644 src/ws/vectraos_window_system_plugin.cpp
+
+diff --git a/src/ws/vectraos_native_system.cpp b/src/ws/vectraos_native_system.cpp
+new file mode 100644
+index 0000000..7e08750
+--- /dev/null
++++ b/src/ws/vectraos_native_system.cpp
+@@ -0,0 +1,163 @@
++/*
++ * SPDX-License-Identifier: LGPL-2.1-or-later
++ *
++ * This file is part of vkmark, for VectraOS.
++ *
++ * vkmark is free software: you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation, either
++ * version 2.1 of the License, or (at your option) any later version.
++ */
++
++#include "vectraos_native_system.h"
++
++#include "vulkan_state.h"
++#include "log.h"
++
++#include <vulkan_vectra.h>
++
++#include <stdexcept>
++#include <time.h>
++
++namespace
++{
++
++template <typename F>
++F instance_command(vk::Instance instance, char const* name)
++{
++    auto const f = reinterpret_cast<F>(vkGetInstanceProcAddr(instance, name));
++    if (!f)
++        throw std::runtime_error{std::string{"VectraOS window system: the Vulkan layer has no "} + name};
++    return f;
++}
++
++void sleep_ms(long ms)
++{
++    struct timespec const ts{ms / 1000, (ms % 1000) * 1000000};
++    nanosleep(&ts, nullptr);
++}
++
++}
++
++VectraOSNativeSystem::VectraOSNativeSystem(int width, int height)
++    : requested_width{width},
++      requested_height{height},
++      poll_events{nullptr},
++      quit{false},
++      resized{false}
++{
++}
++
++VulkanWSI::Extensions VectraOSNativeSystem::required_extensions()
++{
++    return {{VK_KHR_SURFACE_EXTENSION_NAME, VK_VECTRA_WINDOW_SURFACE_EXTENSION_NAME}, {}};
++}
++
++uint32_t VectraOSNativeSystem::get_presentation_queue_family_index(vk::PhysicalDevice const& pd)
++{
++    /* Every queue family presents to a window of Radharc's. */
++    auto const queue_families = pd.getQueueFamilyProperties();
++
++    for (auto i = 0u; i < queue_families.size(); ++i)
++    {
++        if (queue_families[i].queueCount > 0)
++            return i;
++    }
++
++    return invalid_queue_family_index;
++}
++
++void VectraOSNativeSystem::poll()
++{
++    if (!surface)
++        return;
++
++    auto const poll = reinterpret_cast<PFN_vkPollVectraWindowEventsVECTRA>(poll_events);
++    VkVectraWindowEventVECTRA events[16];
++    VkResult result;
++    do
++    {
++        uint32_t count = 16;
++        result = poll(instance, surface, &count, events);
++        if (result != VK_SUCCESS && result != VK_INCOMPLETE)
++        {
++            quit = true;
++            return;
++        }
++        for (uint32_t i = 0; i < count; ++i)
++        {
++            auto const& e = events[i];
++            if (e.type == VK_VECTRA_WINDOW_EVENT_CLOSE)
++                quit = true;
++            else if (e.type == VK_VECTRA_WINDOW_EVENT_KEY_DOWN && e.keyCode == VK_VECTRA_KEY_ESCAPE)
++                quit = true;
++            else if (e.type == VK_VECTRA_WINDOW_EVENT_RESIZE)
++                resized = true;
++        }
++    } while (result == VK_INCOMPLETE);
++}
++
++bool VectraOSNativeSystem::should_quit()
++{
++    poll();
++    return quit;
++}
++
++vk::Extent2D VectraOSNativeSystem::get_vk_extent()
++{
++    /* The window's size in pixels: its size in points times the output's scale. */
++    return physical_device.getSurfaceCapabilitiesKHR(surface).currentExtent;
++}
++
++ManagedResource<vk::SurfaceKHR> VectraOSNativeSystem::create_vk_surface(VulkanState& vulkan)
++{
++    instance = vulkan.instance();
++    physical_device = vulkan.physical_device();
++
++    auto const fullscreen = requested_width < 0 || requested_height < 0;
++
++    VkVectraWindowSurfaceCreateInfo info{};
++    info.sType = VK_STRUCTURE_TYPE_VECTRA_WINDOW_SURFACE_CREATE_INFO;
++    info.pTitle = "vkmark";
++    info.width = fullscreen ? 800 : static_cast<uint32_t>(requested_width);
++    info.height = fullscreen ? 600 : static_cast<uint32_t>(requested_height);
++
++    auto const create_surface = instance_command<PFN_vkCreateVectraWindowSurface>(
++        instance, "vkCreateVectraWindowSurface");
++
++    VkSurfaceKHR raw = VK_NULL_HANDLE;
++    auto const result = create_surface(instance, &info, nullptr, &raw);
++    if (result != VK_SUCCESS)
++    {
++        throw std::runtime_error{"VectraOS window system: no window of Radharc's (" +
++                                 vk::to_string(static_cast<vk::Result>(result)) +
++                                 "): the manifest must say 'use windows'"};
++    }
++    surface = raw;
++    poll_events = reinterpret_cast<PFN_vkVoidFunction>(instance_command<PFN_vkPollVectraWindowEventsVECTRA>(
++        instance, "vkPollVectraWindowEventsVECTRA"));
++
++    if (fullscreen)
++    {
++        /* The swapchain is made at the size the window has once Radharc has resized it. */
++        auto const set_fullscreen = instance_command<PFN_vkSetVectraWindowFullscreenVECTRA>(
++            instance, "vkSetVectraWindowFullscreenVECTRA");
++        set_fullscreen(instance, surface, VK_TRUE);
++        for (int waited = 0; !resized && !quit && waited < 2000; waited += 10)
++        {
++            poll();
++            if (!resized)
++                sleep_ms(10);
++        }
++        if (!resized)
++            Log::warning("VectraOSNativeSystem: the window did not fill the screen; using its size\n");
++    }
++
++    return ManagedResource<vk::SurfaceKHR>{
++        vk::SurfaceKHR{surface},
++        [this] (vk::SurfaceKHR& s)
++        {
++            instance.destroySurfaceKHR(s);
++            surface = vk::SurfaceKHR{};
++        }};
++}
+diff --git a/src/ws/vectraos_native_system.h b/src/ws/vectraos_native_system.h
+new file mode 100644
+index 0000000..13a43ec
+--- /dev/null
++++ b/src/ws/vectraos_native_system.h
+@@ -0,0 +1,47 @@
++/*
++ * SPDX-License-Identifier: LGPL-2.1-or-later
++ *
++ * This file is part of vkmark, for VectraOS.
++ *
++ * vkmark is free software: you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation, either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * The native system on VectraOS: a window of Radharc's, VectraOS's
++ * compositor, as a Vulkan surface through the layer's
++ * VK_VECTRA_window_surface (vulkansurface(2) there), presented to through
++ * VK_KHR_swapchain. Its events come from vkPollVectraWindowEventsVECTRA:
++ * closing the window or pressing Escape ends the run.
++ */
++
++#pragma once
++
++#include "native_system.h"
++
++#include <vulkan/vulkan.hpp>
++
++class VectraOSNativeSystem : public NativeSystem
++{
++public:
++    /* A window of width by height points; fullscreen if either is negative. */
++    VectraOSNativeSystem(int width, int height);
++
++    VulkanWSI::Extensions required_extensions() override;
++    uint32_t get_presentation_queue_family_index(vk::PhysicalDevice const& pd) override;
++    bool should_quit() override;
++    vk::Extent2D get_vk_extent() override;
++    ManagedResource<vk::SurfaceKHR> create_vk_surface(VulkanState& vulkan) override;
++
++private:
++    void poll();
++
++    int const requested_width;
++    int const requested_height;
++    vk::Instance instance;
++    vk::SurfaceKHR surface;
++    vk::PhysicalDevice physical_device;
++    PFN_vkVoidFunction poll_events;
++    bool quit;
++    bool resized;
++};
+diff --git a/src/ws/vectraos_window_system_plugin.cpp b/src/ws/vectraos_window_system_plugin.cpp
+new file mode 100644
+index 0000000..4a43129
+--- /dev/null
++++ b/src/ws/vectraos_window_system_plugin.cpp
+@@ -0,0 +1,52 @@
++/*
++ * SPDX-License-Identifier: LGPL-2.1-or-later
++ *
++ * This file is part of vkmark, for VectraOS.
++ *
++ * vkmark is free software: you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation, either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * The VectraOS window system: a swapchain on a window of Radharc's
++ * (vectraos_native_system.h). Radharc presents FIFO and nothing else, so a
++ * run asking for mailbox, vkmark's default, gets FIFO; a run asking for
++ * another mode the surface lacks fails as it would elsewhere.
++ */
++
++#include "window_system_plugin.h"
++#include "swapchain_window_system.h"
++#include "vectraos_native_system.h"
++#include "window_system_priority.h"
++
++#include "log.h"
++#include "options.h"
++
++#include <unistd.h>
++
++void vkmark_window_system_load_options(Options&)
++{
++}
++
++int vkmark_window_system_probe(Options const&)
++{
++    /* Radharc's windows are in the namespace of a program whose manifest says 'use windows'. */
++    if (access("/svc/windows", F_OK) == 0)
++        return VKMARK_WINDOW_SYSTEM_PROBE_GOOD + VKMARK_VECTRAOS_WINDOW_SYSTEM_PRIORITY;
++    return VKMARK_WINDOW_SYSTEM_PROBE_BAD;
++}
++
++std::unique_ptr<WindowSystem> vkmark_window_system_create(Options const& options)
++{
++    auto present_mode = options.present_mode;
++    if (present_mode == vk::PresentModeKHR::eMailbox)
++    {
++        Log::info("VectraOSWindowSystemPlugin: Radharc presents FIFO only: using fifo\n");
++        present_mode = vk::PresentModeKHR::eFifo;
++    }
++
++    return std::make_unique<SwapchainWindowSystem>(
++        std::make_unique<VectraOSNativeSystem>(options.size.first, options.size.second),
++        present_mode,
++        options.pixel_format);
++}
+diff --git a/src/ws/window_system_priority.h b/src/ws/window_system_priority.h
+index 8dff736..f48eec2 100644
+--- a/src/ws/window_system_priority.h
++++ b/src/ws/window_system_priority.h
+@@ -28,3 +28,4 @@
+ #define VKMARK_WAYLAND_WINDOW_SYSTEM_PRIORITY 1
+ #define VKMARK_DISPLAY_WINDOW_SYSTEM_PRIORITY 2
+ #define VKMARK_KMS_WINDOW_SYSTEM_PRIORITY 3
++#define VKMARK_VECTRAOS_WINDOW_SYSTEM_PRIORITY 4

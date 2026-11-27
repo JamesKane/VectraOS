@@ -1,6 +1,6 @@
 page vulkansurface 2
 summary VK_VECTRA_window_surface, VK_KHR_surface and VK_KHR_swapchain: a Radharc window as a Vulkan surface, and swapchains of GPU images that the window shows with no copy by the CPU
-names vulkansurface VK_VECTRA_window_surface vkCreateVectraWindowSurface vkPollVectraWindowEventsVECTRA vkSetVectraWindowFullscreenVECTRA VkVectraWindowSurfaceCreateInfo VkVectraWindowEventVECTRA
+names vulkansurface VK_VECTRA_window_surface vkCreateVectraWindowSurface vkPollVectraWindowEventsVECTRA vkSetVectraWindowFullscreenVECTRA VkVectraWindowSurfaceCreateInfo VkVectraWindowEventVECTRA VK_EXT_headless_surface vkCreateHeadlessSurfaceEXT
 names WindowSystem PresentWindow WindowEvent PresentOutcome CoreDriver.windowSystem VXWindows
 src graphics/vulkan/c/include/vulkan_vectra.h graphics/vulkan/loader/Vendor.swift graphics/vulkan/drivers/core/lib/Presentation.swift
 src graphics/vulkan/drivers/core/registry/Windows.swift graphics/core/Present.swift sdk/native/Window.swift
@@ -13,7 +13,8 @@ lang swift
 #include "td_vulkan.h"
 #include "vulkan_vectra.h"
 
-// instance extensions "VK_KHR_surface", "VK_VECTRA_window_surface";
+// instance extensions "VK_KHR_surface", "VK_VECTRA_window_surface",
+// "VK_EXT_headless_surface";
 // device extension "VK_KHR_swapchain"
 
 typedef struct VkVectraWindowSurfaceCreateInfo {
@@ -44,7 +45,7 @@ CoreDriver.windowSystem: (any WindowSystem)?
 
 This is how a port of a Vulkan program puts its frames in a window.
 VectraOS has no Wayland, X11 or Win32 surface; a program that presents makes a surface from a window of Radharc's (radharc(4)) and a swapchain of the layer's (vulkancore(2)), and what it draws is shown with no copy by the CPU.
-The extensions are the layer's, offered where the layer has a window system (the registry gives it the SDK's, sdk(2)): the instance extensions `VK_KHR_surface` and `VK_VECTRA_window_surface`, and the device extension `VK_KHR_swapchain`.
+The extensions are the layer's: the instance extensions `VK_KHR_surface` and `VK_EXT_headless_surface` and the device extension `VK_KHR_swapchain` always, and `VK_VECTRA_window_surface` where the layer has a window system (the registry gives it the SDK's, sdk(2)).
 `VECTRA` is our vendor tag, unregistered, and `vulkan_vectra.h` declares what vk.xml doesn't have; the loader gives the three commands out through `vkGetInstanceProcAddr` as it does every instance-level command.
 
 `vkCreateVectraWindowSurface` opens a window of `width` by `height` points titled `pTitle` and returns it as a surface, once Radharc has told it its size; `VK_ERROR_INITIALIZATION_FAILED` if there is no compositor (the program's manifest says `use windows`), and `VK_ERROR_EXTENSION_NOT_PRESENT` where the layer has no window system.
@@ -83,14 +84,26 @@ A window of another size than the image's takes the image, shown at its own size
 `VK_ERROR_SURFACE_LOST_KHR` means the window or the compositor is gone.
 The images are the window's until Radharc has shown a later present; an image is not acquirable until then.
 
+## A headless surface
+
+`vkCreateHeadlessSurfaceEXT` makes a surface with no window (Khronos's `VK_EXT_headless_surface`), for a program that draws frames nobody sees, such as vkmark(8)'s off-screen run; it needs no compositor.
+Its current extent is the special value, 0xFFFFFFFF by 0xFFFFFFFF: the swapchain's extent is the surface's size, anything from 1 to the device's largest image.
+Its formats, image counts, usages and composite alpha are a window's; its present modes are FIFO, MAILBOX and IMMEDIATE, which are one thing there, since nothing waits for a display.
+It has no events, and asking it to go full screen does nothing.
+
+Its swapchain's images are ordinary images of the core's, exported to no one and copied nowhere.
+A present takes the image back and copies nothing; the image is acquirable again at once, and the one acquired is the one presented longest ago.
+The acquire's semaphore and fence are signalled when the device's timeline reaches the work the image's last present waited for (all the work submitted, if it waited for no semaphore): the next frame's work waits for it on the GPU, and the program's wait for the fence keeps it no more than the swapchain's images ahead of the GPU.
+With every image held, an acquire says `VK_NOT_READY`, whatever its timeout.
+
 # SEE ALSO
 
-vulkancore(2), gpucore(2), loinnir(2), sdk(2), vulkan-present(8), radharc(4)
+vulkancore(2), gpucore(2), loinnir(2), sdk(2), vulkan-present(8), vkmark(8), radharc(4)
 
 # BUGS
 
 There is no MAILBOX or IMMEDIATE present mode: Radharc's protocol takes one present of a window at a time and cannot replace a queued one.
 Where the device's timeline is no counter it gives (under Venus), the present waits on the CPU for the GPU's work; a window that is hidden, whose frames Radharc answers about once a second, presents about once a second.
 A swapchain of a device that stages its frames keeps a second image's worth of memory for each: the staging buffers are one for one with the images.
-`vkAcquireNextImage2KHR` is the only acquire beyond `vkAcquireNextImageKHR`; there are no device groups, no display or other surface extensions, no `VK_KHR_present_id`, no full-screen exclusive mode and no HDR metadata.
+`vkAcquireNextImage2KHR` is the only acquire beyond `vkAcquireNextImageKHR`; there are no device groups, no surface extensions but these (no display surface), no `VK_KHR_present_id`, no full-screen exclusive mode and no HDR metadata.
 A key's `character` is the key's unshifted character, as sdk(2) gives it, not the text a layout's dead keys and shifts would make.

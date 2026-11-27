@@ -1,0 +1,10 @@
+# vkmark's board run (vkmark(8)): the image esp-board-vkmark runs its default benchmark off-screen, on upstream's headless
+# window system (VK_EXT_headless_surface), at 800x600, until it ends (launcher.until=vkmark-offscreen), then reboots.
+service vkmark-offscreen
+program vkmark
+arg --winsys
+arg headless
+arg -s
+arg 800x600
+mount /dev devmgr/dev
+mount /lib/vkmark bootfs/lib/vkmark

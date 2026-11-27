@@ -11,7 +11,11 @@
 #ifndef VULKAN_VECTRA_H
 #define VULKAN_VECTRA_H
 
+// A port compiled against Khronos's own headers (vkmark(8)) includes this after them: their vulkan_core.h declares
+// what td_vulkan.h would.
+#ifndef VULKAN_CORE_H_
 #include "td_vulkan.h"
+#endif
 
 #define VK_VECTRA_WINDOW_SURFACE_EXTENSION_NAME "VK_VECTRA_window_surface"
 #define VK_VECTRA_WINDOW_SURFACE_SPEC_VERSION 1

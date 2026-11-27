@@ -1,0 +1,526 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: VectraOS port <port@vectraos.invalid>
+Date: Fri, 27 Nov 2026 04:56:25 -0600
+Subject: [VectraOS] Build as one program over a loader that exports
+ vkGetInstanceProcAddr
+
+- VKMARK_STATIC_WINDOW_SYSTEMS: window systems compiled in, for a system
+  without plugins. It lists them as X(name)..., each one's plugin compiled
+  with its functions named vkmark_<name>_window_system_load_options,
+  _probe and _create; they are probed and chosen as plugins are.
+- vulkan.hpp's dynamic dispatcher (VULKAN_HPP_DISPATCH_LOADER_DYNAMIC),
+  initialised from vkGetInstanceProcAddr and then from the instance and
+  the device, where the Vulkan library exports nothing else.
+- --list-devices enables VK_KHR_display, and lists displays, only where
+  the instance has it.
+- No signal handlers where there are no signals (__vectraos__).
+- src/format_map_gen.h committed: what gen_format_map.py writes from the
+  registry of Vulkan-Headers v1.4.341, for a build with no Python.
+---
+ src/format_map_gen.h         | 188 +++++++++++++++++++++++++++++++++++
+ src/main.cpp                 |  10 ++
+ src/vulkan_state.cpp         |  52 +++++++++-
+ src/window_system_loader.cpp | 139 +++++++++++++++++++++++++-
+ 4 files changed, 386 insertions(+), 3 deletions(-)
+ create mode 100644 src/format_map_gen.h
+
+diff --git a/src/format_map_gen.h b/src/format_map_gen.h
+new file mode 100644
+index 0000000..4a7b8a3
+--- /dev/null
++++ b/src/format_map_gen.h
+@@ -0,0 +1,188 @@
++#include <unordered_map>
++static std::unordered_map<std::string, vk::Format> format_map = {
++    {"UNDEFINED", vk::Format::eUndefined},
++    {"R4G4UNORMPACK8", vk::Format::eR4G4UnormPack8},
++    {"R4G4B4A4UNORMPACK16", vk::Format::eR4G4B4A4UnormPack16},
++    {"B4G4R4A4UNORMPACK16", vk::Format::eB4G4R4A4UnormPack16},
++    {"R5G6B5UNORMPACK16", vk::Format::eR5G6B5UnormPack16},
++    {"B5G6R5UNORMPACK16", vk::Format::eB5G6R5UnormPack16},
++    {"R5G5B5A1UNORMPACK16", vk::Format::eR5G5B5A1UnormPack16},
++    {"B5G5R5A1UNORMPACK16", vk::Format::eB5G5R5A1UnormPack16},
++    {"A1R5G5B5UNORMPACK16", vk::Format::eA1R5G5B5UnormPack16},
++    {"R8UNORM", vk::Format::eR8Unorm},
++    {"R8SNORM", vk::Format::eR8Snorm},
++    {"R8USCALED", vk::Format::eR8Uscaled},
++    {"R8SSCALED", vk::Format::eR8Sscaled},
++    {"R8UINT", vk::Format::eR8Uint},
++    {"R8SINT", vk::Format::eR8Sint},
++    {"R8SRGB", vk::Format::eR8Srgb},
++    {"R8G8UNORM", vk::Format::eR8G8Unorm},
++    {"R8G8SNORM", vk::Format::eR8G8Snorm},
++    {"R8G8USCALED", vk::Format::eR8G8Uscaled},
++    {"R8G8SSCALED", vk::Format::eR8G8Sscaled},
++    {"R8G8UINT", vk::Format::eR8G8Uint},
++    {"R8G8SINT", vk::Format::eR8G8Sint},
++    {"R8G8SRGB", vk::Format::eR8G8Srgb},
++    {"R8G8B8UNORM", vk::Format::eR8G8B8Unorm},
++    {"R8G8B8SNORM", vk::Format::eR8G8B8Snorm},
++    {"R8G8B8USCALED", vk::Format::eR8G8B8Uscaled},
++    {"R8G8B8SSCALED", vk::Format::eR8G8B8Sscaled},
++    {"R8G8B8UINT", vk::Format::eR8G8B8Uint},
++    {"R8G8B8SINT", vk::Format::eR8G8B8Sint},
++    {"R8G8B8SRGB", vk::Format::eR8G8B8Srgb},
++    {"B8G8R8UNORM", vk::Format::eB8G8R8Unorm},
++    {"B8G8R8SNORM", vk::Format::eB8G8R8Snorm},
++    {"B8G8R8USCALED", vk::Format::eB8G8R8Uscaled},
++    {"B8G8R8SSCALED", vk::Format::eB8G8R8Sscaled},
++    {"B8G8R8UINT", vk::Format::eB8G8R8Uint},
++    {"B8G8R8SINT", vk::Format::eB8G8R8Sint},
++    {"B8G8R8SRGB", vk::Format::eB8G8R8Srgb},
++    {"R8G8B8A8UNORM", vk::Format::eR8G8B8A8Unorm},
++    {"R8G8B8A8SNORM", vk::Format::eR8G8B8A8Snorm},
++    {"R8G8B8A8USCALED", vk::Format::eR8G8B8A8Uscaled},
++    {"R8G8B8A8SSCALED", vk::Format::eR8G8B8A8Sscaled},
++    {"R8G8B8A8UINT", vk::Format::eR8G8B8A8Uint},
++    {"R8G8B8A8SINT", vk::Format::eR8G8B8A8Sint},
++    {"R8G8B8A8SRGB", vk::Format::eR8G8B8A8Srgb},
++    {"B8G8R8A8UNORM", vk::Format::eB8G8R8A8Unorm},
++    {"B8G8R8A8SNORM", vk::Format::eB8G8R8A8Snorm},
++    {"B8G8R8A8USCALED", vk::Format::eB8G8R8A8Uscaled},
++    {"B8G8R8A8SSCALED", vk::Format::eB8G8R8A8Sscaled},
++    {"B8G8R8A8UINT", vk::Format::eB8G8R8A8Uint},
++    {"B8G8R8A8SINT", vk::Format::eB8G8R8A8Sint},
++    {"B8G8R8A8SRGB", vk::Format::eB8G8R8A8Srgb},
++    {"A8B8G8R8UNORMPACK32", vk::Format::eA8B8G8R8UnormPack32},
++    {"A8B8G8R8SNORMPACK32", vk::Format::eA8B8G8R8SnormPack32},
++    {"A8B8G8R8USCALEDPACK32", vk::Format::eA8B8G8R8UscaledPack32},
++    {"A8B8G8R8SSCALEDPACK32", vk::Format::eA8B8G8R8SscaledPack32},
++    {"A8B8G8R8UINTPACK32", vk::Format::eA8B8G8R8UintPack32},
++    {"A8B8G8R8SINTPACK32", vk::Format::eA8B8G8R8SintPack32},
++    {"A8B8G8R8SRGBPACK32", vk::Format::eA8B8G8R8SrgbPack32},
++    {"A2R10G10B10UNORMPACK32", vk::Format::eA2R10G10B10UnormPack32},
++    {"A2R10G10B10SNORMPACK32", vk::Format::eA2R10G10B10SnormPack32},
++    {"A2R10G10B10USCALEDPACK32", vk::Format::eA2R10G10B10UscaledPack32},
++    {"A2R10G10B10SSCALEDPACK32", vk::Format::eA2R10G10B10SscaledPack32},
++    {"A2R10G10B10UINTPACK32", vk::Format::eA2R10G10B10UintPack32},
++    {"A2R10G10B10SINTPACK32", vk::Format::eA2R10G10B10SintPack32},
++    {"A2B10G10R10UNORMPACK32", vk::Format::eA2B10G10R10UnormPack32},
++    {"A2B10G10R10SNORMPACK32", vk::Format::eA2B10G10R10SnormPack32},
++    {"A2B10G10R10USCALEDPACK32", vk::Format::eA2B10G10R10UscaledPack32},
++    {"A2B10G10R10SSCALEDPACK32", vk::Format::eA2B10G10R10SscaledPack32},
++    {"A2B10G10R10UINTPACK32", vk::Format::eA2B10G10R10UintPack32},
++    {"A2B10G10R10SINTPACK32", vk::Format::eA2B10G10R10SintPack32},
++    {"R16UNORM", vk::Format::eR16Unorm},
++    {"R16SNORM", vk::Format::eR16Snorm},
++    {"R16USCALED", vk::Format::eR16Uscaled},
++    {"R16SSCALED", vk::Format::eR16Sscaled},
++    {"R16UINT", vk::Format::eR16Uint},
++    {"R16SINT", vk::Format::eR16Sint},
++    {"R16SFLOAT", vk::Format::eR16Sfloat},
++    {"R16G16UNORM", vk::Format::eR16G16Unorm},
++    {"R16G16SNORM", vk::Format::eR16G16Snorm},
++    {"R16G16USCALED", vk::Format::eR16G16Uscaled},
++    {"R16G16SSCALED", vk::Format::eR16G16Sscaled},
++    {"R16G16UINT", vk::Format::eR16G16Uint},
++    {"R16G16SINT", vk::Format::eR16G16Sint},
++    {"R16G16SFLOAT", vk::Format::eR16G16Sfloat},
++    {"R16G16B16UNORM", vk::Format::eR16G16B16Unorm},
++    {"R16G16B16SNORM", vk::Format::eR16G16B16Snorm},
++    {"R16G16B16USCALED", vk::Format::eR16G16B16Uscaled},
++    {"R16G16B16SSCALED", vk::Format::eR16G16B16Sscaled},
++    {"R16G16B16UINT", vk::Format::eR16G16B16Uint},
++    {"R16G16B16SINT", vk::Format::eR16G16B16Sint},
++    {"R16G16B16SFLOAT", vk::Format::eR16G16B16Sfloat},
++    {"R16G16B16A16UNORM", vk::Format::eR16G16B16A16Unorm},
++    {"R16G16B16A16SNORM", vk::Format::eR16G16B16A16Snorm},
++    {"R16G16B16A16USCALED", vk::Format::eR16G16B16A16Uscaled},
++    {"R16G16B16A16SSCALED", vk::Format::eR16G16B16A16Sscaled},
++    {"R16G16B16A16UINT", vk::Format::eR16G16B16A16Uint},
++    {"R16G16B16A16SINT", vk::Format::eR16G16B16A16Sint},
++    {"R16G16B16A16SFLOAT", vk::Format::eR16G16B16A16Sfloat},
++    {"R32UINT", vk::Format::eR32Uint},
++    {"R32SINT", vk::Format::eR32Sint},
++    {"R32SFLOAT", vk::Format::eR32Sfloat},
++    {"R32G32UINT", vk::Format::eR32G32Uint},
++    {"R32G32SINT", vk::Format::eR32G32Sint},
++    {"R32G32SFLOAT", vk::Format::eR32G32Sfloat},
++    {"R32G32B32UINT", vk::Format::eR32G32B32Uint},
++    {"R32G32B32SINT", vk::Format::eR32G32B32Sint},
++    {"R32G32B32SFLOAT", vk::Format::eR32G32B32Sfloat},
++    {"R32G32B32A32UINT", vk::Format::eR32G32B32A32Uint},
++    {"R32G32B32A32SINT", vk::Format::eR32G32B32A32Sint},
++    {"R32G32B32A32SFLOAT", vk::Format::eR32G32B32A32Sfloat},
++    {"R64UINT", vk::Format::eR64Uint},
++    {"R64SINT", vk::Format::eR64Sint},
++    {"R64SFLOAT", vk::Format::eR64Sfloat},
++    {"R64G64UINT", vk::Format::eR64G64Uint},
++    {"R64G64SINT", vk::Format::eR64G64Sint},
++    {"R64G64SFLOAT", vk::Format::eR64G64Sfloat},
++    {"R64G64B64UINT", vk::Format::eR64G64B64Uint},
++    {"R64G64B64SINT", vk::Format::eR64G64B64Sint},
++    {"R64G64B64SFLOAT", vk::Format::eR64G64B64Sfloat},
++    {"R64G64B64A64UINT", vk::Format::eR64G64B64A64Uint},
++    {"R64G64B64A64SINT", vk::Format::eR64G64B64A64Sint},
++    {"R64G64B64A64SFLOAT", vk::Format::eR64G64B64A64Sfloat},
++    {"B10G11R11UFLOATPACK32", vk::Format::eB10G11R11UfloatPack32},
++    {"E5B9G9R9UFLOATPACK32", vk::Format::eE5B9G9R9UfloatPack32},
++    {"D16UNORM", vk::Format::eD16Unorm},
++    {"X8D24UNORMPACK32", vk::Format::eX8D24UnormPack32},
++    {"D32SFLOAT", vk::Format::eD32Sfloat},
++    {"S8UINT", vk::Format::eS8Uint},
++    {"D16UNORMS8UINT", vk::Format::eD16UnormS8Uint},
++    {"D24UNORMS8UINT", vk::Format::eD24UnormS8Uint},
++    {"D32SFLOATS8UINT", vk::Format::eD32SfloatS8Uint},
++    {"BC1RGBUNORMBLOCK", vk::Format::eBc1RgbUnormBlock},
++    {"BC1RGBSRGBBLOCK", vk::Format::eBc1RgbSrgbBlock},
++    {"BC1RGBAUNORMBLOCK", vk::Format::eBc1RgbaUnormBlock},
++    {"BC1RGBASRGBBLOCK", vk::Format::eBc1RgbaSrgbBlock},
++    {"BC2UNORMBLOCK", vk::Format::eBc2UnormBlock},
++    {"BC2SRGBBLOCK", vk::Format::eBc2SrgbBlock},
++    {"BC3UNORMBLOCK", vk::Format::eBc3UnormBlock},
++    {"BC3SRGBBLOCK", vk::Format::eBc3SrgbBlock},
++    {"BC4UNORMBLOCK", vk::Format::eBc4UnormBlock},
++    {"BC4SNORMBLOCK", vk::Format::eBc4SnormBlock},
++    {"BC5UNORMBLOCK", vk::Format::eBc5UnormBlock},
++    {"BC5SNORMBLOCK", vk::Format::eBc5SnormBlock},
++    {"BC6HUFLOATBLOCK", vk::Format::eBc6HUfloatBlock},
++    {"BC6HSFLOATBLOCK", vk::Format::eBc6HSfloatBlock},
++    {"BC7UNORMBLOCK", vk::Format::eBc7UnormBlock},
++    {"BC7SRGBBLOCK", vk::Format::eBc7SrgbBlock},
++    {"ETC2R8G8B8UNORMBLOCK", vk::Format::eEtc2R8G8B8UnormBlock},
++    {"ETC2R8G8B8SRGBBLOCK", vk::Format::eEtc2R8G8B8SrgbBlock},
++    {"ETC2R8G8B8A1UNORMBLOCK", vk::Format::eEtc2R8G8B8A1UnormBlock},
++    {"ETC2R8G8B8A1SRGBBLOCK", vk::Format::eEtc2R8G8B8A1SrgbBlock},
++    {"ETC2R8G8B8A8UNORMBLOCK", vk::Format::eEtc2R8G8B8A8UnormBlock},
++    {"ETC2R8G8B8A8SRGBBLOCK", vk::Format::eEtc2R8G8B8A8SrgbBlock},
++    {"EACR11UNORMBLOCK", vk::Format::eEacR11UnormBlock},
++    {"EACR11SNORMBLOCK", vk::Format::eEacR11SnormBlock},
++    {"EACR11G11UNORMBLOCK", vk::Format::eEacR11G11UnormBlock},
++    {"EACR11G11SNORMBLOCK", vk::Format::eEacR11G11SnormBlock},
++    {"ASTC4X4UNORMBLOCK", vk::Format::eAstc4x4UnormBlock},
++    {"ASTC4X4SRGBBLOCK", vk::Format::eAstc4x4SrgbBlock},
++    {"ASTC5X4UNORMBLOCK", vk::Format::eAstc5x4UnormBlock},
++    {"ASTC5X4SRGBBLOCK", vk::Format::eAstc5x4SrgbBlock},
++    {"ASTC5X5UNORMBLOCK", vk::Format::eAstc5x5UnormBlock},
++    {"ASTC5X5SRGBBLOCK", vk::Format::eAstc5x5SrgbBlock},
++    {"ASTC6X5UNORMBLOCK", vk::Format::eAstc6x5UnormBlock},
++    {"ASTC6X5SRGBBLOCK", vk::Format::eAstc6x5SrgbBlock},
++    {"ASTC6X6UNORMBLOCK", vk::Format::eAstc6x6UnormBlock},
++    {"ASTC6X6SRGBBLOCK", vk::Format::eAstc6x6SrgbBlock},
++    {"ASTC8X5UNORMBLOCK", vk::Format::eAstc8x5UnormBlock},
++    {"ASTC8X5SRGBBLOCK", vk::Format::eAstc8x5SrgbBlock},
++    {"ASTC8X6UNORMBLOCK", vk::Format::eAstc8x6UnormBlock},
++    {"ASTC8X6SRGBBLOCK", vk::Format::eAstc8x6SrgbBlock},
++    {"ASTC8X8UNORMBLOCK", vk::Format::eAstc8x8UnormBlock},
++    {"ASTC8X8SRGBBLOCK", vk::Format::eAstc8x8SrgbBlock},
++    {"ASTC10X5UNORMBLOCK", vk::Format::eAstc10x5UnormBlock},
++    {"ASTC10X5SRGBBLOCK", vk::Format::eAstc10x5SrgbBlock},
++    {"ASTC10X6UNORMBLOCK", vk::Format::eAstc10x6UnormBlock},
++    {"ASTC10X6SRGBBLOCK", vk::Format::eAstc10x6SrgbBlock},
++    {"ASTC10X8UNORMBLOCK", vk::Format::eAstc10x8UnormBlock},
++    {"ASTC10X8SRGBBLOCK", vk::Format::eAstc10x8SrgbBlock},
++    {"ASTC10X10UNORMBLOCK", vk::Format::eAstc10x10UnormBlock},
++    {"ASTC10X10SRGBBLOCK", vk::Format::eAstc10x10SrgbBlock},
++    {"ASTC12X10UNORMBLOCK", vk::Format::eAstc12x10UnormBlock},
++    {"ASTC12X10SRGBBLOCK", vk::Format::eAstc12x10SrgbBlock},
++    {"ASTC12X12UNORMBLOCK", vk::Format::eAstc12x12UnormBlock},
++    {"ASTC12X12SRGBBLOCK", vk::Format::eAstc12x12SrgbBlock},
++};
+diff --git a/src/main.cpp b/src/main.cpp
+index 8a88a6c..c7416e2 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -43,13 +43,22 @@
+ #include "scenes/vertex_scene.h"
+ 
+ #include <stdexcept>
++#ifndef __vectraos__
+ #include <csignal>
++#endif
+ #include <memory>
+ #include <iostream>
+ 
+ namespace
+ {
+ 
++#ifdef __vectraos__
++/* VectraOS has no signals: a run ends when its benchmarks do, or when the
++ * window system says to quit. */
++void set_up_sighandler(MainLoop&)
++{
++}
++#else
+ MainLoop* main_loop_global = nullptr;
+ 
+ void sighandler(int)
+@@ -67,6 +76,7 @@ void set_up_sighandler(MainLoop& main_loop)
+     sigaction(SIGTERM, &sa, nullptr);
+     sigaction(SIGINT, &sa, nullptr);
+ }
++#endif
+ 
+ void populate_scene_collection(SceneCollection& sc)
+ {
+diff --git a/src/vulkan_state.cpp b/src/vulkan_state.cpp
+index a36b299..a6b0766 100644
+--- a/src/vulkan_state.cpp
++++ b/src/vulkan_state.cpp
+@@ -28,9 +28,42 @@
+ #include <vector>
+ #include <vulkan/vulkan.hpp>
+ 
++#if VULKAN_HPP_DISPATCH_LOADER_DYNAMIC
++/* Where the Vulkan library exports only vkGetInstanceProcAddr (VectraOS's
++ * loader), vulkan.hpp's dispatcher asks it for every command: for the
++ * global ones first, then for the instance's and the device's once they
++ * exist. */
++VULKAN_HPP_DEFAULT_DISPATCH_LOADER_DYNAMIC_STORAGE
++#endif
++
+ namespace
+ {
+ 
++void init_dispatcher()
++{
++#if VULKAN_HPP_DISPATCH_LOADER_DYNAMIC
++    VULKAN_HPP_DEFAULT_DISPATCHER.init(vkGetInstanceProcAddr);
++#endif
++}
++
++void init_dispatcher(vk::Instance instance)
++{
++#if VULKAN_HPP_DISPATCH_LOADER_DYNAMIC
++    VULKAN_HPP_DEFAULT_DISPATCHER.init(instance);
++#else
++    (void)instance;
++#endif
++}
++
++void init_dispatcher(vk::Device device)
++{
++#if VULKAN_HPP_DISPATCH_LOADER_DYNAMIC
++    VULKAN_HPP_DEFAULT_DISPATCHER.init(device);
++#else
++    (void)device;
++#endif
++}
++
+ VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(
+     VkDebugUtilsMessageSeverityFlagBitsEXT message_severity,
+     VkDebugUtilsMessageTypeFlagsEXT message_type,
+@@ -118,18 +151,29 @@ void VulkanState::log_all_devices()
+         .setApiVersion(VK_MAKE_VERSION(1, 0, 0));
+ #endif
+ 
++    init_dispatcher();
++
++    /* The displays, where the instance has VK_KHR_display. */
++    bool have_display = false;
++    for (auto const& e : vk::enumerateInstanceExtensionProperties())
++    {
++        if (strcmp(e.extensionName, VK_KHR_DISPLAY_EXTENSION_NAME) == 0)
++            have_display = true;
++    }
++
+     auto const enabled_extensions = std::array<char const*, 2>{
+         VK_KHR_SURFACE_EXTENSION_NAME,
+         VK_KHR_DISPLAY_EXTENSION_NAME};
+ 
+     auto const create_info = vk::InstanceCreateInfo{}
+         .setPApplicationInfo(&app_info)
+-        .setEnabledExtensionCount(enabled_extensions.size())
++        .setEnabledExtensionCount(have_display ? enabled_extensions.size() : 0)
+         .setPpEnabledExtensionNames(enabled_extensions.data());
+ 
+     auto vk_instance = ManagedResource<vk::Instance>{
+         vk::createInstance(create_info),
+         [] (auto& i) { i.destroy(); }};
++    init_dispatcher(vk_instance.raw);
+ 
+     auto physical_devices = vk_instance.raw.enumeratePhysicalDevices();
+ 
+@@ -137,6 +181,8 @@ void VulkanState::log_all_devices()
+     {
+         Log::info("=== Physical Device %d ===\n", i);
+         log_device_info(physical_devices[i]);
++        if (!have_display)
++            continue;
+         auto const display_props = physical_devices[i].getDisplayPropertiesKHR();
+         for (unsigned i = 0; i < display_props.size(); ++i)
+         {
+@@ -159,6 +205,8 @@ void VulkanState::create_instance(VulkanWSI& vulkan_wsi)
+         .setApiVersion(VK_MAKE_VERSION(1, 0, 0));
+ #endif
+ 
++    init_dispatcher();
++
+     std::vector<char const*> enabled_extensions{vulkan_wsi.required_extensions().instance};
+     std::vector<char const*> validation_layers;
+ 
+@@ -189,6 +237,7 @@ void VulkanState::create_instance(VulkanWSI& vulkan_wsi)
+     vk_instance = ManagedResource<vk::Instance>{
+         vk::createInstance(create_info),
+         [] (auto& i) { i.destroy(); }};
++    init_dispatcher(vk_instance.raw);
+ 
+     if (have_debug_extensions)
+     {
+@@ -287,6 +336,7 @@ void VulkanState::create_logical_device(VulkanWSI& vulkan_wsi)
+     vk_device = ManagedResource<vk::Device>{
+         physical_device().createDevice(device_create_info),
+         [] (auto& d) { d.destroy(); }};
++    init_dispatcher(vk_device.raw);
+ 
+     vk_graphics_queue = device().getQueue(graphics_queue_family_index(), 0);
+ }
+diff --git a/src/window_system_loader.cpp b/src/window_system_loader.cpp
+index 9f2efe1..35c4b3a 100644
+--- a/src/window_system_loader.cpp
++++ b/src/window_system_loader.cpp
+@@ -26,13 +26,146 @@
+ #include "options.h"
+ #include "log.h"
+ 
+-#include <dlfcn.h>
+ #include <vector>
+ #include <string>
+ #include <algorithm>
+-#include <dirent.h>
+ #include <stdexcept>
+ 
++#ifdef VKMARK_STATIC_WINDOW_SYSTEMS
++/*
++ * Window systems compiled into vkmark, for a system without plugins:
++ * VKMARK_STATIC_WINDOW_SYSTEMS lists them as X(name)..., and each one's
++ * plugin is compiled with its three functions named
++ * vkmark_<name>_window_system_load_options, _probe and _create. They are
++ * probed and chosen as plugins are, by name for --winsys.
++ */
++
++#if defined(__clang__)
++#pragma clang diagnostic push
++#pragma clang diagnostic ignored "-Wreturn-type-c-linkage"
++#endif
++
++#define X(ws) \
++    extern "C" void vkmark_##ws##_window_system_load_options(Options&); \
++    extern "C" int vkmark_##ws##_window_system_probe(Options const&); \
++    extern "C" std::unique_ptr<WindowSystem> vkmark_##ws##_window_system_create(Options const&);
++VKMARK_STATIC_WINDOW_SYSTEMS
++#undef X
++
++#if defined(__clang__)
++#pragma clang diagnostic pop
++#endif
++
++namespace
++{
++
++struct BuiltInWindowSystem
++{
++    char const* name;
++    VkMarkWindowSystemLoadOptionsFunc load_options;
++    VkMarkWindowSystemProbeFunc probe;
++    VkMarkWindowSystemCreateFunc create;
++};
++
++BuiltInWindowSystem const built_in_window_systems[] = {
++#define X(ws) {#ws, vkmark_##ws##_window_system_load_options, \
++               vkmark_##ws##_window_system_probe, vkmark_##ws##_window_system_create},
++    VKMARK_STATIC_WINDOW_SYSTEMS
++#undef X
++};
++
++BuiltInWindowSystem const* built_in_window_system(std::string const& name)
++{
++    for (auto const& ws : built_in_window_systems)
++    {
++        if (name == ws.name)
++            return &ws;
++    }
++    return nullptr;
++}
++
++void no_lib(void*)
++{
++}
++
++}
++
++WindowSystemLoader::WindowSystemLoader(Options& options)
++    : options{options},
++      lib_handle{nullptr, no_lib}
++{
++}
++
++WindowSystemLoader::~WindowSystemLoader() = default;
++
++WindowSystem& WindowSystemLoader::load_window_system()
++{
++    if (window_system)
++        return *window_system;
++
++    auto const name = options.window_system.empty() ?
++                      probe_for_best_window_system() :
++                      window_system_from_name(options.window_system);
++
++    Log::debug("WindowSystemLoader: Selected window system %s %s\n",
++               name.c_str(),
++               !options.window_system.empty() ? "(user selection)" : "(best match)");
++
++    window_system = built_in_window_system(name)->create(options);
++
++    if (!window_system)
++        throw std::runtime_error{"Selected window system failed to create window system"};
++
++    return *window_system;
++}
++
++std::string WindowSystemLoader::probe_for_best_window_system()
++{
++    std::string best_candidate;
++    int best_priority = 0;
++
++    for (auto const& ws : built_in_window_systems)
++    {
++        auto const priority = ws.probe(options);
++        Log::debug("WindowSystemLoader: Probing %s... succeeded with priority %d\n", ws.name, priority);
++        if (priority > best_priority)
++        {
++            best_candidate = ws.name;
++            best_priority = priority;
++        }
++    }
++
++    if (!best_candidate.empty())
++        return best_candidate;
++
++    throw std::runtime_error{"Failed to find usable window system"};
++}
++
++void WindowSystemLoader::load_window_system_options()
++{
++    for (auto const& ws : built_in_window_systems)
++        ws.load_options(options);
++}
++
++void WindowSystemLoader::for_each_window_system(ForeachCallback const& callback)
++{
++    for (auto const& ws : built_in_window_systems)
++        callback(ws.name, nullptr);
++}
++
++std::string WindowSystemLoader::window_system_from_name(std::string const& name)
++{
++    if (built_in_window_system(name))
++        return name;
++
++    throw std::runtime_error{"Failed to find specified window system '" + name + "'"};
++}
++
++#else
++
++#include <dlfcn.h>
++#include <dirent.h>
++
+ namespace
+ {
+ 
+@@ -215,3 +348,5 @@ std::string WindowSystemLoader::window_system_from_name(std::string const& name)
+ 
+     throw std::runtime_error{"Failed to find specified window system '" + name + "'"};
+ }
++
++#endif

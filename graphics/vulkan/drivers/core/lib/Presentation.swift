@@ -11,6 +11,8 @@
 //    pacing is Radharc's: a present waits for the credit the last one's frame gives back.
 //  - A window that changed size makes the swapchain out of date (`VK_ERROR_OUT_OF_DATE_KHR`); the application makes another
 //    with `oldSwapchain`. A size is never stretched.
+//  - A headless surface (VK_EXT_headless_surface) has no window: its swapchain is a ring of plain images of any size, shown
+//    nowhere, an image free again once the GPU is past the work its present waited for; FIFO, MAILBOX and IMMEDIATE are one.
 
 import GPUCore
 import TDVulkan
@@ -77,21 +79,27 @@ public protocol WindowSystem: AnyObject {
 // MARK: Objects
 
 final class SurfaceObject: CoreObject {
-  let window: any PresentWindow
+  /// The window it shows; nil for a headless surface (VK_EXT_headless_surface), whose images are drawn and never shown.
+  let window: (any PresentWindow)?
   /// The swapchain made last on it (the next `oldSwapchain` is this).
   var current: SwapchainObject?
-  init(window: any PresentWindow) { self.window = window }
+  init(window: (any PresentWindow)?) { self.window = window }
 }
 
-/// One image of a swapchain: the VkImage the application has, the core's frame behind it, and the window's number for it.
+/// One image of a swapchain: the VkImage the application has, the core's image behind it, and, for a window, the frame that
+/// carries it there and the window's number for it.
 @safe struct SwapImage {
   var handle: OpaquePointer?
-  var frame: PresentImage
+  var image: GPUImage
+  /// Nil on a headless surface: the image is the core's alone.
+  var frame: PresentImage?
   var window: UInt32
   /// The window reads the device's timeline as its acquire counter: a present names the value, and nothing waits for it.
   var timeline = false
   /// The application holds it (acquired, not yet presented).
   var acquired = false
+  /// The timeline value of the work its last present waited for (a headless surface's): it is free once the timeline is there.
+  var drawn: UInt64 = 0
 }
 
 final class SwapchainObject: CoreObject {
@@ -112,18 +120,19 @@ final class SwapchainObject: CoreObject {
     self.format = format
   }
 
-  /// Whether the window is still the size this swapchain was made for.
+  /// Whether the window is still the size this swapchain was made for (a headless surface's always is).
   func matchesWindow() -> Bool {
-    surface.window.pump()
-    return surface.window.width == width && surface.window.height == height
+    guard let window = surface.window else { return true }
+    window.pump()
+    return window.width == width && window.height == height
   }
 
   /// Gives everything back: the images to the window and the device, once the GPU is past the work submitted.
   func release() {
     _ = device.waitIdle()
     for i in images {
-      surface.window.removeImage(i.window)
-      device.gpu.destroy(i.frame)
+      surface.window?.removeImage(i.window)
+      if let frame = i.frame { device.gpu.destroy(frame) } else { device.gpu.destroy(i.image) }
       unsafe Handle.destroy(i.handle)
     }
     images = []
@@ -132,10 +141,12 @@ final class SwapchainObject: CoreObject {
 
 // MARK: Extensions
 
-/// The instance extensions the layer has: the surface ones where there is a window system.
+/// The instance extensions the layer has: a surface, headless always and a window's where there is a window system.
 func instanceExtensions() -> [(name: String, version: UInt32)] {
-  guard unsafe CoreDriver.windowSystem != nil else { return [] }
-  return [("VK_KHR_surface", 25), ("VK_VECTRA_window_surface", 1)]
+  var out: [(name: String, version: UInt32)] = [("VK_KHR_surface", 25)]
+  if unsafe CoreDriver.windowSystem != nil { out.append(("VK_VECTRA_window_surface", 1)) }
+  out.append(("VK_EXT_headless_surface", 1))
+  return out
 }
 
 // MARK: Surfaces
@@ -160,9 +171,22 @@ func core_vkCreateVectraWindowSurface(_ instance: VkInstance?, _ pCreateInfo: Un
   return VK_SUCCESS
 }
 
+/// A surface with no window (VK_EXT_headless_surface): its swapchains' images are drawn, presented and never shown, and
+/// need no compositor.
+func core_vkCreateHeadlessSurfaceEXT(_ instance: VkInstance?, _ pCreateInfo: UnsafePointer<VkHeadlessSurfaceCreateInfoEXT>?,
+                                     _ pAllocator: UnsafePointer<VkAllocationCallbacks>?,
+                                     _ pSurface: UnsafeMutablePointer<VkSurfaceKHR?>?) -> VkResult
+{
+  guard unsafe Handle.get(instance, InstanceObject.self) != nil, let info = unsafe pCreateInfo, let out = unsafe pSurface,
+    unsafe info.pointee.sType == VK_STRUCTURE_TYPE_HEADLESS_SURFACE_CREATE_INFO_EXT
+  else { return VK_ERROR_INITIALIZATION_FAILED }
+  unsafe out.pointee = Handle.make(SurfaceObject(window: nil))
+  return VK_SUCCESS
+}
+
 func core_vkDestroySurfaceKHR(_ instance: VkInstance?, _ surface: VkSurfaceKHR?, _ pAllocator: UnsafePointer<VkAllocationCallbacks>?) {
   guard let s = unsafe Handle.get(surface, SurfaceObject.self) else { return }
-  s.window.close()
+  s.window?.close()
   unsafe Handle.destroy(surface)
 }
 
@@ -170,11 +194,16 @@ func core_vkPollVectraWindowEventsVECTRA(_ instance: VkInstance?, _ surface: VkS
                                          _ pEvents: UnsafeMutablePointer<VkVectraWindowEventVECTRA>?) -> VkResult
 {
   guard let s = unsafe Handle.get(surface, SurfaceObject.self), let count = unsafe pEventCount else { return VK_ERROR_SURFACE_LOST_KHR }
-  s.window.pump()
-  let events = s.window.takeEvents()
+  // A headless surface has no events.
+  guard let window = s.window else {
+    unsafe count.pointee = 0
+    return VK_SUCCESS
+  }
+  window.pump()
+  let events = window.takeEvents()
   guard let out = unsafe pEvents else {
     // Only the count: put them back for the call that takes them.
-    s.window.requeue(events)
+    window.requeue(events)
     unsafe count.pointee = UInt32(events.count)
     return VK_SUCCESS
   }
@@ -205,14 +234,14 @@ func core_vkPollVectraWindowEventsVECTRA(_ instance: VkInstance?, _ surface: VkS
     }
     unsafe out[i] = e
   }
-  if n < events.count { s.window.requeue(Array(events[n...])) }
+  if n < events.count { window.requeue(Array(events[n...])) }
   unsafe count.pointee = UInt32(n)
   return n < events.count ? VK_INCOMPLETE : VK_SUCCESS
 }
 
 func core_vkSetVectraWindowFullscreenVECTRA(_ instance: VkInstance?, _ surface: VkSurfaceKHR?, _ fullscreen: VkBool32) -> VkResult {
   guard let s = unsafe Handle.get(surface, SurfaceObject.self) else { return VK_ERROR_SURFACE_LOST_KHR }
-  s.window.setFullscreen(fullscreen != 0)
+  s.window?.setFullscreen(fullscreen != 0)
   return VK_SUCCESS
 }
 
@@ -232,8 +261,12 @@ func core_vkGetPhysicalDeviceSurfaceCapabilitiesKHR(_ physicalDevice: VkPhysical
   guard let s = unsafe Handle.get(surface, SurfaceObject.self), let phys = unsafe Handle.get(physicalDevice, PhysicalDeviceObject.self),
     let out = unsafe pSurfaceCapabilities
   else { return VK_ERROR_SURFACE_LOST_KHR }
-  s.window.pump()
-  let extent = VkExtent2D(width: UInt32(max(s.window.width, 1)), height: UInt32(max(s.window.height, 1)))
+  // A window's size; a headless surface has none, and its swapchain's extent is its size (the special value).
+  var extent = VkExtent2D(width: UInt32.max, height: UInt32.max)
+  if let window = s.window {
+    window.pump()
+    extent = VkExtent2D(width: UInt32(max(window.width, 1)), height: UInt32(max(window.height, 1)))
+  }
   var c = VkSurfaceCapabilitiesKHR()
   c.minImageCount = 2
   c.maxImageCount = UInt32(maxSwapchainImages)
@@ -288,15 +321,23 @@ func core_vkGetPhysicalDeviceSurfacePresentModesKHR(_ physicalDevice: VkPhysical
                                                     _ pPresentModeCount: UnsafeMutablePointer<UInt32>?,
                                                     _ pPresentModes: UnsafeMutablePointer<VkPresentModeKHR>?) -> VkResult
 {
-  guard unsafe Handle.get(surface, SurfaceObject.self) != nil, let count = unsafe pPresentModeCount else { return VK_ERROR_SURFACE_LOST_KHR }
+  guard let s = unsafe Handle.get(surface, SurfaceObject.self), let count = unsafe pPresentModeCount else { return VK_ERROR_SURFACE_LOST_KHR }
+  let modes = presentModes(s)
   guard let out = unsafe pPresentModes else {
-    unsafe count.pointee = 1
+    unsafe count.pointee = UInt32(modes.count)
     return VK_SUCCESS
   }
-  if unsafe count.pointee == 0 { return VK_INCOMPLETE }
-  unsafe out[0] = VK_PRESENT_MODE_FIFO_KHR
-  unsafe count.pointee = 1
-  return VK_SUCCESS
+  let n = min(Int(unsafe count.pointee), modes.count)
+  for i in 0..<n { unsafe out[i] = modes[i] }
+  unsafe count.pointee = UInt32(n)
+  return n < modes.count ? VK_INCOMPLETE : VK_SUCCESS
+}
+
+/// A window's one present mode is FIFO, paced by Radharc. A headless surface shows nothing, so nothing waits for a display:
+/// FIFO, MAILBOX and IMMEDIATE are the same there, and a present only marks the image free once the GPU is done with it.
+func presentModes(_ s: SurfaceObject) -> [VkPresentModeKHR] {
+  if s.window == nil { return [VK_PRESENT_MODE_FIFO_KHR, VK_PRESENT_MODE_MAILBOX_KHR, VK_PRESENT_MODE_IMMEDIATE_KHR] }
+  return [VK_PRESENT_MODE_FIFO_KHR]
 }
 
 // MARK: Swapchains
@@ -319,23 +360,28 @@ func core_vkCreateSwapchainKHR(_ device: VkDevice?, _ pCreateInfo: UnsafePointer
     say("unsupported: a swapchain of format \(imageFormat.rawValue)")
     return VK_ERROR_FORMAT_NOT_SUPPORTED
   }
-  guard layers == 1, mode == VK_PRESENT_MODE_FIFO_KHR,
+  guard layers == 1, presentModes(surface).contains(mode),
     alpha == VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR || alpha == VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR,
     transform == VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR || transform.rawValue == 0, flags == 0
   else {
-    say("unsupported: a swapchain's layers, present mode (only FIFO), composite alpha, transform or flags")
+    say("unsupported: a swapchain's layers, present mode (a window's is FIFO only), composite alpha, transform or flags")
     return VK_ERROR_FEATURE_NOT_PRESENT
   }
   guard usageBits & ~swapchainUsages(d.gpu) == 0, let appUsage = imageUsage(usageBits, format: format, d.gpu) else {
     say("unsupported: a swapchain's image usage")
     return VK_ERROR_FEATURE_NOT_PRESENT
   }
-  // The window's size now; an extent of another size is the application's stale one.
-  surface.window.pump()
+  // The window's size now; an extent of another size is the application's stale one. A headless surface takes any.
   let width = Int32(truncatingIfNeeded: extent.width), height = Int32(truncatingIfNeeded: extent.height)
-  guard width > 0, height > 0, width == surface.window.width, height == surface.window.height else {
-    // The window changed size since the application asked: nothing to make, and the surface says what it is now.
+  guard width > 0, height > 0, width <= d.gpu.limits.maxImageDimension, height <= d.gpu.limits.maxImageDimension else {
     return VK_ERROR_INITIALIZATION_FAILED
+  }
+  if let window = surface.window {
+    window.pump()
+    guard width == window.width, height == window.height else {
+      // The window changed size since the application asked: nothing to make, and the surface says what it is now.
+      return VK_ERROR_INITIALIZATION_FAILED
+    }
   }
   let count = Int(min(max(minCount, 2), UInt32(maxSwapchainImages)))
   let premultiplied = alpha == VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR
@@ -345,6 +391,19 @@ func core_vkCreateSwapchainKHR(_ device: VkDevice?, _ pCreateInfo: UnsafePointer
   if let old = unsafe Handle.get(oldSwapchain, SwapchainObject.self) { old.retired = true }
   let swapchain = SwapchainObject(device: d, surface: surface, width: width, height: height, format: format)
   for _ in 0..<count {
+    guard let window = surface.window else {
+      // Headless: an ordinary image of the core's, shown nowhere.
+      let image: GPUImage
+      do throws(GPUError) {
+        image = try d.gpu.makeImage(ImageDescriptor(format: format, width: width, height: height, usage: usage))
+      } catch {
+        swapchain.release()
+        return vkResult(error)
+      }
+      let handle = unsafe Handle.make(ImageObject(image: image, device: d))
+      swapchain.images.append(unsafe SwapImage(handle: handle, image: image, frame: nil, window: 0))
+      continue
+    }
     let frame: PresentImage
     do throws(GPUError) { frame = try d.gpu.makePresentImage(format: format, width: width, height: height, usage: usage) } catch {
       swapchain.release()
@@ -356,15 +415,15 @@ func core_vkCreateSwapchainKHR(_ device: VkDevice?, _ pCreateInfo: UnsafePointer
       return VK_ERROR_INITIALIZATION_FAILED
     }
     let timeline = d.gpu.timelineHandle()
-    guard let number = surface.window.addImage(vmo: vmo, width: width, height: height, stride: frame.stridePixels,
-                                               premultiplied: premultiplied, acquire: timeline)
+    guard let number = window.addImage(vmo: vmo, width: width, height: height, stride: frame.stridePixels,
+                                       premultiplied: premultiplied, acquire: timeline)
     else {
       d.gpu.destroy(frame)
       swapchain.release()
       return VK_ERROR_INITIALIZATION_FAILED
     }
     let handle = unsafe Handle.make(ImageObject(image: frame.image, device: d))
-    swapchain.images.append(unsafe SwapImage(handle: handle, frame: frame, window: number, timeline: timeline != nil))
+    swapchain.images.append(unsafe SwapImage(handle: handle, image: frame.image, frame: frame, window: number, timeline: timeline != nil))
   }
   surface.current = swapchain
   unsafe out.pointee = Handle.make(swapchain)
@@ -401,9 +460,10 @@ func acquireNext(_ s: SwapchainObject, timeout: UInt64, semaphore: VkSemaphore?,
     s.retired = true
     return VK_ERROR_OUT_OF_DATE_KHR
   }
-  let start = s.surface.window.now()
+  guard let window = s.surface.window else { return unsafe acquireHeadless(s, semaphore: semaphore, fence: fence, index: index) }
+  let start = window.now()
   while true {
-    if let i = s.images.indices.first(where: { !s.images[$0].acquired && s.surface.window.isFree(s.images[$0].window) }) {
+    if let i = s.images.indices.first(where: { !s.images[$0].acquired && window.isFree(s.images[$0].window) }) {
       s.images[i].acquired = true
       // Nothing of the GPU's is outstanding on a free image (a present waited for its copy): signalled already.
       if let sem = unsafe Handle.get(semaphore, SemaphoreObject.self) { sem.value = 0 }
@@ -415,14 +475,33 @@ func acquireNext(_ s: SwapchainObject, timeout: UInt64, semaphore: VkSemaphore?,
       return VK_SUCCESS
     }
     if timeout == 0 { return VK_NOT_READY }
-    let elapsed = s.surface.window.now() &- start
+    let elapsed = window.now() &- start
     if timeout != UInt64.max && elapsed >= timeout { return VK_TIMEOUT }
-    s.surface.window.wait(nanoseconds: min(timeout == UInt64.max ? 4_000_000 : timeout - elapsed, 4_000_000))
+    window.wait(nanoseconds: min(timeout == UInt64.max ? 4_000_000 : timeout - elapsed, 4_000_000))
     if !s.matchesWindow() {
       s.retired = true
       return VK_ERROR_OUT_OF_DATE_KHR
     }
   }
+}
+
+/// A headless swapchain's next image: of those the application doesn't hold, the one presented longest ago. Nothing reads it
+/// but the GPU, so it is acquired at once, and the semaphore and fence are signalled when the timeline reaches the work its
+/// last present waited for: the next frame's work waits for it on the GPU, and the application's fence, on the CPU.
+func acquireHeadless(_ s: SwapchainObject, semaphore: VkSemaphore?, fence: VkFence?, index: UnsafeMutablePointer<UInt32>?) -> VkResult {
+  guard let i = s.images.indices.filter({ !s.images[$0].acquired }).min(by: { s.images[$0].drawn < s.images[$1].drawn }) else {
+    return VK_NOT_READY
+  }
+  s.images[i].acquired = true
+  let drawn = s.images[i].drawn
+  let done = drawn == 0 || s.device.gpu.completed >= drawn
+  if let sem = unsafe Handle.get(semaphore, SemaphoreObject.self) { sem.value = done ? 0 : drawn }
+  if let f = unsafe Handle.get(fence, FenceObject.self) {
+    f.signaled = done
+    f.value = done ? 0 : drawn
+  }
+  unsafe index?.pointee = UInt32(i)
+  return VK_SUCCESS
 }
 
 func core_vkAcquireNextImageKHR(_ device: VkDevice?, _ swapchain: VkSwapchainKHR?, _ timeout: UInt64, _ semaphore: VkSemaphore?,
@@ -446,10 +525,17 @@ func presentImage(_ q: QueueObject, _ s: SwapchainObject, index: Int, wait: UInt
   let d = q.device
   if s.retired { return VK_ERROR_OUT_OF_DATE_KHR }
   guard index < s.images.count, s.images[index].acquired else { return VK_ERROR_INITIALIZATION_FAILED }
+  // Headless: shown nowhere, and nothing waits. The image is free again once the timeline reaches the work presented (all
+  // submitted so far, if the present waited for no semaphore).
+  guard let window = s.surface.window, let frame = s.images[index].frame else {
+    s.images[index].drawn = wait > 0 ? wait : d.lastSubmitted
+    s.images[index].acquired = false
+    d.retire()
+    return VK_SUCCESS
+  }
   // A window that changed size since the image was acquired still takes it, shown at its own size and never stretched; the
   // application is told to make another swapchain.
   let stale = !s.matchesWindow()
-  let frame = s.images[index].frame
   let timeline = s.images[index].timeline
   // The GPU's work, and the copy that puts the frame where Radharc reads it; the CPU waits for them only where the window
   // can't read the device's timeline as the image's acquire counter.
@@ -467,7 +553,7 @@ func presentImage(_ q: QueueObject, _ s: SwapchainObject, index: Int, wait: UInt
   } catch { return vkResult(error) }
   d.retire()
   s.images[index].acquired = false
-  let outcome = s.surface.window.present(s.images[index].window, drawnAt: timeline ? drawn : nil)
+  let outcome = window.present(s.images[index].window, drawnAt: timeline ? drawn : nil)
   // An image the window did not take is free at once: the GPU must be done with it first.
   if outcome != .shown, timeline, drawn > 0 { try? d.gpu.wait(drawn) }
   switch outcome {

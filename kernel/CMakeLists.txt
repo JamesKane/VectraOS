@@ -731,6 +731,15 @@ if(_glmark2)
   set(_glmark2_entries bin/glmark2-es2-vectraos=${_glmark2} ${_glmark2_data}
       etc/manifests/glmark2.manifest=${PROJECT_SOURCE_DIR}/ports/glmark2/glmark2.manifest)
 endif()
+# vkmark (vkmark(8), cmake/Vkmark.cmake), where tier 1, the Vulkan layer and its port are built: the program, its data at
+# lib/vkmark and its manifest, in the board's desktop image, which runs it as an app.
+get_property(_vkmark GLOBAL PROPERTY CROI_TIER1_VKMARK)
+set(_vkmark_entries)
+if(_vkmark)
+  get_property(_vkmark_data GLOBAL PROPERTY CROI_TIER1_VKMARK_DATA)
+  set(_vkmark_entries bin/vkmark=${_vkmark} ${_vkmark_data}
+      etc/manifests/vkmark.manifest=${PROJECT_SOURCE_DIR}/ports/vkmark/vkmark.manifest)
+endif()
 set(CROI_BOOTFS_IMAGE ${CMAKE_BINARY_DIR}/bootfs.img PARENT_SCOPE)
 set(_bootfs_entries bin/m2=${_m2} bin/sys-test=${_sys_test} bin/dl-test=${_dl_test}
           lib/libdltest.so=${_dl_c} lib/libdlswift.so=${_dl_swift} bin/link-test=${_link_test} bin/link-stale=${_link_stale}
@@ -1164,7 +1173,7 @@ croi_bootfs(bootfs-board-desktop "Building bootfs for the board's desktop"
   bin/crash-test=${_crash_test}
   bin/compose-test=${_compose_test}
   etc/manifests/compose-test.manifest=${PROJECT_SOURCE_DIR}/services/radharc/tests/gpu/compose-test-desktop.manifest
-  ${_vulkan_present_board_entries} ${_glmark2_entries})
+  ${_vulkan_present_board_entries} ${_glmark2_entries} ${_vkmark_entries})
 add_dependencies(bootfs-board-desktop cpu-keys)
 # glmark2 off-screen on the board (glmark2(8)): the board image with the port, run until glmark2 ends.
 if(_glmark2_entries)
@@ -1173,6 +1182,18 @@ if(_glmark2_entries)
   croi_bootfs(bootfs-board-glmark2 "Building bootfs for glmark2 on the board"
     ${_board_entries} lib/factotum/keys=${PROJECT_SOURCE_DIR}/services/factotum/keys ${_glmark2_offscreen_entries}
     etc/manifests/glmark2-offscreen.manifest=${PROJECT_SOURCE_DIR}/ports/glmark2/glmark2-offscreen.manifest)
+endif()
+# vkmark on the board (vkmark(8)): the board image with the port, run off-screen until vkmark ends; and Radharc on the
+# display with vkmark in a window of it, until vkmark ends.
+if(_vkmark_entries)
+  set(_vkmark_run_entries ${_vkmark_entries})
+  list(FILTER _vkmark_run_entries EXCLUDE REGEX "^etc/manifests/vkmark\\.manifest=")
+  croi_bootfs(bootfs-board-vkmark "Building bootfs for vkmark on the board"
+    ${_board_entries} lib/factotum/keys=${PROJECT_SOURCE_DIR}/services/factotum/keys ${_vkmark_run_entries}
+    etc/manifests/vkmark-offscreen.manifest=${PROJECT_SOURCE_DIR}/ports/vkmark/vkmark-offscreen.manifest)
+  croi_bootfs(bootfs-board-vkmark-window "Building bootfs for vkmark in a window on the board"
+    ${_board_entries} lib/factotum/keys=${PROJECT_SOURCE_DIR}/services/factotum/keys ${_radharc_entries}
+    ${_vkmark_run_entries} etc/manifests/vkmark-window.manifest=${PROJECT_SOURCE_DIR}/ports/vkmark/vkmark-window.manifest)
 endif()
 
 # Atomics count with one AMO, never a checked add's LR/SC loop
