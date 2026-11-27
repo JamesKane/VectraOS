@@ -51,10 +51,12 @@ import Testing
     let table = try #require(record.crc)
     #expect(table.rowStride == 64 && table.region.size >= 64 * 4)
     let before = record.crcCounter
+    // A kernel's write (a copy from a buffer: a whole clear of such a target is a pass, which writes the table itself).
+    let source = try gpu.allocate(.upload, bytes: 64 * 64 * 4)
     var list = GPUCommandList()
-    list.clear(target, color: .float(1, 0, 0, 1))
+    list.copy(source, to: target, regions: [BufferImageRegion(imageExtent: Extent3D(width: 64, height: 64))])
     try gpu.run(list, signal: 1)
-    #expect(record.crcCounter == before &+ 1, "a clear kernel wrote it")
+    #expect(record.crcCounter == before &+ 1, "a copy kernel wrote it")
     let storage = try gpu.makeImage(ImageDescriptor(format: .rgba8, width: 64, height: 64, usage: .renderTarget | .storage))
     #expect(gpu.images[storage.handle]!.crc == nil, "a storage image's bytes change behind any table")
   }

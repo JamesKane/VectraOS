@@ -1,0 +1,9 @@
+# vkmark on the board's desktop (vkmark(8)): an app of the desktop image where tier 1 and the port are built, started by
+# `echo start vkmark >/svc/launcher/ctl` once Radharc is up: its default run in a window of 800x600 (FIFO, paced by
+# Radharc), its data from bootfs's lib/vkmark.
+service vkmark
+program vkmark
+app vkmark
+use windows
+mount /dev devmgr/dev
+mount /lib/vkmark bootfs/lib/vkmark

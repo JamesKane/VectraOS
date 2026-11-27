@@ -141,6 +141,16 @@ final class Presenter {
     }
   }
 
+  /// An application with a headless surface (VK_EXT_headless_surface), and no window system at all.
+  init(headless gpu: FakeGPU) {
+    CoreDriver.windowSystem = nil
+    vk = VK(gpu: gpu)
+    var info = VkHeadlessSurfaceCreateInfoEXT()
+    info.sType = VK_STRUCTURE_TYPE_HEADLESS_SURFACE_CREATE_INFO_EXT
+    let r = vk.fn("vkCreateHeadlessSurfaceEXT", PFN_vkCreateHeadlessSurfaceEXT.self)(vk.instance, &info, nil, &surface)
+    precondition(r == VK_SUCCESS, "vkCreateHeadlessSurfaceEXT \(r)")
+  }
+
   deinit { CoreDriver.windowSystem = nil }
 
   func swapchain(format: VkFormat = VK_FORMAT_B8G8R8A8_SRGB, count: UInt32 = 3, extent: (UInt32, UInt32)? = nil,
@@ -235,27 +245,30 @@ extension VulkanCoreDriverTests {
     #expect(supported == 1)
   }
 
-  @Test func theExtensionsAreThereOnlyWhereThereIsAWindowSystem() throws {
+  @Test func theWindowSurfaceIsThereOnlyWhereThereIsAWindowSystem() throws {
+    func names(_ vk: VK) -> (instance: [String], device: [String]) {
+      var n: UInt32 = 0
+      _ = vk.fn("vkEnumerateInstanceExtensionProperties", PFN_vkEnumerateInstanceExtensionProperties.self)(nil, &n, nil)
+      var props = [VkExtensionProperties](repeating: VkExtensionProperties(), count: Int(n))
+      _ = vk.fn("vkEnumerateInstanceExtensionProperties", PFN_vkEnumerateInstanceExtensionProperties.self)(nil, &n, &props)
+      var d: UInt32 = 0
+      _ = vk.fn("vkEnumerateDeviceExtensionProperties", PFN_vkEnumerateDeviceExtensionProperties.self)(vk.physical, nil, &d, nil)
+      var dev = [VkExtensionProperties](repeating: VkExtensionProperties(), count: Int(d))
+      _ = vk.fn("vkEnumerateDeviceExtensionProperties", PFN_vkEnumerateDeviceExtensionProperties.self)(vk.physical, nil, &d, &dev)
+      let name = { (e: VkExtensionProperties) in withUnsafeBytes(of: e.extensionName) { String(decoding: $0.prefix { $0 != 0 }, as: UTF8.self) } }
+      return (props.map(name), dev.map(name))
+    }
     do {
       let p = Presenter()
-      var n: UInt32 = 0
-      _ = p.vk.fn("vkEnumerateInstanceExtensionProperties", PFN_vkEnumerateInstanceExtensionProperties.self)(nil, &n, nil)
-      #expect(n == 2)
-      var props = [VkExtensionProperties](repeating: VkExtensionProperties(), count: Int(n))
-      _ = p.vk.fn("vkEnumerateInstanceExtensionProperties", PFN_vkEnumerateInstanceExtensionProperties.self)(nil, &n, &props)
-      let names = props.map { e in withUnsafeBytes(of: e.extensionName) { String(decoding: $0.prefix { $0 != 0 }, as: UTF8.self) } }
-      #expect(names == ["VK_KHR_surface", "VK_VECTRA_window_surface"])
-      var d: UInt32 = 0
-      _ = p.vk.fn("vkEnumerateDeviceExtensionProperties", PFN_vkEnumerateDeviceExtensionProperties.self)(p.vk.physical, nil, &d, nil)
-      var dev = [VkExtensionProperties](repeating: VkExtensionProperties(), count: Int(d))
-      _ = p.vk.fn("vkEnumerateDeviceExtensionProperties", PFN_vkEnumerateDeviceExtensionProperties.self)(p.vk.physical, nil, &d, &dev)
-      let devNames = dev.map { e in withUnsafeBytes(of: e.extensionName) { String(decoding: $0.prefix { $0 != 0 }, as: UTF8.self) } }
-      #expect(devNames.contains("VK_KHR_swapchain"))
+      let (instance, device) = names(p.vk)
+      #expect(instance == ["VK_KHR_surface", "VK_VECTRA_window_surface", "VK_EXT_headless_surface"])
+      #expect(device.contains("VK_KHR_swapchain"))
     }
+    // Without one, a surface is headless only, and swapchains are still there for it.
     let vk = VK()
-    var n: UInt32 = 7
-    _ = vk.fn("vkEnumerateInstanceExtensionProperties", PFN_vkEnumerateInstanceExtensionProperties.self)(nil, &n, nil)
-    #expect(n == 0)
+    let (instance, device) = names(vk)
+    #expect(instance == ["VK_KHR_surface", "VK_EXT_headless_surface"])
+    #expect(device.contains("VK_KHR_swapchain"))
     var surface: VkSurfaceKHR?
     var info = VkVectraWindowSurfaceCreateInfo()
     info.sType = VkStructureType(rawValue: 1_899_999_000)
@@ -555,6 +568,84 @@ extension VulkanCoreDriverTests {
     let (_, i) = p.acquire(s, timeout: UInt64.max)
     #expect(p.present(s, i) == VK_SUCCESS)
     #expect(p.window.acquires.isEmpty && p.window.drawnAts.isEmpty && gpu.waited == gpu.submitted.map { $0.signal })
+    p.destroy(s)
+  }
+
+  // MARK: Headless surfaces (VK_EXT_headless_surface)
+
+  @Test func aHeadlessSurfaceHasNoSizeAndEveryPresentMode() throws {
+    let p = Presenter(headless: FakeGPU())
+    var caps = VkSurfaceCapabilitiesKHR()
+    #expect(p.vk.fn("vkGetPhysicalDeviceSurfaceCapabilitiesKHR", PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR.self)(p.vk.physical, p.surface, &caps) == VK_SUCCESS)
+    // The special value: the swapchain's extent is the surface's size.
+    #expect(caps.currentExtent.width == UInt32.max && caps.currentExtent.height == UInt32.max)
+    #expect(caps.minImageCount == 2 && caps.maxImageCount == 3)
+    var n: UInt32 = 0
+    #expect(p.vk.fn("vkGetPhysicalDeviceSurfacePresentModesKHR", PFN_vkGetPhysicalDeviceSurfacePresentModesKHR.self)(p.vk.physical, p.surface, &n, nil) == VK_SUCCESS)
+    var modes = [VkPresentModeKHR](repeating: VK_PRESENT_MODE_FIFO_RELAXED_KHR, count: Int(n))
+    #expect(p.vk.fn("vkGetPhysicalDeviceSurfacePresentModesKHR", PFN_vkGetPhysicalDeviceSurfacePresentModesKHR.self)(p.vk.physical, p.surface, &n, &modes) == VK_SUCCESS)
+    #expect(modes == [VK_PRESENT_MODE_FIFO_KHR, VK_PRESENT_MODE_MAILBOX_KHR, VK_PRESENT_MODE_IMMEDIATE_KHR])
+    // It has no window, so no events, and going fullscreen is nothing.
+    var count: UInt32 = 4
+    var events = [VkVectraWindowEventVECTRA](repeating: VkVectraWindowEventVECTRA(), count: 4)
+    #expect(p.vk.fn("vkPollVectraWindowEventsVECTRA", PFN_vkPollVectraWindowEventsVECTRA.self)(p.vk.instance, p.surface, &count, &events) == VK_SUCCESS)
+    #expect(count == 0)
+    p.vk.fn("vkDestroySurfaceKHR", PFN_vkDestroySurfaceKHR.self)(p.vk.instance, p.surface, nil)
+  }
+
+  @Test func aHeadlessSwapchainIsPlainImagesOfAnySizeSharedWithNoOne() throws {
+    let p = Presenter(headless: FakeGPU())
+    let (r, s) = p.swapchain(count: 3, extent: (800, 600), mode: VK_PRESENT_MODE_MAILBOX_KHR)
+    #expect(r == VK_SUCCESS)
+    #expect(p.images(s).count == 3)
+    // Ordinary images of the size asked for: nothing exported, no staging memory.
+    #expect(p.vk.gpu.images.count == 3 && p.vk.gpu.images.allSatisfy { $0.width == 800 && $0.height == 600 })
+    #expect(p.vk.gpu.exportedHandles.isEmpty && p.vk.gpu.allocations.filter { $0.size == 800 * 600 * 4 }.isEmpty)
+    #expect(p.swapchain(extent: (0, 600)).0 == VK_ERROR_INITIALIZATION_FAILED)
+    p.destroy(s)
+    #expect(p.vk.gpu.destroyedImages.count == 3)
+  }
+
+  @Test func aHeadlessImageIsFreeOnceTheGPUIsPastItsPresent() throws {
+    let gpu = FakeGPU()
+    gpu.autoComplete = false
+    let p = Presenter(headless: gpu)
+    let (_, s) = p.swapchain(count: 3, extent: (64, 64))
+    // Three acquires give the three images, at once and signalled: nothing has drawn into them.
+    var held: [UInt32] = []
+    for _ in 0..<3 {
+      let fence = p.vk.fence()
+      let (r, i) = p.acquire(s, fence: fence)
+      #expect(r == VK_SUCCESS)
+      #expect(p.vk.fn("vkGetFenceStatus", PFN_vkGetFenceStatus.self)(p.vk.device, fence) == VK_SUCCESS)
+      held.append(i)
+    }
+    #expect(Set(held).count == 3)
+    // All three held: there is none to give.
+    #expect(p.acquire(s).0 == VK_NOT_READY)
+    // The application draws into the first and presents it after its semaphore; the GPU hasn't finished.
+    let drawn = p.vk.semaphore()
+    #expect(p.vk.submit([], signal: [drawn]) == VK_SUCCESS)
+    let value = gpu.submitted.last!.signal
+    #expect(p.present(s, held[0], wait: [drawn]) == VK_SUCCESS)
+    // Nothing waited for the GPU, and nothing was copied.
+    #expect(gpu.waited.isEmpty && gpu.submitted.count == 1)
+    // The next acquire gives it back, its fence signalled when the GPU is past the frame and its semaphore at that value.
+    let fence = p.vk.fence()
+    let sem = p.vk.semaphore()
+    let (r, i) = p.acquire(s, semaphore: sem, fence: fence)
+    #expect(r == VK_SUCCESS && i == held[0])
+    #expect(p.vk.fn("vkGetFenceStatus", PFN_vkGetFenceStatus.self)(p.vk.device, fence) == VK_NOT_READY)
+    gpu.finish(value)
+    #expect(p.vk.fn("vkGetFenceStatus", PFN_vkGetFenceStatus.self)(p.vk.device, fence) == VK_SUCCESS)
+    // The work that draws the next frame into it waits for that value on the GPU.
+    #expect(p.vk.submit([], wait: [sem]) == VK_SUCCESS)
+    #expect(gpu.submitted.last!.wait >= value)
+    // Presenting the others with no semaphore marks them drawn after everything submitted so far; the oldest comes next.
+    #expect(p.present(s, held[1]) == VK_SUCCESS)
+    #expect(p.present(s, held[2]) == VK_SUCCESS)
+    #expect(p.present(s, i) == VK_SUCCESS)
+    #expect(p.acquire(s).1 == held[1])
     p.destroy(s)
   }
 }

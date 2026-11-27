@@ -9,8 +9,16 @@
 //   vkgen --loader DISPATCH.swift vk.xml        (our loader's tables and trampolines)
 //   vkgen --venus OUTPUT.h PROTOCOL.swift ENTRIES.swift vk.xml VK_EXT_command_serialization.xml VK_MESA_venus_protocol.xml
 
+#if canImport(FoundationEssentials)
 import FoundationEssentials
+#else
+import Foundation
+#endif
+#if canImport(Glibc)
 import Glibc
+#else
+import Darwin
+#endif
 import VenusGen
 import VulkanGen
 

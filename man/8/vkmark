@@ -1,0 +1,66 @@
+page vkmark 8
+summary the Vulkan benchmark vkmark, ported: its scenes' frames a second over our Vulkan layer, in a window of Radharc's or headless
+names vkmark vkmark-offscreen vkmark-window
+src ports/vkmark/README.md ports/vkmark/fetch.sh ports/vkmark/apply-patches.sh ports/vkmark/patches ports/vkmark/vkmark.manifest ports/vkmark/vkmark-offscreen.manifest ports/vkmark/vkmark-window.manifest cmake/Vkmark.cmake
+keys vulkan benchmark score frames fps vkmark port gpu mali swapchain headless surface window radharc tier 1
+
+# SYNOPSIS
+
+```text
+echo start vkmark >/svc/launcher/ctl
+vkmark [--winsys headless|vectraos] [-s WxH] [--fullscreen]
+       [-p fifo|mailbox|immediate] [-b BENCHMARK]...
+       [--run-forever] [-l] [-d]
+```
+
+# DESCRIPTION
+
+vkmark is vkmark 2025.01, the Vulkan benchmark, as a program of tier 1 in C++: vkmark's own source, fetched at its release and patched (ports/vkmark), compiled against Khronos's Vulkan-Headers (its `vulkan.hpp`) and glm, which are headers only.
+Its options are vkmark's (`--help` lists them).
+With none it runs its default benchmarks, each scene for ten seconds: vertex (device-local and not), texture (no anisotropy and 16), shading (gouraud, blinn-phong-inf, phong, cel), effect2d (edge and blur), desktop, cube and clear.
+It prints each one's frames a second and frame time, and at the end `vkmark Score:` and the score, their mean.
+
+It reaches Vulkan as a program of ours does, through `vkGetInstanceProcAddr` and nothing else: `vulkan.hpp`'s dynamic dispatcher asks for every command by name, the instance's and the device's once they exist.
+It is linked against the Vulkan layer's registry (vulkancore(2)), so its device is the core's, the Mali backend on the Orange Pi 6 Plus.
+
+Its window systems are compiled in, not loaded as plugins.
+`--winsys vectraos` is ours: a window of Radharc's (radharc(4)) of the size `-s` gives, in points (800 by 600 unless it says otherwise), titled `vkmark`, as a surface through `VK_VECTRA_window_surface`, presented to through a swapchain (vulkansurface(2)).
+The manifest must say `use windows`.
+`--fullscreen` asks for the screen and makes the swapchain at the size the window then has.
+Closing the window or pressing Escape ends the run.
+Radharc presents FIFO and nothing else, so a run that asks for mailbox (vkmark's default) gets FIFO, and its frames are paced by the display's vblank.
+`--winsys headless` is vkmark's own, over `VK_EXT_headless_surface`: a swapchain of images of the size `-s` gives, drawn and shown nowhere, which needs no compositor; each image is acquired again once the GPU is past the frame last presented from it, so a scene's frames are as fast as the GPU and the CPU make them.
+With neither, it takes ours where the namespace has `/svc/windows`, and headless otherwise.
+
+Its models, shaders and textures are `/lib/vkmark` (vkmark's `--data-dir`), bootfs's `lib/vkmark` mounted there by its manifest.
+The shaders are the SPIR-V vkmark ships beside their GLSL, used as they are: nothing compiles a shader at build time.
+The textures are read by the stb_image vkmark carries.
+The models are read by a loader of the port's own (patch 0001), not assimp: the scenes draw only 3DS (cube, cat and horse) and PLY (kmscube), and vkmark's tests give OBJ, so the loader reads those three into the triangles assimp's steps would have made (polygons as fans, a 3DS mesh in its local space with normals smoothed by its smoothing groups, a flat normal for each triangle where a model has none).
+assimp is a large library for many formats, and a port of it would be far bigger than what the scenes read.
+ports/vkmark/README.md says which releases are fetched, and why each dependency is carried the way it is.
+
+On the Orange Pi 6 Plus it is an app of the desktop image, started by the launcher (`echo start vkmark >/svc/launcher/ctl`) once Radharc is up.
+Two images run it on the board until it ends, then reboot, both built on request: `esp-board-vkmark`, the board image's drivers with no desktop, runs it headless at 800 by 600 (`vkmark-offscreen.manifest`); `esp-board-vkmark-window` adds Radharc on the display and runs it in a window of 800 by 600 (`vkmark-window.manifest`).
+docs/boards/orangepi-6-plus/vk.md has what they measured.
+
+# FILES
+
+: `/lib/vkmark`
+  Its data: `models`, `shaders` (SPIR-V) and `textures`.
+
+# SEE ALSO
+
+vulkansurface(2), vulkancore(2), radharc(4), launcher(8), glmark2(8), vulkan-present(8)
+
+# DIAGNOSTICS
+
+A failure is vkmark's message, `Error:` and what failed, and the exit code 1: for a window of Radharc's where there is no compositor, `VectraOS window system: no window of Radharc's`.
+
+# BUGS
+
+There is no MAILBOX or IMMEDIATE in a window: Radharc's protocol takes one present at a time, so a windowed run measures at most the display's rate.
+On a headless surface a finite acquire timeout is not kept: an acquire always returns at once, with a fence and semaphore that the GPU signals.
+A window doesn't follow a resize: vkmark makes its swapchain once.
+On the Orange Pi 6 Plus a scene that samples a texture, run for long enough (tens of seconds), now and then stops the GPU: the group's progress timer expires, the GPU is reset, and vkmark exits with `vulkan-core: failed: a pass ended its group` (docs/boards/orangepi-6-plus/vk.md).
+In a window there, every scene runs at 12 to 15 frames a second, well below the display's 60.
+There are no signals, so nothing but the end of its benchmarks, Escape or closing the window stops a run (`--run-forever` runs until then).

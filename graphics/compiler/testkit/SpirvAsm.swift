@@ -23,18 +23,19 @@ private let opTable: [String: (code: UInt32, kind: Character)] = {
     OpExtInstImport 11 R OpExtInst 12 T OpMemoryModel 14 - OpEntryPoint 15 - OpExecutionMode 16 -
     OpCapability 17 - OpTypeVoid 19 R OpTypeBool 20 R OpTypeInt 21 R OpTypeFloat 22 R OpTypeVector 23 R
     OpTypeMatrix 24 R OpTypeImage 25 R OpTypeSampler 26 R OpTypeSampledImage 27 R OpTypeArray 28 R
-    OpTypeRuntimeArray 29 R OpTypeStruct 30 R OpTypePointer 32 R OpTypeFunction 33 R OpTypeForwardPointer 39 -
+    OpTypeRuntimeArray 29 R OpTypeStruct 30 R OpTypeOpaque 31 R OpTypePointer 32 R OpTypeFunction 33 R OpTypeForwardPointer 39 -
     OpConstantTrue 41 T OpConstantFalse 42 T OpConstant 43 T OpConstantComposite 44 T OpConstantNull 46 T
     OpSpecConstantTrue 48 T OpSpecConstantFalse 49 T OpSpecConstant 50 T OpSpecConstantComposite 51 T
     OpSpecConstantOp 52 T OpFunction 54 T OpFunctionParameter 55 T OpFunctionEnd 56 - OpFunctionCall 57 T
     OpVariable 59 T OpLoad 61 T OpStore 62 - OpAccessChain 65 T OpInBoundsAccessChain 66 T
     OpPtrAccessChain 67 T OpArrayLength 68 T OpDecorate 71 - OpMemberDecorate 72 -
     OpVectorExtractDynamic 77 T OpVectorInsertDynamic 78 T OpVectorShuffle 79 T OpCompositeConstruct 80 T
-    OpCompositeExtract 81 T OpCompositeInsert 82 T OpCopyObject 83 T OpConvertFToU 109 T OpConvertFToS 110 T
+    OpCompositeExtract 81 T OpCompositeInsert 82 T OpCopyObject 83 T OpTranspose 84 T OpConvertFToU 109 T OpConvertFToS 110 T
     OpConvertSToF 111 T OpConvertUToF 112 T OpUConvert 113 T OpSConvert 114 T OpFConvert 115 T
     OpConvertPtrToU 117 T OpConvertUToPtr 120 T OpBitcast 124 T OpSNegate 126 T OpFNegate 127 T OpIAdd 128 T
     OpFAdd 129 T OpISub 130 T OpFSub 131 T OpIMul 132 T OpFMul 133 T OpUDiv 134 T OpSDiv 135 T OpFDiv 136 T
-    OpUMod 137 T OpSRem 138 T OpSMod 139 T OpFRem 140 T OpFMod 141 T OpVectorTimesScalar 142 T OpDot 148 T
+    OpUMod 137 T OpSRem 138 T OpSMod 139 T OpFRem 140 T OpFMod 141 T OpVectorTimesScalar 142 T OpMatrixTimesScalar 143 T OpVectorTimesMatrix 144 T
+    OpMatrixTimesVector 145 T OpMatrixTimesMatrix 146 T OpOuterProduct 147 T OpDot 148 T
     OpAny 154 T OpAll 155 T OpIsNan 156 T OpIsInf 157 T OpLogicalEqual 164 T OpLogicalNotEqual 165 T
     OpLogicalOr 166 T OpLogicalAnd 167 T OpLogicalNot 168 T OpSelect 169 T OpIEqual 170 T OpINotEqual 171 T
     OpUGreaterThan 172 T OpSGreaterThan 173 T OpUGreaterThanEqual 174 T OpSGreaterThanEqual 175 T
@@ -97,7 +98,7 @@ private let enums: [String: UInt32] = [
   "None": 0, "Inline": 1, "DontInline": 2, "Pure": 4, "Const": 8, "Flatten": 1, "DontFlatten": 2,
   "Unroll": 1, "DontUnroll": 2,
   // Decorations
-  "SpecId": 1, "Block": 2, "BufferBlock": 3, "ArrayStride": 6, "BuiltIn": 11, "Flat": 14, "NoPerspective": 13, "Centroid": 16, "Restrict": 19,
+  "SpecId": 1, "Block": 2, "BufferBlock": 3, "RowMajor": 4, "ColMajor": 5, "ArrayStride": 6, "MatrixStride": 7, "BuiltIn": 11, "Flat": 14, "NoPerspective": 13, "Centroid": 16, "Restrict": 19,
   "Aliased": 20, "Volatile": 21, "Coherent": 23, "NonWritable": 24, "NonReadable": 25, "Location": 30, "Index": 32,
   "Binding": 33, "DescriptorSet": 34, "Offset": 35, "RelaxedPrecision": 0,
   // Builtins

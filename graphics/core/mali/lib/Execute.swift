@@ -240,7 +240,7 @@ extension MaliDevice {
     var zsView: ImageView?
     var layers = 1
     var viewMask: UInt32 = 0
-    for command in list.commands {
+    for (command, drawnClear) in drawnClears(list.commands) {
       switch command {
       case .beginRendering(let info):
         guard info.colors.count >= 1 && info.colors.count <= 8 else { throw .unsupported("a pass with \(info.colors.count) attachments") }
@@ -313,7 +313,7 @@ extension MaliDevice {
         // clear kernel writes its headers, valhall 05 section 5.11.10.1).
         let afbc = record.layout.kind == .afbc || zs?.image.planes.contains(where: { $0.layout.kind == .afbc }) == true
           || extraTargets.contains(where: { $0.image.layout.kind == .afbc })
-        if draws.isEmpty && afbc {
+        if draws.isEmpty && (afbc || drawnClear) {
           var cleared: [ClearAttachment] = []
           if !loads { cleared.append(.color(index: 0, .float(clear[0], clear[1], clear[2], clear[3]))) }
           for (i, e) in extraTargets.enumerated() { cleared.append(.color(index: i + 1, .float(e.clear[0], e.clear[1], e.clear[2], e.clear[3]))) }
@@ -564,6 +564,32 @@ extension MaliDevice {
       }
     }
     return steps
+  }
+
+  /// The list's commands, each with whether its pass is one this backend made from a whole-image clear: a colour clear of a
+  /// render target of one level and one layer is a pass that draws the clear (the fragment work writes it tile by tile, as
+  /// an AFBC attachment's is), not the `copy` kernel, which moves a texel a thread: on the board an 800 x 600 clear by the
+  /// kernel took 8.5 ms (vkmark's clear scene).
+  func drawnClears(_ commands: [Command]) -> [(Command, Bool)] {
+    var out: [(Command, Bool)] = []
+    out.reserveCapacity(commands.count)
+    for c in commands {
+      guard case .clearColorImage(let image, .float(let r, let g, let b, let a), let ranges) = c, let record = images[image.handle] else {
+        out.append((c, false))
+        continue
+      }
+      let d = record.descriptor
+      let whole = ranges.allSatisfy { $0.aspects.contains(.color) && $0.baseMip == 0 && $0.baseLayer == 0 }
+      guard whole, d.usage.contains(.renderTarget), d.mipLevels == 1, d.layers == 1, d.samples == 1, d.dimension == .d2,
+        d.format == .rgba8 || d.format == .bgra8 || d.format == .bgra8srgb
+      else {
+        out.append((c, false))
+        continue
+      }
+      out.append((.beginRendering(RenderingInfo(colors: [Attachment(image: image, load: .clear(r, g, b, a), store: .store)])), true))
+      out.append((.endRendering, true))
+    }
+    return out
   }
 
   /// The region of a plain copy between a buffer and an image: tightly packed texels of the first level and layer, every slice of a volume,

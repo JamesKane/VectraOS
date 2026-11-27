@@ -91,6 +91,7 @@ let coreEntries: [(name: StaticString, function: PFN_vkVoidFunction)] = [
   ("vkCreateFence", unsafe unsafeBitCast(core_vkCreateFence as PFN_vkCreateFence, to: PFN_vkVoidFunction.self)),
   ("vkCreateFramebuffer", unsafe unsafeBitCast(core_vkCreateFramebuffer as PFN_vkCreateFramebuffer, to: PFN_vkVoidFunction.self)),
   ("vkCreateGraphicsPipelines", unsafe unsafeBitCast(core_vkCreateGraphicsPipelines as PFN_vkCreateGraphicsPipelines, to: PFN_vkVoidFunction.self)),
+  ("vkCreateHeadlessSurfaceEXT", unsafe unsafeBitCast(core_vkCreateHeadlessSurfaceEXT as PFN_vkCreateHeadlessSurfaceEXT, to: PFN_vkVoidFunction.self)),
   ("vkCreateImage", unsafe unsafeBitCast(core_vkCreateImage as PFN_vkCreateImage, to: PFN_vkVoidFunction.self)),
   ("vkCreateImageView", unsafe unsafeBitCast(core_vkCreateImageView as PFN_vkCreateImageView, to: PFN_vkVoidFunction.self)),
   ("vkCreateInstance", unsafe unsafeBitCast(core_vkCreateInstance as PFN_vkCreateInstance, to: PFN_vkVoidFunction.self)),

@@ -25,4 +25,6 @@ public let loinnirSelection = VulkanSelection(
     // surface itself (VK_VECTRA_window_surface) is ours, not Khronos's: vulkan_vectra.h.
     "VK_KHR_surface",
     "VK_KHR_swapchain",
+    // A surface with no window (vkmark(8)'s off-screen run): its swapchain's images are drawn and never shown.
+    "VK_EXT_headless_surface",
   ])

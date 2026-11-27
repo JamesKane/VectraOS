@@ -120,9 +120,9 @@ func refusal(_ text: String, lower: Bool = false) -> String {
       OpMemoryModel Logical GLSL450
       %f = OpTypeFloat 32
       %v = OpTypeVector %f 4
-      %i = OpTypeMatrix %v 4
+      %i = OpTypeOpaque "thing"
       """)
-    #expect(img.contains("OpTypeMatrix"), "\(img)")
+    #expect(img.contains("OpTypeOpaque"), "\(img)")
     #expect(img.contains("not supported"), "\(img)")
     let mem = refusal(
       """
@@ -179,11 +179,11 @@ func refusal(_ text: String, lower: Bool = false) -> String {
       OpMemoryModel Logical GLSL450
       %f = OpTypeFloat 32
       %v = OpTypeVector %f 4
-      %i = OpTypeMatrix %v 4
+      %i = OpTypeOpaque "thing"
       %s = OpTypeSampler
       """)
     let list = SPIRVModule.unsupported(words: w)
-    #expect(list == ["capability Tessellation", "OpTypeMatrix"], "\(list)")
+    #expect(list == ["capability Tessellation", "OpTypeOpaque"], "\(list)")
   }
 }
 

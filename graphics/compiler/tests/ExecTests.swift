@@ -89,6 +89,36 @@ import Testing
     }
   }
 
+  @Test func matricesAreTheirColumns() throws {
+    // Small whole numbers, so that every product and sum is exact however it is fused.
+    let n = 16
+    let mcols: [[Float]] = (0..<4).map { c in (0..<4).map { r in Float((c * 4 + r) % 5) - 2 } }
+    let input: [[Float]] = (0..<n).map { i in (0..<4).map { Float(($0 * 3 + i) % 7) - 3 } }
+    func mulMV(_ cs: [[Float]], _ v: [Float]) -> [Float] { (0..<4).map { r in (0..<4).reduce(Float(0)) { $0 + cs[$1][r] * v[$1] } } }
+    let mm: [[Float]] = mcols.map { mulMV(mcols, $0) }
+    let mt: [[Float]] = (0..<4).map { r in (0..<4).map { c in mcols[c][r] } }
+    for (name, ir) in try variants(Corpus.matrix) {
+      let mc = Machine(ir)
+      mc.setBuffer(0, 0, bytes([Float](repeating: 9, count: 4) + mcols.flatMap { $0 }))
+      mc.setBuffer(0, 1, bytes(input.flatMap { $0 }))
+      mc.setBuffer(0, 2, [UInt8](repeating: 0, count: n * 7 * 16))
+      try mc.dispatch(groups: (1, 1, 1))
+      let got = floats(mc.storage[2]!)
+      var want: [Float] = []
+      for i in 0..<n {
+        let a = input[i]
+        want += mulMV(mcols, a)
+        want += (0..<4).map { c in (0..<4).reduce(Float(0)) { $0 + a[$1] * mcols[c][$1] } }
+        want += mulMV(mm, a)
+        want += mulMV(mt, a)
+        want += mcols[i % 4].map { $0 * 2 }
+        want += a.map { $0 * a[1] }
+        want += mulMV(mm, a)
+      }
+      #expect(got == want, "\(name)")
+    }
+  }
+
   @Test func everyExtendedInstructionTheLoweringKnows() throws {
     let n = 64
     let x = (0..<n).map { Float($0 + 1) / 6 }

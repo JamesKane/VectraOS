@@ -375,8 +375,9 @@ private struct Parser {
         kind[id] = Kind.type
         m.types[id] = .pointer(storage: i.operands[1], pointee: 0)
         forward.append(i.operands[0])
-      case Op.typeVoid, Op.typeBool, Op.typeInt, Op.typeFloat, Op.typeVector, Op.typeArray, Op.typeRuntimeArray,
-        Op.typeStruct, Op.typePointer, Op.typeFunction, Op.typeImage, Op.typeSampler, Op.typeSampledImage:
+      case Op.typeVoid, Op.typeBool, Op.typeInt, Op.typeFloat, Op.typeVector, Op.typeMatrix, Op.typeArray,
+        Op.typeRuntimeArray, Op.typeStruct, Op.typePointer, Op.typeFunction, Op.typeImage, Op.typeSampler,
+        Op.typeSampledImage:
         try parseType(i)
       case Op.constantTrue, Op.constantFalse, Op.constant, Op.constantComposite, Op.constantNull,
         Op.specConstantTrue, Op.specConstantFalse, Op.specConstant, Op.specConstantComposite, Op.specConstantOp,
@@ -464,6 +465,13 @@ private struct Parser {
       }
       guard o[1] >= 2 && o[1] <= 4 else { throw err(i, "the component count must be 2, 3 or 4") }
       m.types[id] = .vector(element: o[0], count: Int(o[1]))
+    case Op.typeMatrix:
+      guard o.count == 2 else { throw err(i, "needs a column type and a column count") }
+      guard case .vector(let e, _) = try needType(i, o[0], "column type"), case .float? = m.type(e) else {
+        throw err(i, "the column type must be a vector of floats")
+      }
+      guard o[1] >= 2 && o[1] <= 4 else { throw err(i, "the column count must be 2, 3 or 4") }
+      m.types[id] = .matrix(column: o[0], columns: Int(o[1]))
     case Op.typeArray:
       guard o.count == 2 else { throw err(i, "needs an element type and a length") }
       _ = try needType(i, o[0], "element type")

@@ -1,0 +1,835 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: VectraOS port <port@vectraos.invalid>
+Date: Fri, 27 Nov 2026 04:53:10 -0600
+Subject: [VectraOS] Read models without assimp
+
+A small loader for the formats vkmark's scenes and tests use: 3DS (cube,
+cat, horse), PLY (kmscube; ASCII and binary) and OBJ (the tests' strings).
+Each gives triangles as assimp's Triangulate, SortByPType, GenNormals and
+JoinIdenticalVertices steps left them for to_mesh: polygons as fans from
+their first corner, lines and points dropped, a 3DS mesh in its local space
+(the inverse of its mesh matrix, x negated where it mirrors) with normals
+summed over the triangles that share a corner's position and a smoothing
+group, and a flat normal for each triangle of a PLY or OBJ model without
+its own. tests/model_test.cpp passes unchanged.
+---
+ meson.build     |   1 -
+ src/meson.build |   2 +-
+ src/model.cpp   | 694 ++++++++++++++++++++++++++++++++++++++++++++----
+ src/model.h     |  23 +-
+ 4 files changed, 658 insertions(+), 62 deletions(-)
+
+diff --git a/meson.build b/meson.build
+index e7bdb18..dff9856 100644
+--- a/meson.build
++++ b/meson.build
+@@ -22,7 +22,6 @@ glm_dep = dependency('glm', required: false)
+ if not glm_dep.found() and not cpp.has_header('glm/glm.hpp')
+     error('Failed to find glm')
+ endif
+-assimp_dep = dependency('assimp')
+ 
+ xcb_dep = dependency('xcb', required : get_option('xcb') == 'true')
+ xcb_icccm_dep = dependency('xcb-icccm', required : get_option('xcb') == 'true')
+diff --git a/src/meson.build b/src/meson.build
+index a2da205..99d607b 100644
+--- a/src/meson.build
++++ b/src/meson.build
+@@ -61,7 +61,7 @@ scene_sources = files(
+ vkmark_core = static_library(
+     'vkmark-core',
+     core_sources,
+-    dependencies : [vulkan_dep, dl_dep, assimp_dep]
++    dependencies : [vulkan_dep, dl_dep, glm_dep]
+     )
+ 
+ vkmark = executable(
+diff --git a/src/model.cpp b/src/model.cpp
+index 2a9da39..42a9e7b 100644
+--- a/src/model.cpp
++++ b/src/model.cpp
+@@ -20,22 +20,355 @@
+  *   Alexandros Frantzis <alexandros.frantzis@collabora.com>
+  */
+ 
++/*
++ * The models are read here, without assimp: vkmark's scenes draw only
++ * 3DS (cube, cat, horse) and PLY (kmscube) files, and its tests give OBJ
++ * strings. Each loader makes a list of triangles, three corners each in
++ * the order they are drawn, as assimp's Triangulate, SortByPType (lines and
++ * points dropped) and GenNormals steps left them:
++ *  - a polygon is a fan from its first corner;
++ *  - a 3DS mesh's corners are put back in its local space (the inverse of
++ *    its mesh matrix, with x negated where that matrix mirrors), and its
++ *    normals are the sums of the area-weighted normals of the triangles
++ *    that share a corner's position and a smoothing group, normalized;
++ *  - a PLY or OBJ model without normals has each triangle's own.
++ */
++
+ #include "model.h"
+ #include "util.h"
+ #include "mesh.h"
+ 
+-#include <assimp/scene.h>
+-#include <assimp/mesh.h>
+-#include <assimp/postprocess.h>
++#include <cctype>
++#include <cstdlib>
++
++#include <algorithm>
++#include <cstdint>
++#include <cstring>
++#include <sstream>
++#include <stdexcept>
++#include <unordered_map>
+ 
+ namespace
+ {
+ 
+-unsigned int const post_process_flags =
+-    aiProcess_Triangulate |
+-    aiProcess_SortByPType |
+-    aiProcess_GenNormals |
+-    aiProcess_JoinIdenticalVertices;
++std::string lowercase(std::string s)
++{
++    for (auto& c : s)
++        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
++    return s;
++}
++
++std::string extension_of(std::string const& file)
++{
++    auto const dot = file.rfind('.');
++    return dot == std::string::npos ? std::string{} : lowercase(file.substr(dot + 1));
++}
++
++glm::vec3 face_normal(glm::vec3 const& a, glm::vec3 const& b, glm::vec3 const& c)
++{
++    auto const n = glm::cross(b - a, c - a);
++    auto const len = glm::length(n);
++    return len > 0.0f ? n / len : glm::vec3{0.0f, 0.0f, 0.0f};
++}
++
++/* Gives each corner of each triangle its triangle's own normal. */
++void flat_normals(std::vector<Model::Vertex>& vertices)
++{
++    for (size_t i = 0; i + 2 < vertices.size(); i += 3)
++    {
++        auto const n = face_normal(vertices[i].position, vertices[i + 1].position, vertices[i + 2].position);
++        vertices[i].normal = vertices[i + 1].normal = vertices[i + 2].normal = n;
++    }
++}
++
++/* A little-endian reader over a byte buffer that throws when it runs out. */
++class Reader
++{
++public:
++    Reader(char const* data, size_t size) : data{data}, size{size}, pos{0} {}
++
++    bool at_end() const { return pos >= size; }
++    size_t offset() const { return pos; }
++    size_t remaining() const { return size - pos; }
++    void seek(size_t to) { pos = std::min(to, size); }
++
++    void need(size_t n) const
++    {
++        if (n > size - pos)
++            throw std::runtime_error{"Truncated model file"};
++    }
++
++    uint8_t u8() { need(1); return static_cast<uint8_t>(data[pos++]); }
++    uint16_t u16() { auto const lo = u8(); return static_cast<uint16_t>(lo | (u8() << 8)); }
++    uint32_t u32() { auto const lo = u16(); return lo | (static_cast<uint32_t>(u16()) << 16); }
++    float f32() { auto const bits = u32(); float f; std::memcpy(&f, &bits, sizeof f); return f; }
++
++    std::string cstring()
++    {
++        std::string s;
++        while (!at_end())
++        {
++            auto const c = static_cast<char>(u8());
++            if (c == '\0') break;
++            s.push_back(c);
++        }
++        return s;
++    }
++
++private:
++    char const* data;
++    size_t size;
++    size_t pos;
++};
++
++/* The 3DS chunks the loader reads. */
++enum : uint16_t
++{
++    chunk_main = 0x4d4d,
++    chunk_editor = 0x3d3d,
++    chunk_object = 0x4000,
++    chunk_trimesh = 0x4100,
++    chunk_vertices = 0x4110,
++    chunk_faces = 0x4120,
++    chunk_smoothing = 0x4150,
++    chunk_texcoords = 0x4140,
++    chunk_matrix = 0x4160,
++};
++
++struct Mesh3ds
++{
++    std::vector<glm::vec3> positions;
++    std::vector<glm::vec2> texcoords;
++    std::vector<uint16_t> indices; /* three a face */
++    std::vector<uint32_t> smoothing; /* one a face */
++    glm::mat4 matrix{1.0f};
++};
++
++struct PositionKey
++{
++    float x, y, z;
++    bool operator==(PositionKey const& o) const { return x == o.x && y == o.y && z == o.z; }
++};
++
++struct PositionHash
++{
++    size_t operator()(PositionKey const& k) const
++    {
++        uint32_t b[3];
++        std::memcpy(b, &k, sizeof b);
++        return (static_cast<size_t>(b[0]) * 73856093u) ^ (static_cast<size_t>(b[1]) * 19349663u) ^
++               (static_cast<size_t>(b[2]) * 83492791u);
++    }
++};
++
++void read_faces(Reader& r, size_t end, Mesh3ds& mesh)
++{
++    auto const count = r.u16();
++    mesh.indices.reserve(count * 3u);
++    for (auto f = 0u; f < count; ++f)
++    {
++        mesh.indices.push_back(r.u16());
++        mesh.indices.push_back(r.u16());
++        mesh.indices.push_back(r.u16());
++        (void)r.u16(); /* edge flags */
++    }
++    mesh.smoothing.assign(count, 0);
++    while (r.offset() + 6 <= end)
++    {
++        auto const id = r.u16();
++        auto const length = r.u32();
++        auto const next = r.offset() - 6 + length;
++        if (length < 6 || next > end) break;
++        if (id == chunk_smoothing)
++        {
++            for (auto f = 0u; f < count && r.offset() + 4 <= next; ++f)
++                mesh.smoothing[f] = r.u32();
++        }
++        r.seek(next);
++    }
++}
++
++void read_trimesh(Reader& r, size_t end, Mesh3ds& mesh)
++{
++    while (r.offset() + 6 <= end)
++    {
++        auto const id = r.u16();
++        auto const length = r.u32();
++        auto const next = r.offset() - 6 + length;
++        if (length < 6 || next > end) break;
++        switch (id)
++        {
++        case chunk_vertices:
++        {
++            auto const count = r.u16();
++            mesh.positions.reserve(count);
++            for (auto i = 0u; i < count; ++i)
++            {
++                auto const x = r.f32(), y = r.f32(), z = r.f32();
++                mesh.positions.emplace_back(x, y, z);
++            }
++            break;
++        }
++        case chunk_texcoords:
++        {
++            auto const count = r.u16();
++            mesh.texcoords.reserve(count);
++            for (auto i = 0u; i < count; ++i)
++            {
++                auto const u = r.f32(), v = r.f32();
++                mesh.texcoords.emplace_back(u, v);
++            }
++            break;
++        }
++        case chunk_faces:
++            read_faces(r, next, mesh);
++            break;
++        case chunk_matrix:
++        {
++            /* The three axes, then the origin: the columns of an affine matrix. */
++            glm::mat4 m{1.0f};
++            for (auto column = 0; column < 4; ++column)
++                for (auto row = 0; row < 3; ++row)
++                    m[column][row] = r.f32();
++            mesh.matrix = m;
++            break;
++        }
++        default:
++            break;
++        }
++        r.seek(next);
++    }
++}
++
++void read_chunks(Reader& r, size_t end, std::vector<Mesh3ds>& meshes)
++{
++    while (r.offset() + 6 <= end)
++    {
++        auto const id = r.u16();
++        auto const length = r.u32();
++        auto const next = r.offset() - 6 + length;
++        if (length < 6 || next > end) break;
++        switch (id)
++        {
++        case chunk_main:
++        case chunk_editor:
++            read_chunks(r, next, meshes);
++            break;
++        case chunk_object:
++            (void)r.cstring(); /* its name */
++            read_chunks(r, next, meshes);
++            break;
++        case chunk_trimesh:
++            meshes.emplace_back();
++            read_trimesh(r, next, meshes.back());
++            break;
++        default:
++            break;
++        }
++        r.seek(next);
++    }
++}
++
++/* PLY's scalar types, by name. */
++enum class PlyType { none, i8, u8, i16, u16, i32, u32, f32, f64 };
++
++PlyType ply_type(std::string const& name)
++{
++    if (name == "char" || name == "int8") return PlyType::i8;
++    if (name == "uchar" || name == "uint8") return PlyType::u8;
++    if (name == "short" || name == "int16") return PlyType::i16;
++    if (name == "ushort" || name == "uint16") return PlyType::u16;
++    if (name == "int" || name == "int32") return PlyType::i32;
++    if (name == "uint" || name == "uint32") return PlyType::u32;
++    if (name == "float" || name == "float32") return PlyType::f32;
++    if (name == "double" || name == "float64") return PlyType::f64;
++    throw std::runtime_error{"Unknown PLY property type " + name};
++}
++
++struct PlyProperty
++{
++    std::string name;
++    PlyType type;
++    PlyType count_type; /* none: a scalar; else a list */
++};
++
++struct PlyElement
++{
++    std::string name;
++    size_t count;
++    std::vector<PlyProperty> properties;
++};
++
++enum class PlyFormat { ascii, little, big };
++
++class PlyValues
++{
++public:
++    PlyValues(std::vector<char> const& data, size_t start, PlyFormat format)
++        : data{data}, pos{start}, format{format}
++    {
++    }
++
++    double next(PlyType type)
++    {
++        if (format == PlyFormat::ascii)
++        {
++            while (pos < data.size() && std::isspace(static_cast<unsigned char>(data[pos]))) ++pos;
++            auto const begin = pos;
++            while (pos < data.size() && !std::isspace(static_cast<unsigned char>(data[pos]))) ++pos;
++            if (begin == pos)
++                throw std::runtime_error{"Truncated PLY model"};
++            return std::strtod(std::string{data.data() + begin, pos - begin}.c_str(), nullptr);
++        }
++        size_t size = 0;
++        switch (type)
++        {
++        case PlyType::i8: case PlyType::u8: size = 1; break;
++        case PlyType::i16: case PlyType::u16: size = 2; break;
++        case PlyType::i32: case PlyType::u32: case PlyType::f32: size = 4; break;
++        case PlyType::f64: size = 8; break;
++        case PlyType::none: break;
++        }
++        if (size == 0 || size > data.size() - pos)
++            throw std::runtime_error{"Truncated PLY model"};
++        unsigned char b[8];
++        for (size_t i = 0; i < size; ++i)
++            b[i] = static_cast<unsigned char>(data[pos + (format == PlyFormat::little ? i : size - 1 - i)]);
++        pos += size;
++        uint64_t u = 0;
++        for (size_t i = 0; i < size; ++i)
++            u |= static_cast<uint64_t>(b[i]) << (8 * i);
++        switch (type)
++        {
++        case PlyType::i8: return static_cast<int8_t>(u);
++        case PlyType::u8: return static_cast<uint8_t>(u);
++        case PlyType::i16: return static_cast<int16_t>(u);
++        case PlyType::u16: return static_cast<uint16_t>(u);
++        case PlyType::i32: return static_cast<int32_t>(u);
++        case PlyType::u32: return static_cast<uint32_t>(u);
++        case PlyType::f32: { auto const v = static_cast<uint32_t>(u); float f; std::memcpy(&f, &v, 4); return f; }
++        case PlyType::f64: { double d; std::memcpy(&d, &u, 8); return d; }
++        case PlyType::none: break;
++        }
++        return 0;
++    }
++
++private:
++    std::vector<char> const& data;
++    size_t pos;
++    PlyFormat format;
++};
++
++/* A PLY colour channel as 0 to 1: integers are out of their type's largest value. */
++float ply_channel(double v, PlyType type)
++{
++    switch (type)
++    {
++    case PlyType::u8: return static_cast<float>(v / 255.0);
++    case PlyType::u16: return static_cast<float>(v / 65535.0);
++    default: return static_cast<float>(v);
++    }
++}
+ 
+ }
+ 
+@@ -80,84 +413,329 @@ ModelAttribMap& ModelAttribMap::with_other(vk::Format format)
+ 
+ Model::Model(std::string const& model_file)
+ {
+-    importer.SetPropertyInteger(AI_CONFIG_PP_SBP_REMOVE,
+-                                aiPrimitiveType_LINE | aiPrimitiveType_POINT);
+-
+-    auto const path = Util::get_data_file_path("models/" + model_file);
+-    if (!importer.ReadFile(path.c_str(), post_process_flags))
+-        throw std::runtime_error{"Failed to parse model file " + model_file};
++    load(Util::read_data_file("models/" + model_file), extension_of(model_file));
+ }
+ 
+ Model::Model(std::string const& model_str, std::string const& model_type)
+ {
+-    importer.SetPropertyInteger(AI_CONFIG_PP_SBP_REMOVE,
+-                                aiPrimitiveType_LINE | aiPrimitiveType_POINT);
+-
+-    if (!importer.ReadFileFromMemory(model_str.data(), model_str.size(),
+-                                     post_process_flags, model_type.c_str()))
+-    {
+-        throw std::runtime_error{"Failed to parse model string of type " + model_type};
+-    }
++    load(std::vector<char>{model_str.begin(), model_str.end()}, lowercase(model_type));
+ }
+ 
+ Model::~Model() = default;
+ 
+-std::unique_ptr<Mesh> Model::to_mesh(ModelAttribMap const& map)
++void Model::load(std::vector<char> const& data, std::string const& type)
+ {
+-    auto mesh = std::make_unique<Mesh>(map.formats);
++    if (type == "3ds")
++        load_3ds(data);
++    else if (type == "ply")
++        load_ply(data);
++    else if (type == "obj")
++        load_obj(data);
++    else
++        throw std::runtime_error{"Unsupported model type " + type};
++
++    if (vertices.empty())
++        throw std::runtime_error{"Failed to parse model of type " + type + ": no triangles"};
++}
+ 
+-    auto const scene = importer.GetScene();
++void Model::load_3ds(std::vector<char> const& data)
++{
++    Reader r{data.data(), data.size()};
++    std::vector<Mesh3ds> meshes;
++    read_chunks(r, data.size(), meshes);
+ 
+-    for (auto m = 0u; m < scene->mNumMeshes; ++m)
++    for (auto const& mesh : meshes)
+     {
+-        auto const aimesh = scene->mMeshes[m];
+-        auto const colors = aimesh->mColors[0];
+-        auto const texcoords = aimesh->mTextureCoords[0];
++        if (!mesh.texcoords.empty())
++            has_texcoords = true;
++    }
+ 
+-        for (auto f = 0u; f < aimesh->mNumFaces; ++f)
++    for (auto& mesh : meshes)
++    {
++        /* Back into the mesh's local space, as assimp's 3DS importer puts it. */
++        auto const inverse = glm::inverse(mesh.matrix);
++        auto const mirror = glm::determinant(glm::mat3{mesh.matrix}) < 0.0f;
++        std::vector<glm::vec3> local;
++        local.reserve(mesh.positions.size());
++        for (auto const& p : mesh.positions)
+         {
+-            auto const& face = aimesh->mFaces[f];
++            auto q = glm::vec3{inverse * glm::vec4{p, 1.0f}};
++            if (mirror) q.x = -q.x;
++            local.push_back(q);
++        }
+ 
+-            for (auto i = 0u; i < face.mNumIndices; ++i)
++        auto const first = vertices.size();
++        std::vector<glm::vec3> area_normals;
++        std::vector<uint32_t> groups;
++        for (size_t f = 0; f + 2 < mesh.indices.size(); f += 3)
++        {
++            auto const a = mesh.indices[f], b = mesh.indices[f + 1], c = mesh.indices[f + 2];
++            if (a >= local.size() || b >= local.size() || c >= local.size())
++                throw std::runtime_error{"3DS face indexes past its mesh's vertices"};
++            /* A triangle with two corners at one vertex is a line or a point: dropped. */
++            if (a == b || b == c || a == c)
++                continue;
++            auto const n = glm::cross(local[b] - local[a], local[c] - local[a]);
++            for (auto const i : {a, b, c})
+             {
+-                auto const vindex = face.mIndices[i];
+-                auto const& vertex = aimesh->mVertices[vindex];
+-                auto const& normal = aimesh->mNormals[vindex];
++                Vertex v{};
++                v.position = local[i];
++                v.color = glm::vec3{1.0f, 1.0f, 1.0f};
++                if (i < mesh.texcoords.size())
++                    v.texcoord = mesh.texcoords[i];
++                vertices.push_back(v);
++                area_normals.push_back(n);
++                groups.push_back(mesh.smoothing[f / 3]);
++            }
++        }
+ 
+-                mesh->next_vertex();
++        /* Smoothing: the corners at a position, and the groups each is in. */
++        std::unordered_map<PositionKey, std::vector<size_t>, PositionHash> at;
++        for (size_t k = first; k < vertices.size(); ++k)
++        {
++            auto const& p = vertices[k].position;
++            at[PositionKey{p.x, p.y, p.z}].push_back(k - first);
++        }
++        for (size_t k = first; k < vertices.size(); ++k)
++        {
++            auto const& p = vertices[k].position;
++            auto const group = groups[k - first];
++            glm::vec3 sum{0.0f};
++            for (auto const other : at[PositionKey{p.x, p.y, p.z}])
++            {
++                auto const g = groups[other];
++                if (other == k - first || group == 0 || g == 0 || (g & group) != 0)
++                    sum += area_normals[other];
++            }
++            auto const len = glm::length(sum);
++            vertices[k].normal = len > 0.0f ? sum / len : glm::vec3{0.0f};
++        }
++    }
++}
+ 
+-                if (map.position >= 0)
+-                    mesh->set_attribute(map.position, {vertex.x, -vertex.y, vertex.z});
++void Model::load_ply(std::vector<char> const& data)
++{
++    /* The header: lines up to end_header. */
++    std::string const text{data.begin(), data.end()};
++    auto const header_end = text.find("end_header");
++    if (text.compare(0, 3, "ply") != 0 || header_end == std::string::npos)
++        throw std::runtime_error{"Not a PLY model"};
++    auto body = text.find('\n', header_end);
++    body = body == std::string::npos ? text.size() : body + 1;
+ 
+-                if (map.normal >= 0)
+-                    mesh->set_attribute(map.normal, {normal.x, -normal.y, normal.z});
++    PlyFormat format = PlyFormat::ascii;
++    std::vector<PlyElement> elements;
++    std::istringstream header{text.substr(0, header_end)};
++    std::string line;
++    while (std::getline(header, line))
++    {
++        std::istringstream words{line};
++        std::string word;
++        words >> word;
++        if (word == "format")
++        {
++            std::string f;
++            words >> f;
++            if (f == "ascii") format = PlyFormat::ascii;
++            else if (f == "binary_little_endian") format = PlyFormat::little;
++            else if (f == "binary_big_endian") format = PlyFormat::big;
++            else throw std::runtime_error{"Unknown PLY format " + f};
++        }
++        else if (word == "element")
++        {
++            PlyElement e;
++            words >> e.name >> e.count;
++            elements.push_back(e);
++        }
++        else if (word == "property" && !elements.empty())
++        {
++            PlyProperty p;
++            std::string t;
++            words >> t;
++            if (t == "list")
++            {
++                std::string count_type, item_type;
++                words >> count_type >> item_type >> p.name;
++                p.count_type = ply_type(count_type);
++                p.type = ply_type(item_type);
++            }
++            else
++            {
++                p.type = ply_type(t);
++                p.count_type = PlyType::none;
++                words >> p.name;
++            }
++            elements.back().properties.push_back(p);
++        }
++    }
+ 
+-                if (map.color >= 0)
++    std::vector<Vertex> points;
++    bool has_normals = false;
++    PlyValues values{data, body, format};
++    for (auto const& e : elements)
++    {
++        for (size_t n = 0; n < e.count; ++n)
++        {
++            Vertex v{};
++            v.color = glm::vec3{1.0f, 1.0f, 1.0f};
++            std::vector<uint32_t> face;
++            for (auto const& p : e.properties)
++            {
++                if (p.count_type != PlyType::none)
+                 {
+-                    if (colors)
++                    auto const items = static_cast<size_t>(values.next(p.count_type));
++                    for (size_t i = 0; i < items; ++i)
+                     {
+-                        auto const& color = colors[vindex];
+-                        mesh->set_attribute(map.color, {color.r, color.g, color.b});
+-                    }
+-                    else
+-                    {
+-                        mesh->set_attribute(map.color, {1, 1, 1});
++                        auto const index = values.next(p.type);
++                        if (e.name == "face" && (p.name == "vertex_index" || p.name == "vertex_indices"))
++                            face.push_back(static_cast<uint32_t>(index));
+                     }
++                    continue;
++                }
++                auto const value = values.next(p.type);
++                if (e.name != "vertex") continue;
++                auto const f = static_cast<float>(value);
++                auto const& name = p.name;
++                if (name == "x") v.position.x = f;
++                else if (name == "y") v.position.y = f;
++                else if (name == "z") v.position.z = f;
++                else if (name == "nx") { v.normal.x = f; has_normals = true; }
++                else if (name == "ny") { v.normal.y = f; has_normals = true; }
++                else if (name == "nz") { v.normal.z = f; has_normals = true; }
++                else if (name == "red" || name == "r") { v.color.r = ply_channel(value, p.type); has_colors = true; }
++                else if (name == "green" || name == "g") { v.color.g = ply_channel(value, p.type); has_colors = true; }
++                else if (name == "blue" || name == "b") { v.color.b = ply_channel(value, p.type); has_colors = true; }
++                else if (name == "u" || name == "s" || name == "texture_u" || name == "texture_s")
++                { v.texcoord.x = f; has_texcoords = true; }
++                else if (name == "v" || name == "t" || name == "texture_v" || name == "texture_t")
++                { v.texcoord.y = f; has_texcoords = true; }
++            }
++            if (e.name == "vertex")
++                points.push_back(v);
++            for (size_t i = 1; i + 1 < face.size(); ++i)
++            {
++                for (auto const k : {face[0], face[i], face[i + 1]})
++                {
++                    if (k >= points.size())
++                        throw std::runtime_error{"PLY face indexes past its vertices"};
++                    vertices.push_back(points[k]);
+                 }
++            }
++        }
++    }
+ 
+-                if (map.texcoord >= 0)
++    if (!has_normals)
++        flat_normals(vertices);
++}
++
++void Model::load_obj(std::vector<char> const& data)
++{
++    std::vector<glm::vec3> positions, normals;
++    std::vector<glm::vec2> texcoords;
++    bool missing_normals = false;
++    std::istringstream text{std::string{data.begin(), data.end()}};
++    std::string line;
++
++    /* An index as written (1-based, or negative from the end) as 0-based, or -1. */
++    auto resolve = [] (std::string const& s, size_t size) -> long {
++        if (s.empty()) return -1;
++        auto const i = std::stol(s);
++        auto const k = i < 0 ? static_cast<long>(size) + i : i - 1;
++        if (k < 0 || static_cast<size_t>(k) >= size)
++            throw std::runtime_error{"OBJ face indexes past its data"};
++        return k;
++    };
++
++    while (std::getline(text, line))
++    {
++        std::istringstream words{line};
++        std::string word;
++        words >> word;
++        if (word == "v")
++        {
++            glm::vec3 p;
++            words >> p.x >> p.y >> p.z;
++            positions.push_back(p);
++        }
++        else if (word == "vn")
++        {
++            glm::vec3 n;
++            words >> n.x >> n.y >> n.z;
++            normals.push_back(n);
++        }
++        else if (word == "vt")
++        {
++            glm::vec2 t;
++            words >> t.x >> t.y;
++            texcoords.push_back(t);
++        }
++        else if (word == "f")
++        {
++            std::vector<Vertex> corners;
++            std::string corner;
++            bool corner_normals = true;
++            while (words >> corner)
++            {
++                std::string part[3];
++                size_t field = 0;
++                for (auto const c : corner)
+                 {
+-                    if (texcoords)
+-                    {
+-                        auto const& texcoord = texcoords[vindex];
+-                        mesh->set_attribute(map.texcoord, {texcoord.x, 1.0 - texcoord.y});
+-                    }
+-                    else
+-                    {
+-                        mesh->set_attribute(map.texcoord, {0, 0});
+-                    }
++                    if (c == '/') { if (++field > 2) break; }
++                    else part[field].push_back(c);
+                 }
++                Vertex v{};
++                v.color = glm::vec3{1.0f, 1.0f, 1.0f};
++                v.position = positions.at(static_cast<size_t>(resolve(part[0], positions.size())));
++                auto const t = resolve(part[1], texcoords.size());
++                if (t >= 0) { v.texcoord = texcoords[static_cast<size_t>(t)]; has_texcoords = true; }
++                auto const n = resolve(part[2], normals.size());
++                if (n >= 0) v.normal = normals[static_cast<size_t>(n)];
++                else corner_normals = false;
++                corners.push_back(v);
++            }
++            for (size_t i = 1; i + 1 < corners.size(); ++i)
++            {
++                vertices.push_back(corners[0]);
++                vertices.push_back(corners[i]);
++                vertices.push_back(corners[i + 1]);
+             }
++            if (!corner_normals && corners.size() >= 3)
++                missing_normals = true;
++        }
++    }
++
++    if (missing_normals)
++        flat_normals(vertices);
++}
++
++std::unique_ptr<Mesh> Model::to_mesh(ModelAttribMap const& map)
++{
++    auto mesh = std::make_unique<Mesh>(map.formats);
++
++    for (auto const& v : vertices)
++    {
++        mesh->next_vertex();
++
++        if (map.position >= 0)
++            mesh->set_attribute(map.position, glm::vec3{v.position.x, -v.position.y, v.position.z});
++
++        if (map.normal >= 0)
++            mesh->set_attribute(map.normal, glm::vec3{v.normal.x, -v.normal.y, v.normal.z});
++
++        if (map.color >= 0)
++        {
++            if (has_colors)
++                mesh->set_attribute(map.color, v.color);
++            else
++                mesh->set_attribute(map.color, glm::vec3{1, 1, 1});
++        }
++
++        if (map.texcoord >= 0)
++        {
++            if (has_texcoords)
++                mesh->set_attribute(map.texcoord, glm::vec2{v.texcoord.x, 1.0f - v.texcoord.y});
++            else
++                mesh->set_attribute(map.texcoord, glm::vec2{0, 0});
+         }
+     }
+ 
+diff --git a/src/model.h b/src/model.h
+index d9bf031..26733cc 100644
+--- a/src/model.h
++++ b/src/model.h
+@@ -23,8 +23,10 @@
+ #pragma once
+ 
+ #include <memory>
++#include <string>
++#include <vector>
+ 
+-#include <assimp/Importer.hpp>
++#include <glm/glm.hpp>
+ #include <vulkan/vulkan.hpp>
+ 
+ class Mesh;
+@@ -56,6 +58,23 @@ public:
+ 
+     std::unique_ptr<Mesh> to_mesh(ModelAttribMap const& map);
+ 
++    /* One corner of a triangle, in the model's own coordinates. */
++    struct Vertex
++    {
++        glm::vec3 position;
++        glm::vec3 normal;
++        glm::vec3 color;
++        glm::vec2 texcoord;
++    };
++
+ private:
+-    Assimp::Importer importer;
++    void load(std::vector<char> const& data, std::string const& type);
++    void load_3ds(std::vector<char> const& data);
++    void load_ply(std::vector<char> const& data);
++    void load_obj(std::vector<char> const& data);
++
++    /* Three corners to a triangle, in the order the faces are drawn. */
++    std::vector<Vertex> vertices;
++    bool has_colors = false;
++    bool has_texcoords = false;
+ };
