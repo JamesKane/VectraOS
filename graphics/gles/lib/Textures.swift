@@ -364,21 +364,20 @@ extension GLContext {
     }
     t.completeCache = nil
     guard count > 1 else { return }
-    do throws(GPUError) { try promote(t, usage: GLContext.copies, mips: UInt32(count)) } catch { return fail(error) }
-    guard let image = t.image else { return }
-    frame.endPass()
-    frame.barrier(before: [image.handle])
-    for l in 1..<count {
-      let src = image.descriptor.mipExtent(UInt32(l - 1)), dst = image.descriptor.mipExtent(UInt32(l))
-      frame.list.blitImage(image, to: image, regions: [
-        ImageBlitRegion(srcSubresource: ImageSubresourceLayers(mip: UInt32(l - 1), baseLayer: 0, layerCount: UInt32(t.faces)),
-                        srcMax: Offset3D(x: src.width, y: src.height, z: 1),
-                        dstSubresource: ImageSubresourceLayers(mip: UInt32(l), baseLayer: 0, layerCount: UInt32(t.faces)),
-                        dstMax: Offset3D(x: dst.width, y: dst.height, z: 1)),
-      ], filter: .linear)
-      frame.list.barrier(from: .transfer, to: .transfer)
-    }
-    frame.noteWrite(image)
+    // Each level drawn from the one above, filtered (a pass a level and face): the image stays one no copy reads.
+    do throws(GPUError) {
+      try promote(t, usage: ImageUsage(rawValue: 0), mips: UInt32(count))
+      guard let image = t.image else { return }
+      let linear = try sampler(for: SamplerDescriptor(filter: .linear))
+      for l in 1..<count {
+        let e = image.descriptor.mipExtent(UInt32(l))
+        for f in 0..<t.faces {
+          try frame.copyByDraw(from: ImageView(image, dimension: .d2, baseMip: UInt32(l - 1), mipCount: 1, baseLayer: UInt32(f), layerCount: 1),
+                               to: ImageView(image, dimension: .d2, baseMip: UInt32(l), mipCount: 1, baseLayer: UInt32(f), layerCount: 1),
+                               width: e.width, height: e.height, sampler: linear, kind: .downsample)
+        }
+      }
+    } catch { fail(error) }
   }
 
   /// The heap slots a draw names for the texture on `unit` that a sampler of the program reads: the texture's, or the

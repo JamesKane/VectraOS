@@ -9,10 +9,13 @@
 import GPUCore
 import VulkanLowering
 
+/// What a copy by a draw writes: each texel as it is, or the filtered mean of the four of the level above (a mipmap).
+enum DrawCopy: Equatable { case texels, downsample }
+
 extension Frame {
   /// The copy's two stages, lowered once.
-  func blitStages() throws(GPUError) -> (vertex: [UInt8], fragment: [UInt8]) {
-    if let s = blitLowered { return s }
+  func blitStages(_ kind: DrawCopy) throws(GPUError) -> (vertex: [UInt8], fragment: [UInt8]) {
+    if let s = blitLowered.first(where: { $0.kind == kind }) { return (s.vertex, s.fragment) }
     func words(_ b: [UInt8]) -> [UInt32] {
       var w = [UInt32](repeating: 0, count: b.count / 4)
       for i in w.indices {
@@ -23,27 +26,29 @@ extension Frame {
     let layout = LoweringLayout(sets: [SetLayout(bindings: [DescriptorBinding(binding: 1, kind: .combinedImageSampler)])])
     do throws(LoweringError) {
       let v = try lower(spirv: words(GLESShaders.blitVert), stage: .vertex, entryPoint: "main", layout: layout)
-      let f = try lower(spirv: words(GLESShaders.blitFrag), stage: .fragment, entryPoint: "main", layout: layout)
-      blitLowered = (bytes(v), bytes(f))
+      let f = try lower(spirv: words(kind == .texels ? GLESShaders.blitFrag : GLESShaders.downsampleFrag), stage: .fragment,
+                        entryPoint: "main", layout: layout)
+      blitLowered.append((kind, bytes(v), bytes(f)))
+      return (bytes(v), bytes(f))
     } catch { throw .unsupported("the library's copy by a draw: \(error)") }
-    return blitLowered!
   }
 
   /// The copy's pipeline for a target of `format`.
-  func blitPipeline(_ format: PixelFormat) throws(GPUError) -> GPUPipeline {
-    if let p = blitPipelines.first(where: { $0.format == format }) { return p.pipeline }
-    let (v, f) = try blitStages()
+  func blitPipeline(_ format: PixelFormat, _ kind: DrawCopy) throws(GPUError) -> GPUPipeline {
+    if let p = blitPipelines.first(where: { $0.format == format && $0.kind == kind }) { return p.pipeline }
+    let (v, f) = try blitStages(kind)
     let p = try device.makeGraphicsPipeline(GraphicsPipelineDescriptor(vertex: v, fragment: f, colorFormats: [format], blend: .opaque,
                                                                        topology: .triangleList))
-    blitPipelines.append((format, p))
+    blitPipelines.append((format, kind, p))
     return p
   }
 
   /// Copies level `source.baseMip`, layer `source.baseLayer` of `source` (sampled) into `target` (a render target view of
   /// one level and layer), `width` by `height` texels from the origin, by a pass of its own.
-  func copyByDraw(from source: ImageView, to target: ImageView, width: Int32, height: Int32, sampler: UInt32) throws(GPUError) {
+  func copyByDraw(from source: ImageView, to target: ImageView, width: Int32, height: Int32, sampler: UInt32,
+                  kind: DrawCopy = .texels) throws(GPUError) {
     endPass()
-    let pipeline = try blitPipeline(target.format)
+    let pipeline = try blitPipeline(target.format, kind)
     let slot = try heap.takeTextureSlot()
     var view = source
     view.dimension = .d2

@@ -258,7 +258,7 @@ extension GLTests {
     gles_glGenerateMipmap(GL_TEXTURE_2D)
     gles_glFinish()
     #expect(h.error() == GL_NO_ERROR)
-    #expect(tex.image!.mipLevels == 7 && tex.image!.usage.contains(.copySource))
+    #expect(tex.image!.mipLevels == 7 && !tex.image!.usage.contains(.copySource))
   }
 
   /// A texture sampled in the vertex stage (glmark2's terrain), on the Mali backend.

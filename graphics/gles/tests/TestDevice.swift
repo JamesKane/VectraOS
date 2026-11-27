@@ -110,6 +110,11 @@ final class TestDevice: GPUDevice {
     guard index < limits.heapTextures else { throw .invalid("a texture slot past the heap") }
     textures[index] = image
   }
+  func writeTexture(_ index: UInt32, _ view: ImageView) throws(GPUError) {
+    guard index < limits.heapTextures else { throw .invalid("a texture slot past the heap") }
+    if let e = view.check(for: .texture, limits: limits) { throw e }
+    textures[index] = view.image
+  }
   func writeSampler(_ index: UInt32, _ sampler: SamplerDescriptor) throws(GPUError) {
     guard index < limits.heapSamplers else { throw .invalid("a sampler slot past the heap") }
     samplers[index] = sampler

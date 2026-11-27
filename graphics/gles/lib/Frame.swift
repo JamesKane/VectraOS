@@ -516,8 +516,8 @@ final class Frame {
   }
 
   /// The copy by a draw's stages and pipelines (Copies.swift), and its scratch images.
-  var blitLowered: (vertex: [UInt8], fragment: [UInt8])?
-  var blitPipelines: [(format: PixelFormat, pipeline: GPUPipeline)] = []
+  var blitLowered: [(kind: DrawCopy, vertex: [UInt8], fragment: [UInt8])] = []
+  var blitPipelines: [(format: PixelFormat, kind: DrawCopy, pipeline: GPUPipeline)] = []
   var copyScratches: [GPUImage] = []
   /// Scratch colour images by size, for passes GL gives no colour attachment.
   var scratchImages: [(width: Int32, height: Int32, image: GPUImage)] = []
