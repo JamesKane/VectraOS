@@ -346,25 +346,25 @@ vkmark 2025.01 unpatched at the port's pin (2bf2ca7f), 800x600, nothing
 else on the GPU. VectraOS's columns are main's (headless at d555ee9a,
 windowed at 4fef477e).
 
-| Scene | panvk headless | VectraOS headless | panvk in GNOME | VectraOS in Radharc |
-|---|---:|---:|---:|---:|
-| vertex device-local=true | 968 | 11398 | 1019 | 59 |
-| vertex device-local=false | 1041 | 10919 | 834 | 57 |
-| texture anisotropy=0 | 5940 | 10281 | 3873 | 60 |
-| texture anisotropy=16 | 5833 | 9983 | 3962 | 57 |
-| shading gouraud | 584 | 7481 | 590 | 60 |
-| shading blinn-phong-inf | 216 | 7235 | 228 | 57 |
-| shading phong | 191 | 5240 | 225 | 60 |
-| shading cel | 550 | 5606 | 501 | 57 |
-| effect2d edge | 1280 | 11970 | 1221 | 60 |
-| effect2d blur | 1209 | 6384 | 252 | 57 |
-| desktop | 6607 | 5847 | 3993 | 60 |
-| cube | 8145 | 12058 | 5470 | 59 |
-| clear | 5127 | 16280 | 4987 | 57 |
-| **Score** | **2899** | **9283** | **2088** | **58** |
+| Scene | Ubuntu panvk headless | FreeBSD panvk headless | VectraOS headless | Ubuntu panvk in GNOME | FreeBSD panvk in sway | VectraOS in Radharc |
+|---|---:|---:|---:|---:|---:|---:|
+| vertex device-local=true | 968 | 1191 | 11398 | 1019 | 1145 | 59 |
+| vertex device-local=false | 1041 | 1137 | 10919 | 834 | 1167 | 57 |
+| texture anisotropy=0 | 5940 | 4103 | 10281 | 3873 | 5655 | 60 |
+| texture anisotropy=16 | 5833 | 4083 | 9983 | 3962 | 5784 | 57 |
+| shading gouraud | 584 | 688 | 7481 | 590 | 615 | 60 |
+| shading blinn-phong-inf | 216 | 334 | 7235 | 228 | 357 | 57 |
+| shading phong | 191 | 279 | 5240 | 225 | 259 | 60 |
+| shading cel | 550 | 819 | 5606 | 501 | 758 | 57 |
+| effect2d edge | 1280 | 1351 | 11970 | 1221 | 790 | 60 |
+| effect2d blur | 1209 | 1272 | 6384 | 252 | 1259 | 57 |
+| desktop | 6607 | 4245 | 5847 | 3993 | 5585 | 60 |
+| cube | 8145 | 4815 | 12058 | 5470 | 5478 | 59 |
+| clear | 5127 | 5242 | 16280 | 4987 | 4155 | 57 |
+| **Score** | **2899** | **2273** | **9283** | **2088** | **2539** | **58** |
 
-- **Headless:** VectraOS scores 3.2 times panvk, and is ahead in every scene
-  but desktop (5847 against 6607, 88%).
+- **Headless:** VectraOS scores 3.2 times Ubuntu's panvk, and is ahead in
+  every scene but desktop (5847 against 6607, 88%).
 - **In a window the two aren't alike:** GNOME presents mailbox, so a frame
   never waits for the display, while Radharc presents FIFO only and is held
   to the display's 60 Hz (radharc(4)). The windowed columns compare how
@@ -372,3 +372,62 @@ windowed at 4fef477e).
   for Radharc to present mailbox, or for GNOME to be run FIFO.
 - `ports/vkmark/reference.sh` makes the run again on the board's Ubuntu
   (firmware entry Boot0004, booted once by BootNext from FreeBSD).
+
+### FreeBSD, 2026-11-28
+
+The same vkmark on the board's resident FreeBSD, the system glmark2's
+reference (gl.md) ran on: FreeBSD 16.0-CURRENT (the owner's
+GENERIC-HMP-IOMMU kernel) with AbyssBSD's port of Linux's panthor
+(`panthor.ko`, with its frequency scaling), komeda and drm-kmod; panvk
+from Mesa 26.2.2, the release of the system's Mesa; one run each, 800x600,
+nothing else on the GPU. `vulkaninfo --summary` names the device
+`Mali-G720 MC10`, `DRIVER_ID_MESA_PANVK`, Mesa 26.2.2 (not conformant, it
+warns).
+
+- **Score: 2273 headless and 2539 in a window under sway**, against
+  Ubuntu's 2899 and 2088. VectraOS's headless 9283 is 4.1 times FreeBSD's,
+  and ahead in every scene.
+- **Against Ubuntu's panvk, headless:** FreeBSD is ahead in the vertex,
+  shading, effect2d and clear scenes (phong 279 against 191) and behind
+  in texture, desktop and cube (4815 against 8145). Ubuntu's Mesa is
+  26.0.8 and its kernel panthor Linux's own, so the split is not one cause.
+- **Its window outscores its headless run** (texture, desktop, cube), the
+  reverse of Ubuntu's. Not looked into; one run each.
+- **The window:** sway 1.12 (wlroots 0.20.2) on komeda's DP-1 at 1680x1050,
+  59.954 Hz, compositing with GLES2 on Panfrost (`GL renderer: Mali-G720
+  MC10 (Panfrost)`), vkmark's window floating at 800x600. vkmark asks for
+  mailbox by default and the surface offers mailbox, FIFO and immediate, so
+  it presents **mailbox**, as GNOME did: the frames never wait for the
+  display.
+
+How it was built, all under /root on the board, with nothing installed
+into the system:
+- **panvk:** Mesa 26.2.2's tarball (sha256 eeb29ca7…cc4216, the port's),
+  configured with `-Dvulkan-drivers=panfrost -Dgallium-drivers=
+  -Dplatforms=wayland -Dopengl=false -Degl=disabled -Dgbm=disabled
+  -Dglx=disabled -Dgles1=disabled -Dgles2=disabled -Dllvm=enabled
+  -Dshared-llvm=enabled -Dvideo-codecs= -Dbuildtype=release` into
+  /root/panvk-prefix, and used through `VK_DRIVER_FILES` naming its
+  `panfrost_icd.aarch64.json`.
+- **Two FreeBSD build fixes, both outside Mesa's source:** Mesa's Wayland
+  WSI uses `CLOCK_MONOTONIC_RAW`, which FreeBSD doesn't define
+  (`-DCLOCK_MONOTONIC_RAW=CLOCK_MONOTONIC_PRECISE` in `c_args`); and
+  panvk includes `<sys/sysmacros.h>`, which FreeBSD doesn't have (a
+  one-line header on the include path including `<sys/types.h>`, where
+  `major` and `minor` are). The FreeBSD port patches the Wayland WSI
+  instead; its patches weren't used.
+- **libdrm:** the system's, 2.4.134_4, already the owner's build with the
+  platform-device patch (`dev.drm.<minor>.busid`, `platform:panthor`)
+  that AbyssBSD's notes call the test-harness libdrm; panvk finds the GPU
+  through it with nothing more.
+- **Build dependencies** the system lacked (py-mako, py-pyyaml, py-ply,
+  glslang, bison, libclc-llvm19; glm and assimp for vkmark; vulkan-tools
+  for vulkaninfo): `pkg fetch`ed and unpacked into /root/panvk-deps, found
+  through `PATH`, `PYTHONPATH`, `PKG_CONFIG_PATH` and `LD_LIBRARY_PATH`.
+- **vkmark:** 2025.01 at 2bf2ca7f, unpatched, `-Dwayland=true -Dxcb=false
+  -Dkms=false` into /root/vkmark-prefix, with `/usr/local/include` added
+  to `cpp_args` (FreeBSD's cc doesn't search it, and one test plugin
+  needs `vulkan.hpp`).
+- **sway** as root from an ssh session through seatd, with the owner's
+  `WLR_RENDERER=gles2` and `WLR_RENDER_DRM_DEVICE=/dev/dri/renderD128`, a
+  config that floats every window and starts `vkmark -s 800x600`.
