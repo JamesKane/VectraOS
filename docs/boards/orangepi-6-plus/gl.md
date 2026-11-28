@@ -255,6 +255,74 @@ The full run at the same commit, **glmark2 Score: 4879** (4712 before, the refer
 
 "Before" is the last section's run, where it gave the scene. Every scene now beats the reference.
 
+## The budgets
+
+Each scene of the default run is a budget, `gl.glmark2.<scene>`, and so is
+the score, `gl.glmark2.score` (D183): a scene below 98% of the reference's
+frames a second misses, and so does a score below 98% of 3064. glmark2
+prints them itself (patch 0002 of ports/glmark2, glmark2(8)'s BUDGETS).
+A budget line's limit is a ceiling, so each rate is printed as the time
+of one of its frames, as `remote.copy` prints a rate as a copy's time: the
+value is the scene's frame time in nanoseconds, the limit the time of a
+frame at 98% of the reference's rate, `10^11 / (98 x FPS)` rounded down,
+and a value at the limit misses. The score's value is one second over the
+score. A scene that doesn't run misses. The run ends with `glmark2:
+budgets met` or `glmark2: <n> budget(s) over:` and their names, and
+glmark2 exits with 1 when one is missed.
+
+The check is the board's run of `esp-board-glmark2`, a run of its own:
+the default run is 33 scenes of 10 s each, about six minutes with its
+loading, where board-test ends within 90 s (board-test(8)). It is run
+before a change to GL, the core's Mali backend, the compiler or the GPU's
+driver merges, as board-test is, and its lines are recorded here:
+
+    ninja -C build/arm64 esp-board-glmark2
+    BOARD_DEADLINE=600 BOARD_PASS="glmark2: budgets met" \
+      BOARD_FAIL="glmark2: [0-9]+ budget|exited with -?[1-9]|PANIC" \
+      .claude/skills/board-run/board-run.sh build/arm64/esp-board-glmark2 LOG
+
+The first run with the budgets, 2026-11-27 (the gl at 420a8bd2 with patch
+0002): `glmark2: budgets met`, score 4838, every line in the console.
+"Of the limit" is the value over the limit; the closest are refract (92%),
+ideas and shadow (85%).
+
+| Budget | Reference FPS | Limit (ns) | Limit (FPS) | Ours (ns) | Ours (FPS) | Of the limit |
+|---|---:|---:|---:|---:|---:|---:|
+| `gl.glmark2.build.use-vbo-false` | 1610 | 633793 | 1578 | 369006 | 2710 | 58% |
+| `gl.glmark2.build.use-vbo-true` | 3523 | 289641 | 3453 | 156754 | 6379 | 54% |
+| `gl.glmark2.texture.nearest` | 4887 | 208800 | 4789 | 158501 | 6309 | 75% |
+| `gl.glmark2.texture.linear` | 4925 | 207189 | 4827 | 160799 | 6219 | 77% |
+| `gl.glmark2.texture.mipmap` | 4892 | 208587 | 4794 | 155153 | 6445 | 74% |
+| `gl.glmark2.shading.gouraud` | 2223 | 459023 | 2179 | 208875 | 4788 | 45% |
+| `gl.glmark2.shading.blinn-phong-inf` | 2212 | 461305 | 2168 | 211876 | 4720 | 45% |
+| `gl.glmark2.shading.phong` | 1560 | 654107 | 1529 | 273466 | 3657 | 41% |
+| `gl.glmark2.shading.cel` | 1541 | 662172 | 1510 | 267531 | 3738 | 40% |
+| `gl.glmark2.bump.high-poly` | 892 | 1143955 | 874 | 424477 | 2356 | 37% |
+| `gl.glmark2.bump.normals` | 5506 | 185326 | 5396 | 123622 | 8089 | 66% |
+| `gl.glmark2.bump.height` | 4782 | 213385 | 4686 | 136848 | 7307 | 64% |
+| `gl.glmark2.effect2d.3x3` | 5678 | 179712 | 5564 | 147382 | 6785 | 82% |
+| `gl.glmark2.effect2d.5x3` | 4091 | 249427 | 4009 | 203605 | 4911 | 81% |
+| `gl.glmark2.pulsar` | 4742 | 215185 | 4647 | 141382 | 7073 | 65% |
+| `gl.glmark2.desktop.blur` | 753 | 1355123 | 738 | 876562 | 1141 | 64% |
+| `gl.glmark2.desktop.shadow` | 2256 | 452308 | 2211 | 374874 | 2668 | 82% |
+| `gl.glmark2.buffer.map` | 400 | 2551020 | 392 | 758813 | 1318 | 29% |
+| `gl.glmark2.buffer.subdata` | 391 | 2609739 | 383 | 757178 | 1321 | 29% |
+| `gl.glmark2.buffer.interleave-map` | 431 | 2367536 | 422 | 567844 | 1761 | 23% |
+| `gl.glmark2.ideas` | 973 | 1048723 | 954 | 892793 | 1120 | 85% |
+| `gl.glmark2.jellyfish` | 2615 | 390213 | 2563 | 312609 | 3199 | 80% |
+| `gl.glmark2.terrain` | 95 | 10741138 | 93 | 8149470 | 123 | 75% |
+| `gl.glmark2.shadow` | 1749 | 583423 | 1714 | 500845 | 1997 | 85% |
+| `gl.glmark2.refract` | 149 | 6848376 | 146 | 6319692 | 158 | 92% |
+| `gl.glmark2.conditionals.f0-v0` | 4877 | 209228 | 4779 | 121534 | 8228 | 58% |
+| `gl.glmark2.conditionals.f5-v0` | 4718 | 216279 | 4624 | 140229 | 7131 | 64% |
+| `gl.glmark2.conditionals.f0-v5` | 4925 | 207189 | 4827 | 125351 | 7978 | 60% |
+| `gl.glmark2.function.low` | 4752 | 214732 | 4657 | 123232 | 8115 | 57% |
+| `gl.glmark2.function.medium` | 4584 | 222602 | 4492 | 123841 | 8075 | 55% |
+| `gl.glmark2.loop.no-fragment-loop` | 4901 | 208204 | 4803 | 124134 | 8056 | 59% |
+| `gl.glmark2.loop.constant` | 4810 | 212143 | 4714 | 124725 | 8018 | 58% |
+| `gl.glmark2.loop.uniform` | 4713 | 216509 | 4619 | 128351 | 7791 | 59% |
+| `gl.glmark2.score` | 3064 | 333031 | 3003 | 206696 | 4838 | 62% |
+
 ## The shaders glmark2 compiles
 
 `MESA_SHADER_DUMP_PATH` on the same run, every scene at 0.3 s: 69 distinct

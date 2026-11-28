@@ -37,6 +37,14 @@ function(croi_tier1_glmark2)
       scene-terrain/renderer-chain.cpp scene-terrain/simplex-noise-renderer.cpp scene-terrain/terrain-renderer.cpp
       scene-terrain/texture-renderer.cpp scene-texture.cpp shared-library.cpp text-renderer.cpp texture.cpp
       main.cpp gl-state-egl.cpp native-state-vectraos.cpp)
+  # Our budgets (budgets-vectraos.cpp, patch 0002; glmark2(8)'s BUDGETS). A checkout patched before 0002 has
+  # none: glmark2 is built without them, so its board run never says its budgets are met, and configuring says so.
+  if(EXISTS ${_s}/budgets-vectraos.cpp)
+    list(APPEND _common budgets-vectraos.cpp)
+  else()
+    message(WARNING "glmark2: .cache/ports/glmark2 predates patch 0002, so glmark2 is built without its budgets: "
+      "run ports/glmark2/apply-patches.sh --reset and configure again")
+  endif()
   set(_glad glad/src/egl.c glad/src/gles2.c)
   # The bundled libraries, as glmark2's waf build lists them (src/wscript_build).
   file(GLOB _png RELATIVE ${_s} ${_s}/libpng/*.c)

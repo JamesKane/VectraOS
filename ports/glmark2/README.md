@@ -25,11 +25,15 @@ dlopen (Ld) and the shared Swift runtime, and its data into bootfs's
 | Patch | What |
 |---|---|
 | 0001 | A native state for VectraOS (`GLMARK2_USE_VECTRAOS`, `native-state-vectraos.{h,cpp}`): EGL's default display and a `struct vectra_egl_window` (a size and a title) that our EGL makes a window of Radharc's from; no full screen, no window events; main.cpp picks it |
+| 0002 | Our budgets for the default run (`budgets-vectraos.{h,cpp}`): after each scene a budget line, `gl.glmark2.<scene>`, its frame time against a frame at 98% of the reference's rate (docs/boards/orangepi-6-plus/gl.md), then `gl.glmark2.score` and the run's verdict, `glmark2: budgets met` or `glmark2: <n> budget(s) over:`; a budget missed exits with 1 (glmark2(8), BUDGETS) |
 
 To change a patch: commit in `.cache/ports/glmark2` (amend, or reset to
 `vectraos-base` and re-apply), then write the series again with
 `git -C .cache/ports/glmark2 format-patch --keep-subject -o ports/glmark2/patches vectraos-base`,
-and review its diff.
+and review its diff. A checkout patched before the series grew is left
+alone by `apply-patches.sh`: run it with `--reset`, then configure again
+(cmake/Glmark2.cmake warns when the checkout predates patch 0002, and
+builds glmark2 without its budgets).
 
 ## Third-party code it carries
 

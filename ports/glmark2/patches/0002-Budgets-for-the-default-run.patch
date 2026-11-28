@@ -1,0 +1,280 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: VectraOS port <port@vectraos.invalid>
+Date: Fri, 27 Nov 2026 12:00:00 +0000
+Subject: [PATCH] [VectraOS] Budgets for the default run (VectraOS's budget
+ lines)
+
+BudgetsVectraOS: after each scene of the default run, a VectraOS budget
+line, gl.glmark2.<scene>, the scene's frame time in nanoseconds with its
+limit the time of a frame at 98% of the reference's rate (AbyssBSD's
+Panfrost on the Orange Pi 6 Plus, 800x600 off-screen); after the score,
+gl.glmark2.score, 1 s over the score, and the run's verdict, `glmark2:
+budgets met` or `glmark2: <n> budget(s) over:` and their names. A
+budget line's limit is a ceiling, so each rate is printed as a frame's
+time. A scene that did not run misses its budget. With a budget missed,
+glmark2 exits with 1.
+
+diff --git a/src/budgets-vectraos.cpp b/src/budgets-vectraos.cpp
+new file mode 100644
+index 0000000..f2b60da
+--- /dev/null
++++ b/src/budgets-vectraos.cpp
+@@ -0,0 +1,131 @@
++/*
++ * SPDX-License-Identifier: GPL-3.0-or-later
++ *
++ * This file is part of the glmark2 OpenGL (ES) 2.0 benchmark, for VectraOS.
++ *
++ * glmark2 is free software: you can redistribute it and/or modify it under the
++ * terms of the GNU General Public License as published by the Free Software
++ * Foundation, either version 3 of the License, or (at your option) any later
++ * version.
++ */
++#include "budgets-vectraos.h"
++
++#include <cmath>
++
++#include "log.h"
++
++namespace {
++
++struct Budget {
++    const char *scene;      /* the scene's info string, as glmark2 prints it */
++    const char *name;       /* gl.glmark2.<name> */
++    unsigned reference;     /* the reference's frames a second */
++};
++
++/* The reference: docs/boards/orangepi-6-plus/gl.md in VectraOS's tree. */
++const Budget budgets[] = {
++    {"[build] use-vbo=false", "build.use-vbo-false", 1610},
++    {"[build] use-vbo=true", "build.use-vbo-true", 3523},
++    {"[texture] texture-filter=nearest", "texture.nearest", 4887},
++    {"[texture] texture-filter=linear", "texture.linear", 4925},
++    {"[texture] texture-filter=mipmap", "texture.mipmap", 4892},
++    {"[shading] shading=gouraud", "shading.gouraud", 2223},
++    {"[shading] shading=blinn-phong-inf", "shading.blinn-phong-inf", 2212},
++    {"[shading] shading=phong", "shading.phong", 1560},
++    {"[shading] shading=cel", "shading.cel", 1541},
++    {"[bump] bump-render=high-poly", "bump.high-poly", 892},
++    {"[bump] bump-render=normals", "bump.normals", 5506},
++    {"[bump] bump-render=height", "bump.height", 4782},
++    {"[effect2d] kernel=0,1,0;1,-4,1;0,1,0;", "effect2d.3x3", 5678},
++    {"[effect2d] kernel=1,1,1,1,1;1,1,1,1,1;1,1,1,1,1;", "effect2d.5x3", 4091},
++    {"[pulsar] light=false:quads=5:texture=false", "pulsar", 4742},
++    {"[desktop] blur-radius=5:effect=blur:passes=1:separable=true:windows=4", "desktop.blur", 753},
++    {"[desktop] effect=shadow:windows=4", "desktop.shadow", 2256},
++    {"[buffer] columns=200:interleave=false:update-dispersion=0.9:update-fraction=0.5:update-method=map",
++     "buffer.map", 400},
++    {"[buffer] columns=200:interleave=false:update-dispersion=0.9:update-fraction=0.5:update-method=subdata",
++     "buffer.subdata", 391},
++    {"[buffer] columns=200:interleave=true:update-dispersion=0.9:update-fraction=0.5:update-method=map",
++     "buffer.interleave-map", 431},
++    {"[ideas] speed=duration", "ideas", 973},
++    {"[jellyfish] <default>", "jellyfish", 2615},
++    {"[terrain] <default>", "terrain", 95},
++    {"[shadow] <default>", "shadow", 1749},
++    {"[refract] <default>", "refract", 149},
++    {"[conditionals] fragment-steps=0:vertex-steps=0", "conditionals.f0-v0", 4877},
++    {"[conditionals] fragment-steps=5:vertex-steps=0", "conditionals.f5-v0", 4718},
++    {"[conditionals] fragment-steps=0:vertex-steps=5", "conditionals.f0-v5", 4925},
++    {"[function] fragment-complexity=low:fragment-steps=5", "function.low", 4752},
++    {"[function] fragment-complexity=medium:fragment-steps=5", "function.medium", 4584},
++    {"[loop] fragment-loop=false:fragment-steps=5:vertex-steps=5", "loop.no-fragment-loop", 4901},
++    {"[loop] fragment-steps=5:fragment-uniform=false:vertex-steps=5", "loop.constant", 4810},
++    {"[loop] fragment-steps=5:fragment-uniform=true:vertex-steps=5", "loop.uniform", 4713},
++};
++const unsigned count = sizeof budgets / sizeof budgets[0];
++const unsigned score_reference = 3064;
++/* A limit is the reference's rate times this, in percent. */
++const unsigned long long percent = 98;
++
++bool seen[count];
++unsigned over;
++std::string missed;
++
++/* The time of a frame at `percent` of `fps`, in nanoseconds. */
++unsigned long long
++limit_ns(unsigned fps)
++{
++    return 100000000000ULL / (percent * fps);
++}
++
++void
++judge(const char *name, unsigned long long value, unsigned long long limit)
++{
++    Log::info("glmark2: budget name=gl.glmark2.%s value=%llu unit=ns limit=%llu\n", name, value, limit);
++    if (value >= limit) {
++        over++;
++        missed += std::string(" gl.glmark2.") + name;
++    }
++}
++
++}
++
++void
++BudgetsVectraOS::scene(const std::string &info, double frame_time)
++{
++    for (unsigned i = 0; i < count; i++) {
++        if (info != budgets[i].scene)
++            continue;
++        seen[i] = true;
++        if (frame_time < 0) {
++            Log::info("glmark2: budget gl.glmark2.%s: the scene did not run\n", budgets[i].name);
++            over++;
++            missed += std::string(" gl.glmark2.") + budgets[i].name;
++        } else {
++            judge(budgets[i].name, static_cast<unsigned long long>(std::llround(frame_time * 1e9)),
++                  limit_ns(budgets[i].reference));
++        }
++        return;
++    }
++}
++
++unsigned
++BudgetsVectraOS::finish(unsigned score)
++{
++    unsigned run = 0;
++    for (unsigned i = 0; i < count; i++)
++        run += seen[i] ? 1 : 0;
++    /* A run of other scenes has no budgets. */
++    if (run == 0)
++        return 0;
++    if (run == count) {
++        judge("score", score ? 1000000000ULL / score : ~0ULL, limit_ns(score_reference));
++    } else {
++        Log::info("glmark2: %u of the default run's %u scenes ran: the score has no budget\n", run, count);
++    }
++    if (over)
++        Log::info("glmark2: %u budget(s) over:%s\n", over, missed.c_str());
++    else
++        Log::info("glmark2: budgets met\n");
++    Log::flush();
++    return over;
++}
+diff --git a/src/budgets-vectraos.h b/src/budgets-vectraos.h
+new file mode 100644
+index 0000000..cd7718c
+--- /dev/null
++++ b/src/budgets-vectraos.h
+@@ -0,0 +1,42 @@
++/*
++ * SPDX-License-Identifier: GPL-3.0-or-later
++ *
++ * This file is part of the glmark2 OpenGL (ES) 2.0 benchmark, for VectraOS.
++ *
++ * glmark2 is free software: you can redistribute it and/or modify it under the
++ * terms of the GNU General Public License as published by the Free Software
++ * Foundation, either version 3 of the License, or (at your option) any later
++ * version.
++ */
++#ifndef GLMARK2_BUDGETS_VECTRAOS_H_
++#define GLMARK2_BUDGETS_VECTRAOS_H_
++
++#include <string>
++
++/*
++ * VectraOS's budgets for the default run: each scene, gl.glmark2.<scene>, and
++ * the score, gl.glmark2.score, printed as VectraOS's budget lines,
++ *
++ *   glmark2: budget name=gl.glmark2.<scene> value=<ns> unit=ns limit=<ns>
++ *
++ * A budget line's limit is a ceiling, so a rate is printed as the time of one
++ * of its frames: the scene's frame time, and for the score 1 s over the score.
++ * Each limit is the time of a frame at 98% of the reference's rate (AbyssBSD's
++ * Panfrost on the same board, 800x600 off-screen); a value at the limit or
++ * above it misses.
++ */
++namespace BudgetsVectraOS {
++
++/* A scene's result: its frame time in seconds, or a negative one if it did not run. */
++void scene(const std::string &info, double frame_time);
++
++/*
++ * The score's budget, once every scene of the default run has a result, and
++ * the run's verdict: `glmark2: budgets met` or `glmark2: <n> budget(s) over:`
++ * and their names. Returns how many were over.
++ */
++unsigned finish(unsigned score);
++
++}
++
++#endif
+diff --git a/src/main-loop.cpp b/src/main-loop.cpp
+index a984a76..ec3e8b8 100644
+--- a/src/main-loop.cpp
++++ b/src/main-loop.cpp
+@@ -24,6 +24,9 @@
+ #include "util.h"
+ #include "log.h"
+ #include "results-file.h"
++#if GLMARK2_USE_VECTRAOS
++#include "budgets-vectraos.h"
++#endif
+ 
+ #include <string>
+ #include <sstream>
+@@ -236,6 +239,10 @@ MainLoop::log_scene_result()
+     }
+ 
+     results_file.end_benchmark();
++#if GLMARK2_USE_VECTRAOS
++    BudgetsVectraOS::scene(scene_->info_string(),
++                           scene_setup_status_ == SceneSetupStatusSuccess ? scene_->stats().average_frame_time : -1.0);
++#endif
+ }
+ 
+ void
+diff --git a/src/main.cpp b/src/main.cpp
+index 3f39e12..64f9df8 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -32,6 +32,9 @@
+ #include "benchmark-collection.h"
+ #include "scene-collection.h"
+ #include "results-file.h"
++#if GLMARK2_USE_VECTRAOS
++#include "budgets-vectraos.h"
++#endif
+ 
+ #include "canvas-generic.h"
+ 
+@@ -110,7 +113,8 @@ list_scenes()
+     }
+ }
+ 
+-void
++/* Whether the run met its budgets: VectraOS's; elsewhere there are none. */
++bool
+ do_benchmark(Canvas &canvas)
+ {
+     BenchmarkCollection benchmark_collection;
+@@ -128,8 +132,13 @@ do_benchmark(Canvas &canvas)
+     Log::info("=======================================================\n");
+     Log::info("                                  glmark2 Score: %u \n", loop->score());
+     Log::info("=======================================================\n");
++    bool met = true;
++#if GLMARK2_USE_VECTRAOS
++    met = BudgetsVectraOS::finish(loop->score()) == 0;
++#endif
+ 
+     delete loop;
++    return met;
+ }
+ 
+ void
+@@ -253,12 +262,13 @@ main(int argc, char *argv[])
+ 
+     canvas.visible(true);
+ 
++    bool met = true;
+     if (Options::validate)
+         do_validation(canvas);
+     else
+-        do_benchmark(canvas);
++        met = do_benchmark(canvas);
+ 
+     results_file.end();
+ 
+-    return 0;
++    return met ? 0 : 1;
+ }

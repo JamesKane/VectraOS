@@ -79,6 +79,9 @@ in input attachments).
 
 - **The desktop image** (`esp-board-desktop`) runs no board-test, so this
   script would report `timeout`. Judge a desktop run by its own end line.
+- **glmark2's budgets** (`esp-board-glmark2`) are judged by its own last
+  line: run it with the command in `docs/boards/orangepi-6-plus/gl.md`,
+  "The budgets" (`BOARD_PASS="glmark2: budgets met"`, a 600 s deadline).
 - **A hang before the watchdog starts** needs a power cycle, which only
   the owner can do. Say so plainly and stop. Don't poll the board for an
   hour.
