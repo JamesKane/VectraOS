@@ -2,7 +2,7 @@ page glmark2 8
 summary the OpenGL ES 2.0 benchmark glmark2, ported: its scenes' frames a second over our GLES library
 names glmark2 glmark2-es2-vectraos glmark2-offscreen
 src ports/glmark2/README.md ports/glmark2/fetch.sh ports/glmark2/apply-patches.sh ports/glmark2/patches ports/glmark2/glmark2.manifest ports/glmark2/glmark2-offscreen.manifest cmake/Glmark2.cmake
-keys gles opengl egl benchmark score frames fps glmark2 port gpu mali panfrost tier 1
+keys gles opengl egl benchmark score frames fps glmark2 port gpu mali panfrost tier 1 budget limit reference
 
 # SYNOPSIS
 
@@ -27,8 +27,26 @@ Its models, shaders and textures are `/lib/glmark2` (glmark2's `GLMARK_DATA_PATH
 It carries libpng, libjpeg-turbo and zlib, compiled into it alone (ports/glmark2/README.md says which releases).
 
 On the Orange Pi 6 Plus it is an app of the desktop image, started by the launcher (`echo start glmark2 >/svc/launcher/ctl`) once Radharc is up.
-On the board, `esp-board-glmark2` (built on request) runs it off-screen at 800 by 600 with the board image's drivers and no desktop, until it ends, then reboots: the run the reference on AbyssBSD is compared with (docs/boards/orangepi-6-plus/gl.md).
+On the board, `esp-board-glmark2` (built on request) runs it off-screen at 800 by 600 with the board image's drivers and no desktop, until it ends, then reboots: the run the reference on AbyssBSD is compared with (docs/boards/orangepi-6-plus/gl.md), and the run that judges its budgets (below).
+The launcher exits with its code (`launcher: glmark2-offscreen exited with <code>`).
 In QEMU, `esp-glmark2` (built on request: `ninja -C build/arm64 esp-glmark2`) has userboot start it with no arguments; with no manifest there is no `/lib/glmark2`, so it says it can't open the models and textures directories, and with no GPU's EGL it stops at loading the EGL library.
+
+# BUDGETS
+
+Each scene of the default run is a budget, printed after the scene's own line as
+
+```text
+glmark2: budget name=gl.glmark2.<scene> value=<ns> unit=ns limit=<ns>
+```
+
+Its value is the scene's frame time; its limit is the time of a frame at 98% of the reference's frames a second for that scene, AbyssBSD's Panfrost on the Orange Pi 6 Plus at 800 by 600 off-screen (docs/boards/orangepi-6-plus/gl.md).
+A budget line's limit is a ceiling, so a rate is printed as the time of one of its frames: a value at the limit or above it misses, and so a scene below 98% of the reference's rate misses.
+The scenes, in the default run's order: `build.use-vbo-false`, `build.use-vbo-true`, `texture.nearest`, `texture.linear`, `texture.mipmap`, `shading.gouraud`, `shading.blinn-phong-inf`, `shading.phong`, `shading.cel`, `bump.high-poly`, `bump.normals`, `bump.height`, `effect2d.3x3`, `effect2d.5x3`, `pulsar`, `desktop.blur`, `desktop.shadow`, `buffer.map`, `buffer.subdata`, `buffer.interleave-map`, `ideas`, `jellyfish`, `terrain`, `shadow`, `refract`, `conditionals.f0-v0`, `conditionals.f5-v0`, `conditionals.f0-v5`, `function.low`, `function.medium`, `loop.no-fragment-loop`, `loop.constant` and `loop.uniform`.
+A scene of the default run that is unsupported or fails to set up misses its budget: `glmark2: budget gl.glmark2.<scene>: the scene did not run`.
+Once every scene of the default run has run, the score is a budget too, after glmark2's score line: `gl.glmark2.score`, one second over the score, against a frame at 98% of the reference's score (3064).
+The last line is `glmark2: budgets met`, or `glmark2: <n> budget(s) over:` and their names; with any over, glmark2 exits with 1.
+A run of other scenes (`-b`) judges those of the default run's that it ran, says how many of them ran, and has no score budget; scenes with other options have none.
+The limits are the Orange Pi 6 Plus's, whatever GPU glmark2 runs on: `esp-board-glmark2`'s run is the one they judge, its verdict its last line.
 
 # FILES
 
@@ -45,6 +63,7 @@ launcher(8), radharc(4), dlfcn(2), vulkan-present(8)
 
 Without the EGL library it prints `Error loading EGL library` and exits with 1.
 A failure of EGL or GL is glmark2's message, `Error:` and what failed.
+A budget missed in the default run makes it exit with 1 (see BUDGETS).
 
 # BUGS
 

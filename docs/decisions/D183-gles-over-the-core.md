@@ -39,6 +39,14 @@ program; nothing on the device speaks GL.
   AbyssBSD's on the board at 800x600, and the score likewise. The
   reference is measured on the same board in the same session of work
   (`docs/boards/orangepi-6-plus/gl.md`), off-screen and windowed.
+  As built (2026-11-27): a budget line's limit is a ceiling, so each rate
+  is printed as the time of one of its frames, as `remote.copy` prints a
+  rate as a copy's time: a scene's frame time against a frame at 98% of
+  the reference's rate, and the score as one second over it. glmark2
+  prints them itself (ports/glmark2's patch 0002), as every program that
+  measures prints its own, and exits with 1 when one is missed; the
+  check is the board's run of `esp-board-glmark2`, judged by its last
+  line (glmark2(8), gl.md's "The budgets").
 
 ## What it replaces
 

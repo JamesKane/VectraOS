@@ -40,7 +40,10 @@ here, and its history, step by step, is in git and `docs/decisions/`.
   board). OpenGL ES 2.0 and EGL are our own library over the core (D183,
   2026-11-27), with a GLSL ES front end into the compiler; glmark2, a tier
   1 port, runs every scene off-screen on the board above AbyssBSD's
-  Panfrost (score 4879 against 3064; docs/boards/orangepi-6-plus/gl.md).
+  Panfrost (score 4879 against 3064; docs/boards/orangepi-6-plus/gl.md);
+  each scene and the score are budgets at 98% of Panfrost's
+  (`gl.glmark2.*`, V6f's), printed by glmark2 and checked by the board's
+  run of `esp-board-glmark2`.
   vkmark 2025.01, a tier 1 port, runs every scene on the board headless
   (score 9283 at 800x600) and in a Radharc window (score 13, the
   presents' pacing open; docs/boards/orangepi-6-plus/vk.md), with no
@@ -277,7 +280,11 @@ checked on the board through the cpu image and a warm boot.
 6. **GPU:** mali(3) from its probe to running command streams under its
    firmware, its MMU and a job scheduler (panthor's spec): D173, its first half done on the board (2026-11-20);
    the user side our own (its §9, from a new chinese-wall spec), then UIGPU's
-   buffers and Vulkan compute and rendering (D62, D121).
+   buffers and Vulkan compute and rendering (D62, D121). OpenGL ES over
+   the core (D183): glmark2's budgets, each scene of its default run and
+   the score at 98% of AbyssBSD's Panfrost (`gl.glmark2.*`,
+   docs/performance.md), enforced from V6f by the board's run of
+   `esp-board-glmark2`, whose last line judges them.
 7. **Video codec:** Mali-V (`CIXH3010`, linlon-vpu): H.264, HEVC and VP9
    decode, H.264 and HEVC encode.
 8. **NPU:** the Zhouyi X2 (`CIXH4000`, `CIXH4010`) as a backend of V8's

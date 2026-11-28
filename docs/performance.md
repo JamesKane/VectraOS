@@ -134,6 +134,21 @@ against those probes:
 - The compose shader's own cost: 2.8 ms against the two-layer probe's
   1.88 ms.
 
+### OpenGL ES on the Orange Pi 6 Plus (V6f, D183)
+
+glmark2's default run off-screen at 800x600 (`esp-board-glmark2`, a board
+run of its own: the run takes about six minutes, board-test about 90 s).
+glmark2 prints the lines itself (glmark2(8), BUDGETS) and exits with 1 when
+one is missed, so the run's last line, `glmark2: budgets met`, is the
+check. A budget line's limit is a ceiling, so each rate is printed as a
+frame's time. The reference and the runs are in
+`docs/boards/orangepi-6-plus/gl.md`.
+
+| Budget | Limit |
+|---|---|
+| each scene of the default run (`gl.glmark2.<scene>`: its frame time, 33 scenes) | ≥ 98% of AbyssBSD's Panfrost's frames a second for the scene, on the same board |
+| the score (`gl.glmark2.score`: one second over the score) | ≥ 98% of Panfrost's score, 3064 (a limit of 3002.7) |
+
 ### Edge (V7–V9, all *new*)
 
 | Budget | Limit |
