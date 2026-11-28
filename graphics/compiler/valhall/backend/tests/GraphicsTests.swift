@@ -358,3 +358,123 @@ func treeWords(_ rel: String, file: String = #filePath) -> [UInt32]? {
     }
   }
 }
+
+/// No line of a listing that reads or writes the thread's stack memory.
+private func threadLocalAccesses(_ listing: String) -> [String] {
+  listing.split(whereSeparator: \.isNewline).map(String.init).filter { $0.contains("thread_local") }
+}
+
+@Suite struct InliningTests {
+  /// glslang's form of a call (vkmark's phong): the arguments are Function variables of the caller passed by pointer,
+  /// and the callee has a variable of its own.
+  /// vec4 shade(vec4 light, vec4 tint) { vec4 t = light + tint; return t * in_; }
+  /// void main() { col = shade(vec4(0.5), in_); }
+  static let pointerParameters = """
+    OpCapability Shader
+    OpMemoryModel Logical GLSL450
+    OpEntryPoint Fragment %main "main" %col %in
+    OpExecutionMode %main OriginUpperLeft
+    OpDecorate %col Location 0
+    OpDecorate %in Location 0
+    \(Corpus.graphicsPrelude)
+    %ptr_fn_v4 = OpTypePointer Function %v4float
+    %fn_shade = OpTypeFunction %v4float %ptr_fn_v4 %ptr_fn_v4
+    %half4 = OpConstantComposite %v4float %fhalf %fhalf %fhalf %fhalf
+    %col = OpVariable %ptr_out_v4 Output
+    %in = OpVariable %ptr_in_v4 Input
+    %shade = OpFunction %v4float None %fn_shade
+    %light = OpFunctionParameter %ptr_fn_v4
+    %tint = OpFunctionParameter %ptr_fn_v4
+    %sentry = OpLabel
+    %t = OpVariable %ptr_fn_v4 Function
+    %l = OpLoad %v4float %light
+    %n = OpLoad %v4float %tint
+    %s = OpFAdd %v4float %l %n
+    OpStore %t %s
+    %x = OpLoad %v4float %in
+    %t2 = OpLoad %v4float %t
+    %r = OpFMul %v4float %t2 %x
+    OpReturnValue %r
+    OpFunctionEnd
+    %main = OpFunction %void None %fn
+    %entry = OpLabel
+    %p1 = OpVariable %ptr_fn_v4 Function
+    %p2 = OpVariable %ptr_fn_v4 Function
+    OpStore %p1 %half4
+    %y = OpLoad %v4float %in
+    OpStore %p2 %y
+    %c = OpFunctionCall %v4float %shade %p1 %p2
+    OpStore %col %c
+    OpReturn
+    OpFunctionEnd
+    """
+
+  /// A compute shader's call in a branch, with a pointer parameter and a variable of the callee's.
+  /// uint bump(inout uint v) { uint w = v * 3u; v = w + 1u; return w; }
+  /// void main() { uint i = gl_GlobalInvocationID.x; uint a = i; if (i > 4u) a = bump(a); out_[i] = a; }
+  static let branchedCall = """
+    OpCapability Shader
+    OpMemoryModel Logical GLSL450
+    OpEntryPoint GLCompute %main "main" %gid
+    OpExecutionMode %main LocalSize 64 1 1
+    OpDecorate %gid BuiltIn GlobalInvocationId
+    OpDecorate %uarr ArrayStride 4
+    OpMemberDecorate %O 0 Offset 0
+    OpDecorate %O Block
+    OpDecorate %ov DescriptorSet 0
+    OpDecorate %ov Binding 0
+    \(Corpus.prelude)
+    %gid = OpVariable %ptr_in_v3uint Input
+    %uarr = OpTypeRuntimeArray %uint
+    %O = OpTypeStruct %uarr
+    %ptr_sb_O = OpTypePointer StorageBuffer %O
+    %ov = OpVariable %ptr_sb_O StorageBuffer
+    %fn_bump = OpTypeFunction %uint %ptr_fn_uint
+    %bump = OpFunction %uint None %fn_bump
+    %v = OpFunctionParameter %ptr_fn_uint
+    %bentry = OpLabel
+    %w = OpVariable %ptr_fn_uint Function
+    %v0 = OpLoad %uint %v
+    %m = OpIMul %uint %v0 %u3
+    OpStore %w %m
+    %w0 = OpLoad %uint %w
+    %w1 = OpIAdd %uint %w0 %u1
+    OpStore %v %w1
+    %w2 = OpLoad %uint %w
+    OpReturnValue %w2
+    OpFunctionEnd
+    %main = OpFunction %void None %fn
+    %entry = OpLabel
+    %a = OpVariable %ptr_fn_uint Function
+    %gp = OpAccessChain %ptr_in_uint %gid %u0
+    %i = OpLoad %uint %gp
+    OpStore %a %i
+    %big = OpUGreaterThan %bool %i %u4
+    OpSelectionMerge %join None
+    OpBranchConditional %big %then %join
+    %then = OpLabel
+    %b = OpFunctionCall %uint %bump %a
+    OpStore %a %b
+    OpBranch %join
+    %join = OpLabel
+    %af = OpLoad %uint %a
+    %pq = OpAccessChain %ptr_sb_uint %ov %u0 %i
+    OpStore %pq %af
+    OpReturn
+    OpFunctionEnd
+    """
+
+  /// Inlined, the callee's variables and the arguments' are values: no stack, and no access to thread-local memory.
+  @Test func aCallWithPointerParametersIsInlinedWithoutMemoryTraffic() throws {
+    let c = try compileGraphicsText(Self.pointerParameters)
+    let f = try #require(c.fragment)
+    #expect(f.stackBytes == 0)
+    #expect(threadLocalAccesses(c.listing) == [], "\(c.listing)")
+  }
+
+  @Test func aComputeCallInABranchKeepsItsVariablesOutOfMemory() throws {
+    let c = try ValhallBackend.compile(try lowered(Self.branchedCall))
+    #expect(c.shader.stackBytes == 0)
+    #expect(threadLocalAccesses(c.listing) == [], "\(c.listing)")
+  }
+}

@@ -130,6 +130,9 @@ enum Prep {
       f.insts[nid] = inst
     }
     f.append(Inst(.br, .void, [], blocks: [blockMap[0]]), to: bi)
+    // The callee's variables go to the caller's entry block, where promotion looks for them: left in the callee's
+    // blocks they would stay in the thread's stack memory, a store and a load for every access.
+    hoistAllocas(&f, newInsts)
 
     // The call's result.
     if call.result >= 0 {
@@ -145,6 +148,19 @@ enum Prep {
       }
     }
     m.functions[m.entry] = f
+  }
+
+  /// Move the allocas among `ids` (instructions cloned into `f`) to the front of the entry block. A variable's slot is
+  /// the invocation's whichever block makes it, and its contents are undefined until stored, so one slot made at the
+  /// entry is the same variable.
+  static func hoistAllocas(_ f: inout Function, _ ids: [Int]) {
+    var moved: [Int] = []
+    for id in ids where f.insts[id].op == .alloca { moved.append(id) }
+    if moved.isEmpty { return }
+    for b in 0..<f.blocks.count {
+      f.blocks[b].insts.removeAll { f.insts[$0].op == .alloca && moved.contains($0) }
+    }
+    f.blocks[0].insts.insert(contentsOf: moved, at: 0)
   }
 
   // MARK: multiview (valhall 07 section 7.8.2, 12c.4.1)
@@ -208,6 +224,8 @@ enum Prep {
         c.view = views[k]
         m.outputs.append(c)
       }
+      // The copy's variables (its outputs' slots among them) at the entry, for promotion.
+      hoistAllocas(&f, made)
       entries.append(blockMap[0])
       copyBlocks.append(blockMap)
       setViewIndex(made, views[k])

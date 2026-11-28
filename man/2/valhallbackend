@@ -57,7 +57,7 @@ The backend turns a compute shader into the words MaliCore's dispatch runs, and 
 It runs on the device, when a pipeline is made, and on the host, in tests.
 It is Swift, tier 0.
 
-The work, in order: calls are inlined, the IR's passes run and scalarise, instructions are selected over virtual registers, FAU and constant sources are fitted to the instruction limits, registers are allocated, message slots and waits are placed, `reconverge` and `end` are added, the branches are resolved, and the ISA validator checks the result (a broken rule is `invalidOutput`).
+The work, in order: calls are inlined (a callee's Function variables, and a multiview copy's, go to the entry block, where promotion makes them values, so a function whose parameters are pointers to the caller's variables, as glslang passes them, costs no stack memory), the IR's passes run and scalarise, instructions are selected over virtual registers, FAU and constant sources are fitted to the instruction limits, registers are allocated, message slots and waits are placed, `reconverge` and `end` are added, the branches are resolved, and the ISA validator checks the result (a broken rule is `invalidOutput`).
 The output `ComputeShader` holds the code, the register class (32 when every register is in r0 to r15 or r48 to r63), the preload mask, the workgroup size, the stack and workgroup memory bytes, the FAU words, whether workgroup merging is allowed and the flush mode.
 
 ## The ABI
