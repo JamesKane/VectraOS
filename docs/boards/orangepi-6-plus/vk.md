@@ -77,7 +77,61 @@ Radharc of the display (1920x1080 at 60 Hz), presented FIFO.
 vkmark score: **13**. Every scene runs, at 12 to 15 frames a second whatever
 its GPU work (the same scenes run at 600 to 16000 frames a second headless):
 the window's presents are paced at about one in four or five of the
-display's vblanks, not at each one. Why is not yet known; see below.
+display's vblanks, not at each one. The cause is below.
+
+## The windowed rate: Radharc's frame took 62 ms (fixed, 2026-11-28)
+
+Measured on the board with lines Radharc and the Vulkan layer printed every
+2 s (dropped since), over `vkmark -b clear -b vertex` in the window:
+
+- **The timeline at 13 FPS.** vkmark's present waited 66 to 83 ms for its
+  credit; its acquire waited 1 us (three images, always one free). Radharc
+  took every present at the first latch after it arrived (14 ms in the queue
+  at most) and never found one not yet drawn. Its latch thread woke on time
+  (2 us late) but latched 26 to 30 times in 2 s, skipping three vblanks of
+  four: each latch's frame took 58 to 68 ms. The frame was the GPU's whole
+  desk (18 ms), the GPU's copy of it back into memory the CPU reads (37 ms),
+  the CPU's copy of the damage into the shadow (0.5 ms) and into the
+  output's image. The latch's deadline profile was not the cause (1.8 ms of
+  CPU a latch; the same with no profile).
+- **Cause 1: scanout direct never attached.** `renderer gpu` was on Mali but
+  not `scanout direct`. linlon refused both targets: `bti_pin` failed
+  ACCESS_DENIED. bti_pin asks MAP of the VMO it pins, as Zircon's does, and
+  mali(3)'s `exportVMO` gave transfer, read and measure only. No board run
+  had ever had Radharc's direct path; compose-test checked that the targets
+  export, never that a display pins them. With MAP, both attach: 28 to 30
+  FPS, Radharc latching at every other vblank.
+- **Cause 2: the window's chrome uploaded at every frame.** The draw was
+  still 17.5 ms. Not the GPU wait or its notification (a 30 ms spin on the
+  chain word saw the same), not the scheduler (no profile, or vkmark's group
+  at the lowest priority: the same), not the window's imported image (drawn
+  as a fill instead: the same, and bound GPU-cacheable: the same). The same
+  desk drawn with nothing in it took 0.87 ms, and the desk drawn before
+  vkmark started 0.4 ms. The renderer copied each window's chrome into its
+  texture at every frame (a staging copy before the pass), though a chrome
+  changes only by being made again. Uploaded once for each chrome made, the
+  frame takes 0.6 ms and Radharc latches at every vblank.
+
+Why a copy before the pass costs 17 ms only while another context (vkmark's)
+is on the GPU is not known; see Known problems.
+
+`esp-board-vkmark-window` after both, 2026-11-28 (branch at 29efb71e), the
+default list:
+
+| Scene | FPS | Scene | FPS |
+|---|---:|---|---:|
+| vertex device-local=true | 59 | shading cel | 57 |
+| vertex device-local=false | 57 | effect2d edge | 60 |
+| texture anisotropy=0 | 60 | effect2d blur | 57 |
+| texture anisotropy=16 | 57 | desktop | 60 |
+| shading gouraud | 60 | cube | 59 |
+| shading blinn-phong-inf | 57 | clear | 57 |
+| shading phong | 60 | | |
+
+vkmark score: **58** (13 before). The scenes alternate between 57 and 60:
+Radharc's vblank is its own 60.0 Hz while the display's is 59.9 Hz, and as
+the two drift, a latch now and then falls just after the display's latch
+and waits a frame.
 
 ## The texture scenes' GPU hang: empty tile read (fixed, 2026-11-27)
 
@@ -190,10 +244,20 @@ shading scenes on the same build gave 4927, 4838, 3759 and 3842 FPS, against
 gl.md's last 4861, 4755, 3690 and 3763.
 
 ## Known problems
-- **The windowed rate.** 12 to 15 frames a second where the display gives
-  60. Radharc composes windows on the GPU here (radharc(4)), and vkmark's
-  frames are presented FIFO; neither the compositor's rate nor the present's
-  wait has been measured yet.
+- **A copy before a pass: 17 ms beside another context.** Radharc's desk,
+  with a staging copy into a texture before its pass, took 17.5 ms while
+  vkmark's context was on the GPU, against 0.4 ms for the same frame
+  before vkmark started. Its GPU copy of the frame back to memory took
+  37 ms there, against 5.5 ms for a 4K one in compose-test alone. The
+  chain word only reached its value then, so the GPU's work, not the
+  wait, took that long. The chrome no longer needs the copy, but any
+  client that uploads before it draws, while another process uses the GPU,
+  should see the same. Not looked into: the mali scheduler's choice of
+  groups, endpoints, or the firmware's.
+- **Radharc's vblank is its own.** 60.0 Hz against the display's 59.9 Hz,
+  so a window at the display's rate loses a frame now and then (57 to 60 in
+  vkmark's scenes); linlon's `present` returns at the display's latch,
+  which Radharc doesn't follow.
 - **One whole-board hang at phong's start**, 2026-11-28, on the first run of
   the fixed build (the shading scenes alone). The console stopped at
   `[shading] shading=phong:`, with no mali message, and the watchdog reset the

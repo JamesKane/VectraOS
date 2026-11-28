@@ -107,6 +107,9 @@ func matte(_ painter: inout Painter, width: Int, height: Int) -> [UInt32] {
   public let contentWidth: Int
   public let contentHeight: Int
   let storage: UnsafeMutablePointer<UInt32>
+  /// Which frame it is (`Pixels.source`), given by the scene it is set in (`Scene.setChrome`): new for each frame set, and
+  /// apart from every client image's, so that a renderer that keeps a copy of it makes one again only for a new frame.
+  public internal(set) var source: UInt64 = 0
 
   public var title: String { template.title }
   public var focused: Bool { template.focused }
@@ -161,6 +164,7 @@ func matte(_ painter: inout Painter, width: Int, height: Int) -> [UInt32] {
   public var pixels: Pixels {
     var p = unsafe Pixels(unsafe: UnsafeRawPointer(storage), width: width, height: height, stride: width)
     p.alpha = .premultiplied
+    p.source = source
     return p
   }
 

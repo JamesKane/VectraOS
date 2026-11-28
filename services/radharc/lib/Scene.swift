@@ -319,6 +319,8 @@ public final class Scene {
   public static let tabHeight = 20, border = 1, snap = 12
   /// The image id a window's frame is drawn from (clients' are nonzero).
   public static let chromeImage: UInt32 = 0
+  /// The frames set on windows so far: each one's `source` (above any client image's).
+  var chromesSet: UInt64 = 0
   /// The image id its clock's face is drawn from (clients' are below it).
   public static let clockImage: UInt32 = .max
   /// The close and zoom boxes' size (M6l).
@@ -1186,6 +1188,11 @@ public final class Scene {
   public func setChrome(_ id: UInt32, _ c: WindowChrome?) {
     guard let w = window(id) else { return }
     add(damage: w.painted)
+    if let c {
+      // New pixels for a renderer that keeps a copy (`needsUpload`).
+      chromesSet += 1
+      c.source = 1 << 63 | chromesSet
+    }
     w.chrome = c
     add(damage: w.painted)
   }
@@ -1453,6 +1460,15 @@ public final class Scene {
     }
     let cr = cursorRect.intersection(r)
     if !cr.isEmpty { list.quads.append(Quad(cr, sx: cr.x - pointer.x, sy: cr.y - pointer.y, kind: Quad.cursor)) }
+  }
+
+  /// Whether a renderer's copy of a window's image, last taken at the window's `takenAt` presents (nil: never), must be
+  /// taken again now that the window has made `presents`: a client's image whenever its window has presented since; the
+  /// frame's chrome only when it is new, which a renderer sees as new pixels (`Pixels.source`) and keeps no copy of yet,
+  /// since the chrome changes only by being made again, never in place.
+  public static func needsUpload(image: UInt32, takenAt: UInt64?, presents: UInt64) -> Bool {
+    guard let takenAt else { return true }
+    return image != chromeImage && takenAt != presents
   }
 
   /// A window's image's pixels, for a renderer.

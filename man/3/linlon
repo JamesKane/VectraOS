@@ -36,7 +36,7 @@ The engine reads memory through the display SMMU: devmgr(8) gives linlon a BTI f
 `attach` pins a client's image through that BTI as one run of device addresses, which the layer reads as it is: nothing is copied.
 Where no IOMMU translates the engine, an image not contiguous in physical memory can't be pinned so, and `attach` fails, `unavailable`.
 
-An image that is the GPU's own target (mali(3)'s `exportVMO`, a VMO with the rights to be transferred, read and measured) is attached as any other and shown with a `present` whose damage is empty areas: nothing on the CPU touched its pixels, so nothing is written back from the CPU's caches, and the GPU's pass has cleaned its own before its frame was done.
+An image that is the GPU's own target (mali(3)'s `exportVMO`, a VMO with the rights to be transferred, read, mapped and measured: pinning asks MAP of a VMO) is attached as any other and shown with a `present` whose damage is empty areas: nothing on the CPU touched its pixels, so nothing is written back from the CPU's caches, and the GPU's pass has cleaned its own before its frame was done.
 `present` shows an image the output's size: it writes the damaged rows back from the CPU's caches, since the Sky1's engines don't snoop them, points the layer at the image as XRGB8888, sets the pipeline's configuration-valid bit, and waits for the configuration to latch at the next frame: the GCU's interrupt, or its raw status after 100 ms.
 So `present` returns once its frame is the one being scanned out, and a client that draws into an image while another is shown, as radharc(4) does, never tears.
 `show` of an image is `present` of the whole image.

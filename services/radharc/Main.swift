@@ -506,6 +506,13 @@ final class WindowState: @unchecked Sendable {
       directOn = true
       return shown
     }
+    // Where the frames could have been shown as they are, say that each is copied instead: a frame then costs the GPU's
+    // copy into memory the CPU reads, and the CPU's into the output's image.
+    if plain.backend.utf8.elementsEqual("mali".utf8), let sink = framebuffer.display,
+      sink.canShowDirect(width: width, height: height)
+    {
+      print("radharc: the display doesn't take the GPU's targets as they are: each frame is copied to it")
+    }
     return plain
   }
 

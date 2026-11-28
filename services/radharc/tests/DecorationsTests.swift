@@ -110,6 +110,33 @@ func aFrameIsComposedAsChromeDrawsIt(_ name: String) throws {
   #expect(worst <= 2, "\(name): the worst channel off by \(worst), \(differing) pixels differ")
 }
 
+/// A renderer that keeps a copy of a window's frame uploads it once for each frame made, not at each frame of the desk: a
+/// copy before every pass took Radharc's 1080p frame on Mali from 0.6 ms to 17.5 ms beside a client's context. A frame made
+/// is new pixels; a client's image is taken again whenever its window presents.
+@Test func aFrameIsUploadedOnceForEachFrameMade() throws {
+  let theme = try Theme.resolve(ThemeStack(theme: "platinum-indigo"), installed: installed)
+  var painter = Painter(theme: theme, fonts: Fonts(theme: theme, from: allFonts()),
+                        cache: GlyphCache(coverageSize: 512, fieldSize: 64))
+  let s = Scene(width: 400, height: 300)
+  let (w, _) = s.open(title: "Notes", width: 200, height: 100)
+  let t = FrameTemplate(&painter, title: "Notes", focused: true)
+  let c = WindowChrome(t, contentWidth: 200, contentHeight: 100)
+  s.setChrome(w.id, c)
+  let first = s.pixels(window: w.id, image: Scene.chromeImage)!.source
+  #expect(s.pixels(window: w.id, image: Scene.chromeImage)!.source == first, "a frame's pixels are the same each time")
+  #expect(first >> 63 == 1, "a frame's pixels are never a client image's")
+  s.setChrome(w.id, WindowChrome(t, contentWidth: 200, contentHeight: 100))
+  #expect(s.pixels(window: w.id, image: Scene.chromeImage)!.source != first, "a frame set again is new pixels")
+  // Never taken: taken, whichever image it is.
+  #expect(Scene.needsUpload(image: Scene.chromeImage, takenAt: nil, presents: 7))
+  #expect(Scene.needsUpload(image: 3, takenAt: nil, presents: 7))
+  // The chrome, once taken, never again for its window's presents; a client's image at each one.
+  #expect(!Scene.needsUpload(image: Scene.chromeImage, takenAt: 7, presents: 7))
+  #expect(!Scene.needsUpload(image: Scene.chromeImage, takenAt: 7, presents: 8))
+  #expect(!Scene.needsUpload(image: 3, takenAt: 7, presents: 7))
+  #expect(Scene.needsUpload(image: 3, takenAt: 7, presents: 8))
+}
+
 /// The clock (D114): its text; drawn in a window's area in the scene's
 /// glyphs until a face for the time shown is set, then from the face,
 /// right-aligned in the theme's style; a new minute damages only it.
