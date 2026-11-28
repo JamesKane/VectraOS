@@ -784,7 +784,10 @@ layout above where they differ.
     presented with empty damage. Removed: the GPU-to-readback copy, the
     CPU's copy into the shadow, and the copy into the output's image. The
     pass's tail already cleans the GPU's caches, so no CPU maintenance
-    either. A readback stays for tests and `pixel`.
+    either. A readback stays for tests and `pixel`. (Radharc's own targets
+    never attached: bti_pin asks MAP of a VMO and the export didn't give it,
+    so linlon refused them and Radharc fell back to the copies until
+    2026-11-28; the export now has MAP, vk.md, "The windowed rate".)
   - **The missing quads:** the first runs differed from the CPU's frame in
     about 55 pixels, 2x2 quads left clear, a few different ones each frame.
     Not the upload (a separate submission changed nothing), the heap, the

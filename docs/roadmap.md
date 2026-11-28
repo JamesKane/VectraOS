@@ -45,12 +45,14 @@ here, and its history, step by step, is in git and `docs/decisions/`.
   (`gl.glmark2.*`, V6f's), printed by glmark2 and checked by the board's
   run of `esp-board-glmark2`.
   vkmark 2025.01, a tier 1 port, runs every scene on the board headless
-  (score 9283 at 800x600) and in a Radharc window (score 13, the
-  presents' pacing open; docs/boards/orangepi-6-plus/vk.md), with no
+  (score 9283 at 800x600) and in a Radharc window (score 58 at the
+  display's 60 Hz, from 13: Radharc's scanout direct never attached, and
+  each frame re-uploaded the windows' chrome;
+  docs/boards/orangepi-6-plus/vk.md), with no
   reference yet (D177 wants panvk's on the board). The texture scenes'
   GPU hang is fixed (no empty tile read), and phong (598 to 5240 FPS: an
-  inlined callee's variables were left in memory). Open: the window's
-  rate. Next: that,
+  inlined callee's variables were left in memory). Open: a copy before a
+  pass takes 17 ms beside another GPU context. Next:
   the CTS as a report (D174's step 7), then the video codec (the
   linlon-vpu spec), then the NPU.
 - **Audio, in QEMU while the board is allocated elsewhere** (V6f item 3,
