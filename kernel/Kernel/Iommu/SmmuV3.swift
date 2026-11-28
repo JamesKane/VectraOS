@@ -40,6 +40,21 @@ enum SmmuV3 {
         for i in 0..<unitCount { try? SmmuUnitPointer(address: units[i]).setControl(0) }
     }
 
+    /// For a reset's last lines: each unit's base, CR0 and GERROR (a global
+    /// error is one GERRORN hasn't acknowledged). Interrupts masked, no lock.
+    static func describeForReset(to out: some TextOutput) {
+        if unitCount == 0 { out.write(" none") }
+        for i in 0..<unitCount {
+            let unit = SmmuUnitPointer(address: units[i])
+            out.write(" ")
+            out.write(hex: unit.pointee.registerBase)
+            out.write(" CR0 ")
+            out.write(hex: UInt64(unit.read32(cr0)))
+            out.write(" GERROR ")
+            out.write(hex: UInt64(unit.read32(gerror) ^ unit.read32(gerrorN)))
+        }
+    }
+
     // MARK: Registers (offsets)
 
     static var idr0: UInt64 { 0x00 }

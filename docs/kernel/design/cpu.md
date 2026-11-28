@@ -535,6 +535,22 @@ Todhchai M4's shutdown):
   so no CPU is halted holding the console), the UART is drained
   (`Uart.drain`: an emulator drops what it still holds at power off), and
   the hardware is asked twice, a second apart, before "didn't act".
+  On arm64 the machine goes to the firmware as a warm boot hands it on:
+  the other CPUs off through PSCI CPU_OFF (`leave(offline: true)`), then
+  `Its.turnOff` and `SmmuV3.turnOff`, so no table walk or LPI pending
+  write into our memory runs through the reset (FreeBSD resets the
+  Orange Pi 6 Plus with its SMMUs as firmware set them). The last lines
+  before the hardware is told say what is left running: other CPUs
+  stopped of how many, the watchdog's WCS and the milliseconds to its
+  reset (`Watchdog.describeForReset`), each SMMUv3's CR0 and unacked
+  GERROR, and `croi kernel: PSCI SYSTEM_RESET (SMC|HVC)`; boot-reboot
+  waits for that line (another arch: the CPUs line), the reset's last.
+  On the Orange Pi 6 Plus the firmware's first line (BL2) comes 1-2 s (once 11 s)
+  after a reset that works (board-run's `LOG.times`); a reset that
+  hangs prints nothing more, and the SBSA watchdog, 16-30 s from its
+  reset at that point, did not rescue the one such hang seen with it on
+  (2026-11-26): the hang is in the reset or in firmware before BL2,
+  where our watchdog either was reset with the SoC or can't act.
 - `croi.kill_watch=1` (lockup reports): 1 s after a task_kill of a
   process, a kernel thread holding it prints its threads,
   `Scheduler.dump` (with eligibility timers, period starts, kill marks)

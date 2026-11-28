@@ -72,6 +72,11 @@ in input attachments).
   `/dev/cu.usbserial-ABSCDIMD` (`BOARD_TTY`). `listen.py` holds the
   descriptor open at 115200 8N1. On macOS, `stty -f` followed by `cat`
   loses the speed when stty closes the device, and records nothing.
+- **Arrival times.** `LOG.times` has a line a read, `EPOCH OFFSET`: when
+  the byte at OFFSET in LOG came. It times a reset: from
+  `croi kernel: PSCI SYSTEM_RESET` to the firmware's `NOTICE:  BL2` was
+  1 to 2 s, once 11 s. A reboot that ends at the PSCI line with no BL2 line within
+  a minute is a hang in the reset, not an address change.
 - **Boot entry.** `BOOT_ENTRY` defaults to `000A`, the VectraOS entry. It
   is never in BootOrder, so any reset returns to FreeBSD.
 

@@ -212,6 +212,43 @@ gl.md's last 4861, 4755, 3690 and 3763.
     at `croi kernel: rebooting` and its budget lines, with no firmware
     output after them, and the owner power-cycled it. That one was a real
     hang, in our reboot or the firmware's reset.
+  - **The reset hang, looked into (2026-11-28; cause not found).** One
+    other console ends the same way: 2026-11-26, before the quiesce fix,
+    glmark2 killed by an exception with GPU work in flight. Of the 88
+    consoles kept from that week's board runs that reach
+    `croi kernel: rebooting`, 87 go on to the firmware's BL2; of the 45
+    or so after the quiesce fix, all do, so with the hang above the rate
+    since is about 1 in 46, not 1 in 12.
+    - **Where it stops.** The kernel now prints the reset's last lines
+      (system(2)); the last is `croi kernel: PSCI SYSTEM_RESET (SMC)`.
+      board-run's `LOG.times` puts BL2's first line 1 to 2 s after it, so a
+      hang is in the reset itself or in firmware before BL2.
+    - **The watchdog doesn't rescue it.** The SBSA watchdog (GTDT,
+      `0x16003000`; the kernel arms it, 30 s, firmware and FreeBSD leave
+      it off: WCS 0 at our boot) is on at the reset, 16.6 s from its own
+      reset in both runs measured. It was on in the 11-26 hang too, and
+      the board stayed hung: either the reset happened and took the
+      watchdog with it, or the reset machinery can't act. A shorter
+      timeout armed just before the reset would not help.
+    - **What the reset found running**, against FreeBSD's reboot, which
+      PSCI SYSTEM_RESET as we do (AbyssBSD's shutdown too): the GPU is
+      quiesced; PCI bus mastering is off (NVMe, the RTL8126s); DPU4
+      scans out the GOP framebuffer through the display SMMU's RMR
+      identity map, as under FreeBSD; but ten xHCI controllers are left
+      running with their rings in our memory and no IOMMU (USB1 polls a
+      keyboard every few ms), which FreeBSD halts, and both SMMUv3s and
+      the ITS were left on. The reset now turns the other CPUs off
+      (PSCI CPU_OFF) and the ITS and both SMMUs off first, as a warm boot
+      does (CR0 0 on the last line). Stopping the xHCIs needs devmgr to
+      reach drivers that have no supplies; not done.
+    - **Reboots since:** ten board-test runs (one with the last lines
+      only, nine with the hand-over too), none hung. At about 1 in 46
+      that says little either way.
+    - **One slow reset.** In nine of the ten, BL2's first line came 0.95
+      to 1.8 s after the PSCI line; in one (with the hand-over) it came
+      11.2 s after. Something in the reset or the firmware before BL2
+      waits, and here gave up after about 10 s; a wait that never gives
+      up would be the hang. What it waits on is not known.
   - The two cases below are older. Nobody looked for the board at another
     address then, so it is not known whether either was an address change
     or a hang.

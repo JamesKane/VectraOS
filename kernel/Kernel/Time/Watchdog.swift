@@ -59,6 +59,16 @@ struct SbsaWatchdog {
         write32(control + 0x0, 0)  // WCS.EN off
     }
 
+    /// What it is doing: WCS (bit 0 enabled, 1 WS0, 2 WS1) and the system
+    /// counter ticks left before its reset (WS1), from `counter`.
+    func state(counter: UInt64) -> (wcs: UInt32, ticksToReset: UInt64) {
+        let wcs = read32(control + 0x0)
+        let wcv = UInt64(read32(control + 0x10)) | UInt64(read32(control + 0x14)) << 32
+        // Before WS0 the reset is one offset after WCV; after it, at WCV.
+        let resetAt = wcs & 2 == 0 ? wcv &+ offset : wcv
+        return (wcs, resetAt > counter ? resetAt - counter : 0)
+    }
+
     // MARK: Discovery
 
     /// The first SBSA watchdog in the GTDT's platform timers.
@@ -89,6 +99,10 @@ struct SbsaWatchdog {
 
     private func write32(_ address: UInt64, _ value: UInt32) {
         unsafe VolatileMappedRegister<UInt32>(unsafeBitPattern: UInt(address)).store(value)
+    }
+
+    private func read32(_ address: UInt64) -> UInt32 {
+        unsafe VolatileMappedRegister<UInt32>(unsafeBitPattern: UInt(address)).load()
     }
 }
 
@@ -305,6 +319,7 @@ enum Watchdog {
             return .none
         }
         var watchdog = SbsaWatchdog(control: control, refresh: refresh, method: BoardRules.watchdogRefresh)
+        foundWcs = watchdog.state(counter: arch_counter_read()).wcs
         watchdog.enable(timeoutTicks: Clock.frequency * timeoutSeconds)
         active = .sbsa(watchdog)
         arm()
@@ -314,6 +329,29 @@ enum Watchdog {
     #if arch(riscv64)
     nonisolated(unsafe) private static var lastCause = K1Watchdog.Cause.other
     #endif
+
+    /// The SBSA watchdog's WCS as `start` found it, before enabling it:
+    /// whether what ran before (firmware, the last system) left it on.
+    nonisolated(unsafe) private(set) static var foundWcs: UInt32 = 0
+
+    /// For a reset's last lines: whether a watchdog runs, and when it would
+    /// reset the machine (nothing refreshes it once interrupts are masked),
+    /// so a reset that never comes says whether the watchdog didn't either.
+    static func describeForReset(to out: some TextOutput) {
+        switch active {
+        case .sbsa(let watchdog)?:
+            let (wcs, ticks) = watchdog.state(counter: arch_counter_read())
+            out.write("SBSA watchdog WCS ")
+            out.write(hex: UInt64(wcs))
+            out.write(", its reset in ")
+            out.write(decimal: Clock.frequency == 0 ? 0 : ticks * 1000 / Clock.frequency)
+            out.write(" ms")
+        #if arch(riscv64)
+        case .k1?: out.write("the K1's watchdog")
+        #endif
+        case nil: out.write("no watchdog")
+        }
+    }
 
     /// Once the debuglog runs: a reset the watchdog made, as a record, so
     /// `log` shows it where the console isn't watched.

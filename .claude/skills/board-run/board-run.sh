@@ -130,6 +130,7 @@ locked=yes
 # `stty -f`'s settings when the descriptor closes, and `cat` then records
 # nothing.
 : > "$log"
+: > "$log.times"
 BOARD_TTY=$tty python3 "$here/listen.py" "$log" 900 &
 cat_pid=$!
 
