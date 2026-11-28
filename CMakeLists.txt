@@ -551,10 +551,17 @@ if(CROI_ARCH STREQUAL arm64 OR CROI_ARCH STREQUAL rv64)
   set_tests_properties(boot-lean-icount PROPERTIES TIMEOUT 120)
 endif()
 
-# Reboot (K10e): the machine resets; -no-reboot makes QEMU exit on it.
+# Reboot (K10e): the machine resets; -no-reboot makes QEMU exit on it. The
+# line waited for is the reset's last: on arm64 the PSCI call, made after
+# every other CPU is off and the ITS and SMMUs are.
 croi_esp(reboot "userboot.next=${CROI_USERBOOT_NEXT} userboot.shutdown=reboot croi.debug_syscalls=on" ALL)
+if(CROI_ARCH STREQUAL arm64)
+  set(_reboot_last "croi kernel: PSCI SYSTEM_RESET")
+else()
+  set(_reboot_last "other CPUs stopped; ")
+endif()
 add_test(NAME boot-reboot
-  COMMAND ${CROI_QEMU} --test "croi kernel: rebooting" --exits
+  COMMAND ${CROI_QEMU} --test "${_reboot_last}" --exits
           ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-reboot ${CMAKE_BINARY_DIR}/qemu-reboot ${CROI_EDK2_DIR})
 set_tests_properties(boot-reboot PROPERTIES TIMEOUT 120)
 

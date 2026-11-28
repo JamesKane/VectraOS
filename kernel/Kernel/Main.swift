@@ -376,7 +376,9 @@ func kernel_main_continue() -> Never {
                     console.write(" s (croi.watchdog_limit=); nothing to reset the machine\n")
                 }
             case .sbsa:
-                console.write("SBSA generic watchdog on, 30 s timeout, refreshed every 20-25 s\n")
+                console.write("SBSA generic watchdog on, 30 s timeout, refreshed every 20-25 s; found with WCS ")
+                console.write(hex: UInt64(Watchdog.foundWcs))
+                console.write("\n")
                 if let limit = Watchdog.takeLimit() {
                     console.write("  wdog:   refreshes stop after ")
                     console.write(decimal: limit)

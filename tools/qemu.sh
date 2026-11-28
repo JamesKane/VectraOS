@@ -305,9 +305,11 @@ if [[ -n $expect ]]; then
       done
     fi
     guest "$line"
-    # The guest turned itself off without the line: no point waiting.
-    if [[ $line == "croi kernel: powering off"* || $line == "croi kernel: rebooting"* ]] &&
-       [[ $line != *"$expect"* ]]; then
+    # The guest turned itself off without the line: no point waiting. Its
+    # reset's last lines come before QEMU exits (-no-reboot), and a test
+    # may want one of them; a power-off or reset the hardware didn't do
+    # ends in the kernel's "didn't act".
+    if [[ $line == "croi kernel: the hardware didn't act"* ]] && [[ $line != *"$expect"* ]]; then
       break
     fi
     if [[ $line == *"$expect"* ]]; then

@@ -1,7 +1,7 @@
 page system 2
 summary power control and idle states
 names system system_powerctl cpu_set_idle_states
-src user/include/croi/syscall.h kernel/include/power.h kernel/Kernel/Power.swift kernel/Kernel/Sched/Idle.swift
+src user/include/croi/syscall.h kernel/include/power.h kernel/Kernel/Power.swift kernel/Kernel/Sched/Idle.swift kernel/Kernel/Time/Watchdog.swift
 keys power shutdown reboot reset idle cstate mwait psci cpu off
 lang c
 
@@ -27,6 +27,9 @@ Both calls need <power>, a resource(2) that grants the POWER system resource.
 `system_powerctl` does the command <cmd>.
 `CROI_SYSTEM_POWERCTL_REBOOT` and `CROI_SYSTEM_POWERCTL_SHUTDOWN` stop every other CPU, wait up to 10 seconds for the debuglog to reach the console (a board's serial console at 115200 baud prints about 11 KB a second), and reset or turn off the machine.
 They return only on failure.
+On arm64 the other CPUs are turned off through PSCI CPU_OFF rather than halted, and the GIC's ITS and LPIs and every SMMUv3 the kernel runs are turned off before the firmware is asked, as for a warm boot, so the reset runs with nothing walking the kernel's tables or writing its pending bits.
+The console's last lines say what the machine is left doing: `croi kernel: rebooting` (or `powering off`) and the budget lines, then how many other CPUs stopped, the watchdog's state and how long before it would reset the machine (nothing refreshes it once interrupts are masked), and on arm64 each SMMUv3's CR0 and unacknowledged global errors, then `croi kernel: PSCI SYSTEM_RESET` (or `SYSTEM_OFF`) with its conduit.
+A reset that never comes ends the console there.
 
 | Architecture | Reboot | Shutdown |
 | amd64 | the FADT's reset register, then port 0xCF9, then the 8042 | `CROI_ERR_NOT_SUPPORTED`; use `CROI_SYSTEM_POWERCTL_ACPI_TRANSITION_S_STATE` |
@@ -80,5 +83,8 @@ syscall(2), resource(2), object(2), job(2)
 
 
 # BUGS
+
+On the Orange Pi 6 Plus a reboot now and then never reaches the firmware: the console ends at `croi kernel: PSCI SYSTEM_RESET`'s place, the firmware's first line (TF-A's BL2, which comes 1 to 2 s after a reset that works, and once came after 11 s) never comes, and the SBSA watchdog, though on, does not reset the board either, so only a power cycle brings it back.
+Why is not known; platform devices other than the GPU, such as the USB host controllers, are still running at the reset.
 
 On the SpacemiT K1 (the Orange Pi RV2), `CROI_SYSTEM_POWERCTL_SHUTDOWN` asks SBI SRST, which hangs under the board's firmware: the machine stops but stays on.

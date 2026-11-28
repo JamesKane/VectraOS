@@ -214,7 +214,18 @@ enum Power {
 
     /// Lets the debuglog drain, stops the other CPUs, reports and does it.
     private static func halt(_ action: Action, started: UInt64) -> Never {
-        let (draining, drained, _) = leave()
+        #if arch(arm64)
+        // The machine goes to the firmware as a warm boot hands it to a new
+        // kernel: the other CPUs off through PSCI, the ITS and the
+        // redistributors' LPIs off, and the SMMUv3s off (translation, queues,
+        // event log), so nothing walks tables or writes pending bits in
+        // memory that is ours while the reset runs, as firmware left them.
+        let (draining, drained, stopped) = leave(offline: true)
+        Its.turnOff()
+        SmmuV3.turnOff()
+        #else
+        let (draining, drained, stopped) = leave()
+        #endif
         // The kernel's own part, without waiting for the console: that
         // depends on how much log is still queued (m2's last lines take
         // ~20 ms through a KVM serial port, a byte per exit), so it is
@@ -230,6 +241,24 @@ enum Power {
                 Budgets.report(console, "power.reboot_kernel", elapsed, limit: 10_000_000)
                 Budgets.report(console, "power.log_drain", drained - draining)
             }
+            // What the machine is left doing as the hardware is told, the
+            // last lines before it: a reset that never comes ends the
+            // console here, and says when the watchdog should have reset it.
+            console.write("croi kernel: ")
+            console.write(decimal: UInt64(stopped))
+            console.write(" of ")
+            console.write(decimal: UInt64(max(Smp.count, 1) - 1))
+            console.write(" other CPUs stopped; ")
+            Watchdog.describeForReset(to: console)
+            #if arch(arm64)
+            console.write("; SMMUv3")
+            SmmuV3.describeForReset(to: console)
+            console.write("\ncroi kernel: PSCI ")
+            console.write(action == .shutdown ? "SYSTEM_OFF" : "SYSTEM_RESET")
+            console.write(psci.useHvc ? " (HVC)\n" : " (SMC)\n")
+            #else
+            console.write("\n")
+            #endif
         }
         panicConsole?.drain(patience: 100_000_000)  // an emulator drops what is left
         // The hardware (an emulator's main loop) may take a while: wait

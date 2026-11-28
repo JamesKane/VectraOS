@@ -96,7 +96,9 @@ Bring-up aids (K2 follow-ups from the board review in docs/kernel/roadmap.md):
 - `Timers.alwaysRunning`: x86 ARAT (CPUID 6 EAX[2]); without it deep
   C-states stop the APIC timer.
 - `Watchdog` (Kernel/Time/Watchdog.swift): the GTDT's SBSA generic
-  watchdog, 30 s timeout, refreshed every 20-25 s by a timer;
+  watchdog, 30 s timeout, refreshed every 20-25 s by a timer (its boot
+  line says the WCS it was found with: 0 on the Orange Pi 6 Plus, whose
+  firmware and FreeBSD leave it off);
   `croi.watchdog=off` disables it, and `croi.watchdog_limit=SECONDS`
   stops its refreshes that long after it starts, so the machine resets
   one timeout later: a board run whose image can't be reached to reboot
