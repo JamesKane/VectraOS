@@ -172,8 +172,11 @@ public final class GPURenderer {
       i = images.count - 1
     }
     guard let k = i else { return nil }
-    // A frame's chrome changes without a present: uploaded each frame.
-    if images[k].presents != w.presents || image == Scene.chromeImage {
+    // A client's image is taken again when its window has presented since; the frame's chrome only when it is a new frame
+    // (new pixels, so a new entry above). Uploading the chrome every frame put a copy before every pass, which on Mali, with
+    // a client's context beside this one, took a 1080p frame from 0.6 ms to 17.5 ms.
+    let taken: UInt64? = images[k].presents == UInt64.max ? nil : images[k].presents
+    if Scene.needsUpload(image: image, takenAt: taken, presents: w.presents) {
       if let staging = images[k].staging {
         let into = unsafe staging.pointer!
         for y in 0..<pixels.height { unsafe pixels.copyRow(y, into: into + y * pixels.width * 4) }

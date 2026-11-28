@@ -47,8 +47,9 @@ public final class CSFBuffer: @unchecked Sendable {
   }
 
   /// A new handle to the buffer's VMO for another process to be given (a display's driver, which pins it and reads it as
-  /// it is): it may be transferred, read and measured, not mapped or written.
-  public func exportVMO() -> Handle? { try? vmo.duplicate([.transfer, .read, .getProperty]) }
+  /// it is): it may be transferred, read, mapped and measured, not written. bti_pin asks MAP of the VMO it pins, as
+  /// Zircon's does, so a handle without it can't be pinned.
+  public func exportVMO() -> Handle? { try? vmo.duplicate([.transfer, .read, .map, .getProperty]) }
 
   /// A new handle to the buffer's VMO for another process to map and import (`CSFContext.importBuffer`): it may be transferred,
   /// duplicated, read, written, mapped and measured.

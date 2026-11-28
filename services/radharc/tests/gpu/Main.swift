@@ -14,6 +14,7 @@
 // to done, the frame's copy into host-visible memory included.
 
 import Console
+import DisplayDevice
 import IPC
 import Node
 import Radharc
@@ -139,11 +140,38 @@ func matchTheCPU(_ ns: Namespace) {
 
 /// The native driver's budget: a 1080p scene of twelve windows in each shipped theme drawn into a target shown as it is
 /// (nothing copied), the draw's submit to done, the median of five frames after a warm-up, `theme.compose.1080p`.
+/// The first display driver with an enabled output (/dev/display<n>, as Radharc finds it) attaches both of the GPU's
+/// targets, as Radharc's scanout direct does: the driver pins each through its BTI. A target it can't pin leaves Radharc
+/// composing every frame into a copy the CPU reads, at a fraction of the display's rate. Nothing is shown.
+func displayPinsTargets(_ ns: Namespace, _ gpu: GPURenderer) {
+  var n = 0
+  while (try? ns.list("/dev/display\(n)")) != nil {
+    defer { n += 1 }
+    guard let ch = try? ns.connect("/dev/display\(n)/display") else { continue }
+    var client = DisplayDeviceIPC.DisplayClient(channel: ch)
+    guard let all = try? client.outputs(), all.contains(where: { $0.enabled && $0.width > 0 && $0.height > 0 }) else {
+      continue
+    }
+    var attached = 0
+    for i in 0..<2 {
+      guard let vmo = gpu.exportTarget(i),
+        let id = try? client.attach(vmo: vmo, width: UInt32(gpu.width), height: UInt32(gpu.height))
+      else { continue }
+      attached += 1
+      _ = try? client.detach(image: id)
+    }
+    check(attached == 2, "display\(n) pins both of the GPU's 1080p targets (Radharc's scanout direct)")
+    return
+  }
+  print("compose-test: no display with an output: the targets' pins aren't checked")
+}
+
 func compose1080(_ ns: Namespace) {
   let width = 1920, height = 1080
   var opened = GPURenderer.open(ns, width: width, height: height, direct: true)
   if let o = opened, o.exportTarget(0) == nil || o.exportTarget(1) == nil { opened = nil }
   guard let gpu = opened, gpu.backend.utf8.elementsEqual("mali".utf8) else { return }
+  displayPinsTargets(ns, gpu)
   for name in ["platinum-indigo", "neon-tab"] {
     let theme: Theme
     do {
