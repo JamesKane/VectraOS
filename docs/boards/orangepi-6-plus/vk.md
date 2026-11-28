@@ -137,16 +137,70 @@ then 60 s at 16), headless at 800x600:
   list passed, score 8767 (texture 10282 and 9989; cube 11227 and clear 14894,
   against 12134 and 15777 before). Those two drops were not measured again.
 
+## phong's 1.7 ms: an inlined callee's variables in memory (fixed, 2026-11-28)
+
+phong ran at 598 FPS, 1.67 ms a frame, where gouraud ran at 7439 and
+blinn-phong-inf at 7217. It wasn't pow: blinn-phong-inf's fragment shader
+also takes the general exp2(y log2 x) path. It wasn't the vertex side either:
+cel uses phong's vertex shader and ran at 5634.
+
+- **The cause.** phong's fragment shader calls `compute_color`, and glslang
+  passes the arguments as pointers to Function variables of `main`. The
+  Valhall backend inlines every call, but it left the callee's variables
+  (`eye_direction`, `reflection`, `result` and the rest) in the callee's
+  cloned blocks. Promotion only takes variables in the entry block. So each
+  of them stayed in the thread's stack memory.
+- **The listing.** The shader was 202 instructions, with 144 bytes of stack
+  and a `STORE` or `LOAD ... thread_local_pointer` for every component of
+  every variable access: 30 stores and 36 loads, and 37 NOPs that wait for them.
+  Now it is 99 instructions, with no stack and no thread-local access. Of
+  vkmark's 17 shaders, it was the only one that changed. A multiview vertex
+  shader's copies kept their outputs' slots in memory the same way (48 bytes
+  for two views). Both now put the cloned variables in the entry block
+  (valhallbackend(2)).
+- **The checks.** ValhallBackendTests' InliningTests compile a fragment
+  shader that calls a function with pointer parameters, and a compute shader
+  that makes the call inside a branch. Each must have no stack bytes and no
+  thread-local access. MultiviewTests checks that a two-view shader has no
+  stack.
+
+Headless, 800x600, before (main 420a8bd2) and after:
+
+| Scene | Before | After |
+|---|---:|---:|
+| vertex device-local=true | 11488 | 11398 |
+| vertex device-local=false | 10932 | 10919 |
+| texture anisotropy=0 | 10285 | 10281 |
+| texture anisotropy=16 | 9989 | 9983 |
+| shading shading=gouraud | 7439 | 7481 |
+| shading shading=blinn-phong-inf | 7217 | 7235 |
+| shading shading=phong | 598 | **5240** |
+| shading shading=cel | 5634 | 5606 |
+| effect2d kernel=edge | 11929 | 11970 |
+| effect2d kernel=blur | 6381 | 6384 |
+| desktop | 5844 | 5847 |
+| cube | 11961 | 12058 |
+| clear | 16101 | 16280 |
+| **vkmark Score** | **8907** | **9283** |
+
+The shading scenes alone gave the same: 7417, 7269, 599 and 5640 before, and
+7368, 7248, 5253 and 5622 after. glmark2 takes no calls into the backend
+(the GLSL front end inlines its functions itself), so GL can't change. Its
+shading scenes on the same build gave 4927, 4838, 3759 and 3842 FPS, against
+gl.md's last 4861, 4755, 3690 and 3763.
+
 ## Known problems
 - **The windowed rate.** 12 to 15 frames a second where the display gives
   60. Radharc composes windows on the GPU here (radharc(4)), and vkmark's
   frames are presented FIFO; neither the compositor's rate nor the present's
   wait has been measured yet.
-- **phong: 1.7 ms a frame**, a tenth of gouraud's. Not pow: its
-  `pow(x, 250.0)` takes the general exp2(y log2 x) path, but blinn-phong-inf's
-  fragment shader takes the same path (its exponent is a uniform) at
-  7275 FPS. phong's fragment shader calls a function with its parameters
-  passed by pointer; what the compiler makes of that has not been looked at.
+- **One whole-board hang at phong's start**, 2026-11-28, on the first run of
+  the fixed build (the shading scenes alone). The console stopped at
+  `[shading] shading=phong:`, with no mali message, and the watchdog reset the
+  board. The same image then ran the four scenes again, phong passing at 5253
+  FPS. A build that starts phong twelve times in one boot didn't hang, nor did
+  the full list after it. Whether it comes from the faster shader, or from the
+  GPU or the board, is not known.
 - **The board not coming back after a reboot: partly an address change.**
   - 2026-11-27, after a 60 s texture run: FreeBSD did come back, at the
     login prompt, but DHCP had given it 192.168.0.16, and board-run looked

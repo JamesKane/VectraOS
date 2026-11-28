@@ -42,11 +42,12 @@ here, and its history, step by step, is in git and `docs/decisions/`.
   1 port, runs every scene off-screen on the board above AbyssBSD's
   Panfrost (score 4879 against 3064; docs/boards/orangepi-6-plus/gl.md).
   vkmark 2025.01, a tier 1 port, runs every scene on the board headless
-  (score 8884 at 800x600) and in a Radharc window (score 13, the
+  (score 9283 at 800x600) and in a Radharc window (score 13, the
   presents' pacing open; docs/boards/orangepi-6-plus/vk.md), with no
   reference yet (D177 wants panvk's on the board). The texture scenes'
-  GPU hang is fixed (no empty tile read). Open: phong's rate, the window's
-  rate. Next: those,
+  GPU hang is fixed (no empty tile read), and phong (598 to 5240 FPS: an
+  inlined callee's variables were left in memory). Open: the window's
+  rate. Next: that,
   the CTS as a report (D174's step 7), then the video codec (the
   linlon-vpu spec), then the NPU.
 - **Audio, in QEMU while the board is allocated elsewhere** (V6f item 3,
