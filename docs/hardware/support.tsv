@@ -7,7 +7,7 @@ q35-timer	component	qemu-q35	amd64	supported	yes	V0	D2	-	-	boot-smoke,boot-smoke
 q35-vtd	component	qemu-q35	amd64	supported	no	V0	D2	-	-	boot-smoke,boot-intremap-off	-	-	VT-d, with and without interrupt remapping
 q35-amdvi	component	qemu-q35	amd64	supported	no	V0	D2	-	-	boot-amd-iommu,boot-amd-iommu-xt	-	-	AMD-Vi, with and without x2APIC (XT)
 q35-gop	component	qemu-q35	amd64	supported	no	V0	D2	-	-	framebuffer-pixels	-	-	GOP framebuffer
-q35-kvm	component	qemu-q35	amd64	supported	no	V0	D2	-	-	boot-smoke-kvm	-	-	KVM acceleration; the bench's machine
+q35-kvm	component	qemu-q35	amd64	supported	no	V0	D2	-	-	boot-rio-kvm	-	-	KVM acceleration; the bench's machine
 qemu-q35-ivybridge	platform	-	amd64	planned	-	open	D52	yes	-	-	-	-	-cpu IvyBridge, the floor run beside -cpu max
 qemu-virt-arm64	platform	-	arm64	supported	-	V0	D2	yes	-	vx test arm64	-	-	QEMU virt, ACPI, GICv3, SMMUv3, -cpu max, edk2
 virt-arm64-console	component	qemu-virt-arm64	arm64	supported	yes	V0	D2	-	-	boot-smoke,boot-dbg2-console	-	-	serial console; the DBG2 table's in boot-dbg2-console

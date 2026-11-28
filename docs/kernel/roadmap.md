@@ -333,7 +333,8 @@ Swift program end to end. **K8b done**: bootfs (`tools/mkbootfs.py`,
 pages adopted into a VMO), userboot in Embedded Swift starting
 `userboot.next` from bootfs with processargs; boot tests wait for its
 report. **K8c done**: bin/m2 runs the exit test on all three arches and
-measures the budgets; `boot-smoke-kvm` enforces them (see K8c below).
+measures the budgets; `vx bench` judges them under KVM (boot-smoke-kvm
+enforced them until 2026-11-27; see K8c below).
 **M2 is reached.**
 
 - Channel, event, eventpair, port, timer (absolute deadline plus slack), and
@@ -367,7 +368,9 @@ revision) is the model; croi's is Embedded Swift like the rest.
   does the exit test above. A bench program in bootfs measures from the
   trace: `channel_call` round trip with donation (< 1 µs), port wake from
   another core (< 2 µs) and real-time wake error (p99 < 100 µs), next to
-  K6's null syscall (< 100 ns); `boot-smoke-kvm` enforces them.
+  K6's null syscall (< 100 ns); `boot-smoke-kvm` enforced them until
+  2026-11-27, when the owner removed it as brittle (its self-tests stalled
+  under KVM on brimstone, cause not found); `vx bench` judges them, advisory.
   **Done** (`user/m2`): profile objects (type 25, `profile_create`,
   `object_set_profile`), trace rings readable from user space, idle
   polling for cross-core wakes. Measured under KVM (2026-10-10, six

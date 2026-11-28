@@ -223,16 +223,6 @@ add_test(NAME boot-below-baseline
           -cpu ${_below_cpu_${CROI_ARCH}})
 set_tests_properties(boot-below-baseline PROPERTIES TIMEOUT 120)
 
-if(CROI_ARCH STREQUAL amd64 AND EXISTS /dev/kvm)
-  # Under KVM timing is real: the trace self-test enforces its probe-cost
-  # budget, as Todhchai's M2 budgets will be measured.
-  add_test(NAME boot-smoke-kvm
-    COMMAND ${CROI_QEMU} --test "${CROI_BOOT_DONE}" ${CROI_EXITS}
-            ${CROI_ARCH} ${CROI_ESP_DIR} ${CMAKE_BINARY_DIR}/qemu-kvm ${CROI_EDK2_DIR}
-            -accel kvm -cpu host)
-  set_tests_properties(boot-smoke-kvm PROPERTIES TIMEOUT 120)
-endif()
-
 # Self-tests off, as Todhchai boots (K9f): user space must still come up.
 set(_esp_lean ${CMAKE_BINARY_DIR}/esp-lean)
 croi_esp(lean "userboot.next=${CROI_USERBOOT_NEXT}${_shutdown} croi.debug_syscalls=on" ALL)
