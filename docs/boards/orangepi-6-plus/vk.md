@@ -239,4 +239,7 @@ the distribution or built at the same release, run as
     vkmark --winsys headless -s 800x600  # headless
 
 with nothing else on the GPU, and its per-scene lines and score recorded
-here as glmark2's reference is in gl.md.
+here as glmark2's reference is in gl.md. `ports/vkmark/reference.sh` does it
+all on the board's Ubuntu: builds vkmark at the pin, refuses a device that
+isn't the Mali through panvk, runs both, and saves the system's details and
+the two outputs to send back.
