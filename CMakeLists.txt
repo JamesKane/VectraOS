@@ -421,7 +421,8 @@ function(croi_launcher_test name)
   set_tests_properties(boot-${name} PROPERTIES TIMEOUT ${_t_TIMEOUT})
 endfunction()
 # The desktop (D107): Radharc on the boot framebuffer, run until
-# bin/desktop-test ends; the screendump then shows its window's layers
+# bin/desktop-test passes; the screendump, taken while it holds its
+# window (once it exits the window goes, D107), shows its window's layers
 # where it placed them (its content at 100, 100: a solid 0x336699, and an
 # image at 10, 10 of it, its first row red and the rest green), on
 # Platinum Indigo's desk (0x3f5868, at 20, 20).
@@ -429,7 +430,7 @@ croi_esp(desktop-test "userboot.next=bin/launcher${_shutdown} croi.debug_syscall
   BOOTFS bootfs-desktop-test ALL)
 set(_desktop_dump ${CMAKE_BINARY_DIR}/qemu-desktop/desktop.ppm)
 add_test(NAME boot-desktop
-  COMMAND ${CROI_QEMU} --test "userboot: bin/launcher exited with 0" --screendump ${_desktop_dump}
+  COMMAND ${CROI_QEMU} --test "desktop-test: passed, its window held for the screendump" --screendump ${_desktop_dump}
           ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-desktop-test ${CMAKE_BINARY_DIR}/qemu-desktop ${CROI_EDK2_DIR})
 set_tests_properties(boot-desktop PROPERTIES TIMEOUT 180 FIXTURES_SETUP desktop)
 add_test(NAME desktop-pixels
