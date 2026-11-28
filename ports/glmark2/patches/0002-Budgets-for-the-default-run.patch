@@ -16,10 +16,10 @@ glmark2 exits with 1.
 
 diff --git a/src/budgets-vectraos.cpp b/src/budgets-vectraos.cpp
 new file mode 100644
-index 0000000..f2b60da
+index 0000000..ba877b5
 --- /dev/null
 +++ b/src/budgets-vectraos.cpp
-@@ -0,0 +1,131 @@
+@@ -0,0 +1,130 @@
 +/*
 + * SPDX-License-Identifier: GPL-3.0-or-later
 + *
@@ -32,7 +32,6 @@ index 0000000..f2b60da
 + */
 +#include "budgets-vectraos.h"
 +
-+#include <cmath>
 +
 +#include "log.h"
 +
@@ -123,7 +122,7 @@ index 0000000..f2b60da
 +            over++;
 +            missed += std::string(" gl.glmark2.") + budgets[i].name;
 +        } else {
-+            judge(budgets[i].name, static_cast<unsigned long long>(std::llround(frame_time * 1e9)),
++            judge(budgets[i].name, static_cast<unsigned long long>(frame_time * 1e9 + 0.5),
 +                  limit_ns(budgets[i].reference));
 +        }
 +        return;
