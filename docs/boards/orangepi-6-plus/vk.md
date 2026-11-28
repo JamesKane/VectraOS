@@ -303,8 +303,15 @@ gl.md's last 4861, 4755, 3690 and 3763.
       keyboard every few ms), which FreeBSD halts, and both SMMUv3s and
       the ITS were left on. The reset now turns the other CPUs off
       (PSCI CPU_OFF) and the ITS and both SMMUs off first, as a warm boot
-      does (CR0 0 on the last line). Stopping the xHCIs needs devmgr to
-      reach drivers that have no supplies; not done.
+      does (CR0 0 on the last line).
+    - **Not the xHCIs.** A build that held all ten in reset before the
+      reset (through their Cadence controllers' lines on RST0, 71 to 90)
+      reset cleanly ten times and hung on the eleventh, after
+      `PSCI SYSTEM_RESET (SMC)`, as before. It was not merged. What still
+      runs at the reset is DPU4's scan-out and devices that do no DMA.
+    - **Left as it is (the owner, 2026-11-28).** The hang has a manual
+      workaround, a power cycle, and doesn't affect correctness, so it is
+      not chased further.
     - **Reboots since:** ten board-test runs (one with the last lines
       only, nine with the hand-over too), none hung. At about 1 in 46
       that says little either way.
