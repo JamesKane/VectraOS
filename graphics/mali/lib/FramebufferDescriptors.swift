@@ -322,10 +322,12 @@ public struct FramebufferParameters: Equatable, Sendable {
   public var frameShaderDCDs: UInt64 = 0
   /// The depth and stencil target (word 12 and 13, and the 64-byte extension after this block); nil for a pass with none.
   public var zs: ZSTarget?
-  /// Transaction elimination for render target 0 (8.6): word 12's CRC read and write `[30:31]`, empty tile write `[29]` and, with one
-  /// target, empty tile read `[28]`, and the extension present `[21]` (the CRC record is in it, 8.5).
+  /// Transaction elimination for render target 0 (8.6): word 12's CRC read and write `[30:31]`, empty tile write `[29]`, and the
+  /// extension present `[21]` (the CRC record is in it, 8.5). Never empty tile read `[28]`: with it, on the Orange Pi 6 Plus a
+  /// fragment run of vkmark's texture scene stopped for good after 9 to 26 seconds (a CSG progress timeout), every time; without
+  /// it, never, at the same frame rate (docs/boards/orangepi-6-plus/vk.md). Its one gain, skipping the preload of a tile empty
+  /// again, is none for a pass that clears.
   public var crc = false
-  public var emptyTileRead = false
 
   public init(
     width: Int, height: Int, sampleCountLog2: UInt32 = 0, samplePattern: UInt32 = 0, sampleLocations: UInt64,
@@ -390,7 +392,7 @@ public struct FramebufferParameters: Equatable, Sendable {
       w[12] = z.word12
       w[13] = z.clearDepth.bitPattern
     }
-    if crc { w[12] |= 1 << 21 | 1 << 29 | 1 << 30 | 1 << 31 | (emptyTileRead ? 1 << 28 : 0) }
+    if crc { w[12] |= 1 << 21 | 1 << 29 | 1 << 30 | 1 << 31 }
     w[14] = UInt32(truncatingIfNeeded: tiler)
     w[15] = UInt32(truncatingIfNeeded: tiler >> 32)
     return w

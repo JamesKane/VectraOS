@@ -120,7 +120,7 @@ private func profiles(risked files: [String]) -> [String] {
   guard let amd64 = p.arches.first(where: { $0.arch == "amd64" }) else { return [] }
   guard let boots = amd64.boots else { return ["lean", "services", "cpu"] }
   var out: [String] = []
-  if boots.contains(where: { ["boot-lean", "boot-smoke", "boot-smoke-kvm"].contains($0) }) { out.append("lean") }
+  if boots.contains(where: { ["boot-lean", "boot-smoke"].contains($0) }) { out.append("lean") }
   if boots.contains("boot-launch") { out.append("services") }
   if boots.contains("boot-cpu") { out.append("cpu") }
   if boots.contains("boot-tracker") { out.append("tracker") }

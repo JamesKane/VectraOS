@@ -44,8 +44,9 @@ here, and its history, step by step, is in git and `docs/decisions/`.
   vkmark 2025.01, a tier 1 port, runs every scene on the board headless
   (score 8884 at 800x600) and in a Radharc window (score 13, the
   presents' pacing open; docs/boards/orangepi-6-plus/vk.md), with no
-  reference yet (D177 wants panvk's on the board). Open: texture scenes
-  now and then stop the GPU, phong's rate, the window's rate. Next: those,
+  reference yet (D177 wants panvk's on the board). The texture scenes'
+  GPU hang is fixed (no empty tile read). Open: phong's rate, the window's
+  rate. Next: those,
   the CTS as a report (D174's step 7), then the video codec (the
   linlon-vpu spec), then the NPU.
 - **Audio, in QEMU while the board is allocated elsewhere** (V6f item 3,

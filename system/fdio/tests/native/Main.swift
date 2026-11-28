@@ -211,14 +211,18 @@ func ftsWalk(_ root: String, skip: Bool) -> (entries: [String], sameEntry: Bool,
           "a pipe's bytes come out its read end")
     let w = ends[1]
     let writer = try? Thread.spawn { _ = writeBytes(w, [UInt8](repeating: 0x5A, count: 20_000)); _ = close(w) }
-    var total = 0, same = true
+    var total = 0, same = true, atEnd = false
     while true {
-      guard let got = readBytes(ends[0], 4096), !got.isEmpty else { break }
+      guard let got = readBytes(ends[0], 4096) else { break }
+      if got.isEmpty { atEnd = true; break }
       total += got.count
       same = same && got.allSatisfy { $0 == 0x5A }
     }
-    check(total == 20_000 && same, "20,000 bytes through the 8 KiB ring, then its end")
-    _ = writer
+    check(total == 20_000 && same && atEnd, "20,000 bytes through the 8 KiB ring, then its end (0, not an error)")
+    // The reader's last read says nothing of when the writer's close
+    // returned: join it, or the next pipe can find its number still taken
+    // (boot-fdio-test, 2026-11-27, twice on amd64).
+    if let t = writer { try? Thread.join(t) }
     check(close(ends[0]) == 0, "the read end closed")
     var again: [Int32] = [0, 0]
     check(pipe(&again) == 0 && Set(again) == Set(ends), "the numbers are free again")

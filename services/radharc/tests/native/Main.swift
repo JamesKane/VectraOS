@@ -463,6 +463,14 @@ func waitFor(_ ring: inout InputConsumer, _ doorbell: borrowing Handle, seconds:
       if !redrawn { sleep(until: Clock.monotonic() + 20_000_000) }
     }
     check(redrawn, "the desk and the window are Platinum Indigo's again")
+    // boot-desktop's screendump is taken on this line, while the window is
+    // still shown: once the test exits Radharc takes the window away, and a
+    // screendump after the launcher's exit caught the console beneath it.
+    // QEMU is stopped at the line, so the hold only has to outlast the dump.
+    if failures == 0 {
+      print("desktop-test: passed, its window held for the screendump")
+      sleep(until: Clock.monotonic() + 30_000_000_000)
+    }
     _ = consume ctl
     _ = consume events
     // The window and its connection live to here: a value's life ends at
