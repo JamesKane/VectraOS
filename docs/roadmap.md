@@ -48,8 +48,9 @@ here, and its history, step by step, is in git and `docs/decisions/`.
   (score 9283 at 800x600) and in a Radharc window (score 58 at the
   display's 60 Hz, from 13: Radharc's scanout direct never attached, and
   each frame re-uploaded the windows' chrome;
-  docs/boards/orangepi-6-plus/vk.md), with no
-  reference yet (D177 wants panvk's on the board). The texture scenes'
+  docs/boards/orangepi-6-plus/vk.md); its reference, panvk on the board's
+  Ubuntu with GNOME (D177), scores 2899 headless (VectraOS 3.2 times it)
+  and 2088 windowed, presented mailbox where Radharc presents FIFO. The texture scenes'
   GPU hang is fixed (no empty tile read), and phong (598 to 5240 FPS: an
   inlined callee's variables were left in memory). Open: a copy before a
   pass takes 17 ms beside another GPU context. Next:

@@ -337,17 +337,38 @@ gl.md's last 4861, 4755, 3690 and 3763.
 
 ## The reference
 
-There is none to compare with yet. AbyssBSD's own notes list vkmark only as a
-diagnostic, with no numbers, and D177 names GNOME on Ubuntu as the
-comparison for `uc_vkmark`. The run the owner would need to make: Ubuntu
-with GNOME (Wayland) on this board with Mesa's panvk, vkmark 2025.01 from
-the distribution or built at the same release, run as
+D177 names GNOME on Ubuntu as the comparison for `uc_vkmark` (AbyssBSD's
+notes list vkmark only as a diagnostic, with no numbers). Run 2026-11-28 on
+this board's own Ubuntu by `ports/vkmark/reference.sh`: Ubuntu 26.04.1 LTS,
+Linux 7.0.0-41-cix with panthor, Mesa 26.0.8-1ubuntu0.3's panvk (the
+Mali-G720 MC10; panvk warns it is not conformant), GNOME on Wayland,
+vkmark 2025.01 unpatched at the port's pin (2bf2ca7f), 800x600, nothing
+else on the GPU. VectraOS's columns are main's (headless at d555ee9a,
+windowed at 4fef477e).
 
-    vkmark -s 800x600                    # windowed, mailbox (GNOME's default)
-    vkmark --winsys headless -s 800x600  # headless
+| Scene | panvk headless | VectraOS headless | panvk in GNOME | VectraOS in Radharc |
+|---|---:|---:|---:|---:|
+| vertex device-local=true | 968 | 11398 | 1019 | 59 |
+| vertex device-local=false | 1041 | 10919 | 834 | 57 |
+| texture anisotropy=0 | 5940 | 10281 | 3873 | 60 |
+| texture anisotropy=16 | 5833 | 9983 | 3962 | 57 |
+| shading gouraud | 584 | 7481 | 590 | 60 |
+| shading blinn-phong-inf | 216 | 7235 | 228 | 57 |
+| shading phong | 191 | 5240 | 225 | 60 |
+| shading cel | 550 | 5606 | 501 | 57 |
+| effect2d edge | 1280 | 11970 | 1221 | 60 |
+| effect2d blur | 1209 | 6384 | 252 | 57 |
+| desktop | 6607 | 5847 | 3993 | 60 |
+| cube | 8145 | 12058 | 5470 | 59 |
+| clear | 5127 | 16280 | 4987 | 57 |
+| **Score** | **2899** | **9283** | **2088** | **58** |
 
-with nothing else on the GPU, and its per-scene lines and score recorded
-here as glmark2's reference is in gl.md. `ports/vkmark/reference.sh` does it
-all on the board's Ubuntu: builds vkmark at the pin, refuses a device that
-isn't the Mali through panvk, runs both, and saves the system's details and
-the two outputs to send back.
+- **Headless:** VectraOS scores 3.2 times panvk, and is ahead in every scene
+  but desktop (5847 against 6607, 88%).
+- **In a window the two aren't alike:** GNOME presents mailbox, so a frame
+  never waits for the display, while Radharc presents FIFO only and is held
+  to the display's 60 Hz (radharc(4)). The windowed columns compare how
+  each composites, not the GPU; a like-for-like windowed comparison waits
+  for Radharc to present mailbox, or for GNOME to be run FIFO.
+- `ports/vkmark/reference.sh` makes the run again on the board's Ubuntu
+  (firmware entry Boot0004, booted once by BootNext from FreeBSD).
